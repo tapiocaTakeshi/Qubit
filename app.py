@@ -222,6 +222,18 @@ def respond(message, history, system_message, max_tokens, temperature, top_p,
             top_k, repetition_penalty):
     """Gradio チャット応答関数"""
 
+    # Noneの場合のデフォルト値（examples クリック時に additional_inputs が None になる）
+    if max_tokens is None:
+        max_tokens = 150
+    if temperature is None:
+        temperature = 0.8
+    if top_p is None:
+        top_p = 0.92
+    if top_k is None:
+        top_k = 40
+    if repetition_penalty is None:
+        repetition_penalty = 1.2
+
     # プロンプト構築
     prompt_parts = []
 
