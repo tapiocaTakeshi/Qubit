@@ -1,5 +1,5 @@
 ---
-title: Gradio Chatbot
+title: NeuroQ
 emoji: 💬
 colorFrom: yellow
 colorTo: purple
