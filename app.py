@@ -523,8 +523,8 @@ with gr.Blocks(title="neuroQ \u2013 QBNN Dataset Trainer", css=CSS) as demo:
                     scale=3,
                 )
                 text_col_box = gr.Textbox(
-                    label="\U0001f4dd テキストカラム名（空=自動）",
-                    value="text", scale=1,
+                    label="📝 テキストカラム名（空=自動）",
+                    value="", scale=1,
                 )
 
             with gr.Row():
