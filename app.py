@@ -271,13 +271,17 @@ def load_dataset_texts(dataset_id, text_column, split, max_samples):
 
 def preview_dataset(dataset_id, text_column, split, max_samples, progress=gr.Progress()):
     try:
+        yield "🔄 リセット中...\n新しくプレビューを取得しています...", ""
+        
         if not dataset_id.strip():
-            return "⚠️ データセットIDを入力してください", ""
+            yield "⚠️ データセットIDを入力してください", ""
+            return
 
         # カンマまたは改行区切りで複数データセットIDを分割
         dataset_ids = [d.strip() for d in dataset_id.replace("\n", ",").split(",") if d.strip()]
         if not dataset_ids:
-            return "⚠️ データセットIDを入力してください", ""
+            yield "⚠️ データセットIDを入力してください", ""
+            return
 
         all_texts = []
         messages = []
@@ -285,20 +289,25 @@ def preview_dataset(dataset_id, text_column, split, max_samples, progress=gr.Pro
             progress((i + 0.5) / len(dataset_ids), desc=f"読み込み中… ({did})")
             texts, msg = load_dataset_texts(did, text_column, split, max_samples)
             messages.append(f"📦 {did}: {msg}")
+            
+            # 途中経過を表示
+            yield "\n".join(messages) + "\n\n(読み込み中...)", ""
+            
             if texts:
                 all_texts.extend(texts)
         progress(1.0)
 
         status = "\n".join(messages)
         if not all_texts:
-            return status + "\n❌ 有効なテキストが見つかりませんでした。", ""
+            yield status + "\n❌ 有効なテキストが見つかりませんでした。", ""
+            return
 
         status += f"\n\n✅ 合計 {len(all_texts)} 件のテキストを取得"
         preview = "【先頭5件プレビュー】\n\n" + "\n—\n".join(all_texts[:5])
-        return status, preview
+        yield status, preview
     except Exception as e:
         import traceback
-        return f"🚨 エラーが発生しました:\n{traceback.format_exc()}", ""
+        yield f"🚨 エラーが発生しました:\n{traceback.format_exc()}", ""
 
 # ============================================================
 # 学習ループ
