@@ -13,7 +13,28 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      - name: Install dependencies
+        run: pip install huggingface_hub
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push --force https://tapiocaTakeshi:$HF_TOKEN@huggingface.co/spaces/tapiocaTakeshi/Qubit HEAD:main
+        run: |
+          python -c '
+          import os
+          from huggingface_hub import login, upload_folder
+
+          # Login with your Hugging Face credentials
+          login(token=os.environ.get("HF_TOKEN"))
+
+          # Push your model files
+          upload_folder(
+              folder_path=".",
+              repo_id="tapiocaTakeshi/Qubit",
+              repo_type="model",
+              commit_message="Sync repository files to model repo via GitHub Actions"
+          )
+          '
