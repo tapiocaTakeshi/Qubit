@@ -45,3 +45,4 @@ short_description: "脳型量子ビットネットワーク(QBNN)による日本
 ## リンク
 
 - [📂 GitHub](https://github.com/tapiocaTakeshi/NeuroQ)
+# Qubit
