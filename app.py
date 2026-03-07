@@ -1,396 +1,457 @@
-#!/usr/bin/env python3
-"""
-🧠⚛️ NeuroQ - 脳型量子ビットネットワーク チャットボット
-Hugging Face Spaces 用 Gradio インターフェース
-
-QBNN (Quantum Bit Neural Network) Transformer による日本語対話AI
-"""
+“””
+neuroQ - QBNN-Transformer on Hugging Face Spaces
+データセットID入力 → 自動ロード → 学習 → 推論
+CPU最適化版
+“””
 
 import os
-import sys
-import torch
-import torch.nn.functional as F
-import warnings
+import math
 import time
-
-warnings.filterwarnings('ignore')
-
-# パス設定
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, SCRIPT_DIR)
-
-# NeuroQ モジュールのインポート
-from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer
-
 import gradio as gr
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.utils import EntryNotFoundError
 
-# ========================================
-# モデルのロード（起動時に1回だけ実行）
-# ========================================
+datasets_lib = None  # 遅延インポート
 
-print("🧠⚛️ NeuroQ モデルをロード中...")
+# ============================================================
 
-# デバイス検出
-if torch.cuda.is_available():
-    DEVICE = torch.device("cuda")
-    DEVICE_NAME = "🎮 NVIDIA GPU (CUDA)"
-elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-    DEVICE = torch.device("mps")
-    DEVICE_NAME = "🍎 Apple Silicon GPU (MPS)"
-else:
-    DEVICE = torch.device("cpu")
-    DEVICE_NAME = "💻 CPU"
+# 設定
 
-print(f"🖥️ デバイス: {DEVICE_NAME}")
+# ============================================================
 
-# チェックポイント検索
-CHECKPOINT_CANDIDATES = [
-    os.path.join(SCRIPT_DIR, 'neuroq_checkpoint.pt'),
-    os.path.join(SCRIPT_DIR, 'checkpoints', 'neuroq_checkpoint.pt'),
-]
+REPO_ID = “tapiocaTakeshi/neuroQ”
+CKPT_FILE = “qbnn_checkpoint.pt”
 
-checkpoint_path = None
-for cp in CHECKPOINT_CANDIDATES:
-    if os.path.exists(cp):
-        checkpoint_path = cp
-        break
+MODEL_CONFIG = {
+“vocab_size”: 200,
+“embed_dim”: 64,
+“num_heads”: 2,
+“num_layers”: 2,
+“max_seq_len”: 32,
+“entangle_strength”: 0.12,
+}
 
-# トークナイザー検索
-TOKENIZER_CANDIDATES = [
-    os.path.join(SCRIPT_DIR, 'neuroq_tokenizer_8k.model'),
-    os.path.join(SCRIPT_DIR, 'neuroq_tokenizer.model'),
-    os.path.join(SCRIPT_DIR, 'neuroq_tokenizer_ja.model'),
-]
+# ============================================================
 
-tokenizer_path = None
-for tp in TOKENIZER_CANDIDATES:
-    if os.path.exists(tp):
-        tokenizer_path = tp
-        break
+# QBNN レイヤー
 
-# モデル初期化
-MODEL = None
-TOKENIZER = None
-MODEL_INFO = {}
+# ============================================================
 
-if checkpoint_path and tokenizer_path:
-    try:
-        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+class QBNNLayer(nn.Module):
+def **init**(self, dim, lam=0.12):
+super().**init**()
+self.linear = nn.Linear(dim, dim)
+self.J = nn.Parameter(torch.randn(dim, dim) * 0.01)
+self.lam = lam
+self.norm = nn.LayerNorm(dim)
 
-        # 設定の取得
-        if isinstance(checkpoint, dict) and 'config' in checkpoint:
-            cfg = checkpoint['config']
-            vocab_size = cfg.get('vocab_size', 8000)
-            embed_dim = cfg.get('embed_dim', 256)
-            num_heads = cfg.get('num_heads', 8)
-            num_layers = cfg.get('num_layers', 5)
-            max_seq_len = cfg.get('max_seq_len', 512)
-        else:
-            vocab_size = 8000
-            embed_dim = 256
-            num_heads = 8
-            num_layers = 5
-            max_seq_len = 512
+```
+def forward(self, x):
+    h = self.linear(x)
+    delta = torch.einsum('bsd,od->bso', torch.tanh(x), self.J) * torch.tanh(h)
+    return self.norm(F.gelu(h + self.lam * delta))
+```
 
-        config = NeuroQuantumConfig(
-            vocab_size=vocab_size,
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-            num_layers=num_layers,
-            max_seq_len=max_seq_len,
-        )
+class QBNNTransformer(nn.Module):
+def **init**(self, cfg):
+super().**init**()
+d = cfg[“embed_dim”]
+self.embed     = nn.Embedding(cfg[“vocab_size”], d)
+self.pos_embed = nn.Embedding(cfg[“max_seq_len”], d)
+self.layers = nn.ModuleList([
+nn.ModuleDict({
+“attn”:  nn.MultiheadAttention(d, cfg[“num_heads”], batch_first=True),
+“qbnn”:  QBNNLayer(d, cfg[“entangle_strength”]),
+“norm1”: nn.LayerNorm(d),
+“norm2”: nn.LayerNorm(d),
+}) for _ in range(cfg[“num_layers”])
+])
+self.head = nn.Linear(d, cfg[“vocab_size”])
+self.cfg  = cfg
 
-        MODEL = NeuroQuantum(config)
-        state_dict = checkpoint.get('model_state_dict', checkpoint)
-        result = MODEL.load_state_dict(state_dict, strict=False)
-        MODEL = MODEL.to(DEVICE)
-        MODEL.eval()
+```
+def forward(self, x):
+    B, S = x.shape
+    h = self.embed(x) + self.pos_embed(torch.arange(S, device=x.device).unsqueeze(0))
+    for layer in self.layers:
+        a, _ = layer["attn"](h, h, h)
+        h = layer["norm1"](h + a)
+        h = layer["norm2"](h + layer["qbnn"](h))
+    return self.head(h)
 
-        TOKENIZER = NeuroQuantumTokenizer(
-            vocab_size=vocab_size,
-            model_file=tokenizer_path,
-        )
-
-        total_params = sum(p.numel() for p in MODEL.parameters())
-        phase = checkpoint.get('phase', '不明') if isinstance(checkpoint, dict) else '不明'
-
-        MODEL_INFO = {
-            'params': f"{total_params:,}",
-            'embed_dim': embed_dim,
-            'num_heads': num_heads,
-            'num_layers': num_layers,
-            'max_seq_len': max_seq_len,
-            'phase': phase,
-            'device': DEVICE_NAME,
-        }
-
-        print(f"✅ モデルロード完了: {total_params:,} パラメータ")
-        print(f"   embed_dim={embed_dim}, heads={num_heads}, layers={num_layers}")
-        print(f"   学習フェーズ: {phase}")
-
-    except Exception as e:
-        print(f"❌ モデルロードエラー: {e}")
-        import traceback
-        traceback.print_exc()
-else:
-    print(f"⚠️ チェックポイントまたはトークナイザーが見つかりません")
-    print(f"   checkpoint: {checkpoint_path}")
-    print(f"   tokenizer: {tokenizer_path}")
-
-
-# ========================================
-# テキスト生成
-# ========================================
-
-@torch.no_grad()
-def generate_text(prompt: str, max_new_tokens: int = 150,
-                  temperature: float = 0.8, top_k: int = 40,
-                  top_p: float = 0.92, repetition_penalty: float = 1.2):
-    """NeuroQモデルでテキスト生成"""
-    if MODEL is None or TOKENIZER is None:
-        return "⚠️ モデルが読み込まれていません。チェックポイントを確認してください。"
-
-    try:
-        tokens = TOKENIZER.encode(prompt, add_special=True)
-        max_seq = MODEL_INFO.get('max_seq_len', 512)
-
-        if len(tokens) > max_seq - 10:
-            tokens = tokens[-(max_seq - 10):]
-
-        input_ids = torch.tensor([tokens], dtype=torch.long).to(DEVICE)
-        generated_tokens = []
-        generated_text_so_far = set()
-
-        for _ in range(max_new_tokens):
-            if input_ids.size(1) > max_seq:
-                input_ids = input_ids[:, -max_seq:]
-
-            logits = MODEL(input_ids)
-            next_logits = logits[:, -1, :] / max(temperature, 0.01)
-
-            # Repetition Penalty
-            if repetition_penalty > 1.0 and generated_tokens:
-                for token_id in set(generated_tokens[-50:]):
-                    next_logits[0, token_id] /= repetition_penalty
-
-            # Top-K
-            if top_k > 0:
-                top_k_val = min(top_k, next_logits.size(-1))
-                indices_to_remove = next_logits < torch.topk(next_logits, top_k_val)[0][..., -1, None]
-                next_logits[indices_to_remove] = -float('inf')
-
-            # Top-P (Nucleus Sampling)
-            if top_p < 1.0:
-                sorted_logits, sorted_indices = torch.sort(next_logits, descending=True)
-                probs = F.softmax(sorted_logits, dim=-1)
-                cumulative_probs = torch.cumsum(probs, dim=-1)
-                remove_mask = cumulative_probs - probs > top_p
-                sorted_logits[remove_mask] = -float('inf')
-                next_logits = sorted_logits.scatter(1, sorted_indices, sorted_logits)
-
-            probs = F.softmax(next_logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
-            token_id = next_token.item()
-
-            # EOS判定
-            if hasattr(TOKENIZER, 'eos_id') and token_id == TOKENIZER.eos_id:
+def generate(self, tokens, max_new=30, temperature=0.8):
+    self.eval()
+    with torch.no_grad():
+        for _ in range(max_new):
+            seq    = tokens[:, -self.cfg["max_seq_len"]:]
+            logits = self(seq)[:, -1, :] / max(temperature, 1e-5)
+            nxt    = torch.multinomial(F.softmax(logits, dim=-1), 1)
+            tokens = torch.cat([tokens, nxt], dim=1)
+            if nxt.item() == 1:
                 break
+    return tokens
+```
 
-            generated_tokens.append(token_id)
-            input_ids = torch.cat([input_ids, next_token], dim=1)
+# ============================================================
 
-            # 繰り返し検出
-            decoded = TOKENIZER.decode(generated_tokens)
-            if len(decoded) > 20:
-                last_chunk = decoded[-20:]
-                if last_chunk in generated_text_so_far:
-                    break
-                generated_text_so_far.add(last_chunk)
+# 文字レベルトークナイザー
 
-        result = TOKENIZER.decode(generated_tokens)
-        return result.strip()
+# ============================================================
 
-    except Exception as e:
-        return f"⚠️ 生成エラー: {str(e)}"
-
-
-# ========================================
-# Gradio インターフェース
-# ========================================
-
-def respond(message, history, system_message, max_tokens, temperature, top_p,
-            top_k, repetition_penalty):
-    """Gradio チャット応答関数"""
-
-    # Noneの場合のデフォルト値（examples クリック時に additional_inputs が None になる）
-    if max_tokens is None:
-        max_tokens = 150
-    if temperature is None:
-        temperature = 0.8
-    if top_p is None:
-        top_p = 0.92
-    if top_k is None:
-        top_k = 40
-    if repetition_penalty is None:
-        repetition_penalty = 1.2
-
-    # プロンプト構築
-    prompt_parts = []
-
-    if system_message:
-        prompt_parts.append(f"システム: {system_message}")
-
-    # 会話履歴を含める（最新3ターンまで）
-    if history:
-        recent = history[-3:]
-        for turn in recent:
-            if turn.get("role") == "user":
-                prompt_parts.append(f"ユーザー: {turn['content']}")
-            elif turn.get("role") == "assistant":
-                prompt_parts.append(f"アシスタント: {turn['content']}")
-
-    prompt_parts.append(f"ユーザー: {message}")
-    prompt_parts.append("アシスタント:")
-
-    full_prompt = "\n".join(prompt_parts)
-
-    # テキスト生成
-    response = generate_text(
-        prompt=full_prompt,
-        max_new_tokens=int(max_tokens),
-        temperature=temperature,
-        top_k=int(top_k),
-        top_p=top_p,
-        repetition_penalty=repetition_penalty,
-    )
-
-    # ストリーミング風に出力
-    partial = ""
-    for char in response:
-        partial += char
-        yield partial
-
-
-# モデル情報文字列
-def get_model_info_text():
-    if not MODEL_INFO:
-        return "モデルが読み込まれていません"
-    return (
-        f"🧠 パラメータ: {MODEL_INFO.get('params', '?')}\n"
-        f"📐 次元: embed={MODEL_INFO.get('embed_dim', '?')}, "
-        f"heads={MODEL_INFO.get('num_heads', '?')}, "
-        f"layers={MODEL_INFO.get('num_layers', '?')}\n"
-        f"📏 最大シーケンス長: {MODEL_INFO.get('max_seq_len', '?')}\n"
-        f"🎓 学習フェーズ: {MODEL_INFO.get('phase', '?')}\n"
-        f"🖥️ デバイス: {MODEL_INFO.get('device', '?')}"
-    )
-
-
-# ========================================
-# Gradio UI
-# ========================================
-
-THEME = gr.themes.Soft(
-    primary_hue="violet",
-    secondary_hue="blue",
-    neutral_hue="slate",
-    font=gr.themes.GoogleFont("Noto Sans JP"),
+class CharTokenizer:
+def **init**(self):
+chars = list(
+“あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん”
+“アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン”
+“0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz”
+“、。？！「」（）・ー\n “
 )
+self.stoi = {”<PAD>”: 0, “<EOS>”: 1, “<UNK>”: 2}
+for i, c in enumerate(chars): self.stoi[c] = i + 3
+self.itos = {v: k for k, v in self.stoi.items()}
+self.vocab_size = len(self.stoi)
 
-CSS = """
-.gradio-container {
-    max-width: 900px !important;
-}
-h1 {
-    text-align: center;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    font-size: 2.5em !important;
-}
-.model-info {
-    background: linear-gradient(135deg, #1a1a2e, #16213e);
-    border: 1px solid #0f3460;
-    border-radius: 12px;
-    padding: 16px;
-    color: #e0e0e0;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.85em;
-    white-space: pre-wrap;
-}
-footer { display: none !important; }
-"""
+```
+def encode(self, text, max_len=32):
+    return [self.stoi.get(c, 2) for c in str(text)[:max_len]]
 
-with gr.Blocks(theme=THEME, css=CSS, title="🧠⚛️ NeuroQ チャット") as demo:
+def decode(self, ids):
+    return "".join(self.itos.get(i, "?") for i in ids if i not in (0, 1, 2))
+```
 
-    gr.Markdown(
-        """
-        # 🧠⚛️ NeuroQ
-        ### 脳型量子ビットネットワーク (QBNN) による日本語生成AI
-        """
-    )
+# ============================================================
 
-    with gr.Row():
-        with gr.Column(scale=4):
-            chatbot = gr.ChatInterface(
-                respond,
-                type="messages",
-                additional_inputs=[
-                    gr.Textbox(
-                        value="あなたは親切で知識豊富なAIアシスタントです。日本語で丁寧に回答してください。",
-                        label="🎭 システムプロンプト",
-                        lines=2,
-                    ),
-                    gr.Slider(
-                        minimum=10, maximum=500, value=150, step=10,
-                        label="📏 最大トークン数",
-                    ),
-                    gr.Slider(
-                        minimum=0.1, maximum=2.0, value=0.8, step=0.1,
-                        label="🌡️ Temperature",
-                    ),
-                    gr.Slider(
-                        minimum=0.1, maximum=1.0, value=0.92, step=0.05,
-                        label="🎯 Top-P",
-                    ),
-                    gr.Slider(
-                        minimum=1, maximum=100, value=40, step=5,
-                        label="🔝 Top-K",
-                    ),
-                    gr.Slider(
-                        minimum=1.0, maximum=2.0, value=1.2, step=0.1,
-                        label="🔄 繰り返しペナルティ",
-                    ),
-                ],
-                examples=[
-                    ["こんにちは！あなたは何ができますか？"],
-                    ["日本語で俳句を作ってください"],
-                    ["量子コンピューティングについて教えてください"],
-                    ["東京の観光スポットを3つ教えてください"],
-                ],
-                fill_height=True,
+# グローバル状態
+
+# ============================================================
+
+tokenizer = CharTokenizer()
+MODEL_CONFIG[“vocab_size”] = tokenizer.vocab_size
+model      = QBNNTransformer(MODEL_CONFIG)
+is_trained = False
+stop_flag  = False
+
+# ============================================================
+
+# チェックポイント保存・読込
+
+# ============================================================
+
+def save_checkpoint():
+token = os.environ.get(“HF_TOKEN”)
+if not token:
+return “⚠️ HF_TOKEN が Secrets に未設定です”
+try:
+torch.save({“model_state”: model.state_dict(), “config”: MODEL_CONFIG}, CKPT_FILE)
+HfApi().upload_file(
+path_or_fileobj=CKPT_FILE, path_in_repo=CKPT_FILE,
+repo_id=REPO_ID, repo_type=“space”, token=token,
+)
+os.remove(CKPT_FILE)
+return “✅ チェックポイントを保存しました”
+except Exception as e:
+return f”❌ 保存エラー: {e}”
+
+def load_checkpoint():
+global is_trained
+try:
+path = hf_hub_download(repo_id=REPO_ID, filename=CKPT_FILE, repo_type=“space”)
+model.load_state_dict(torch.load(path, map_location=“cpu”)[“model_state”])
+model.eval(); is_trained = True
+return “✅ チェックポイントを読み込みました”
+except EntryNotFoundError:
+return “⚠️ チェックポイントが見つかりません。先に学習してください。”
+except Exception as e:
+return f”❌ 読込エラー: {e}”
+
+# ============================================================
+
+# データセット読み込み
+
+# ============================================================
+
+TEXT_CANDIDATES = [“text”, “content”, “sentence”, “question”, “answer”,
+“context”, “abstract”, “body”, “description”, “input”, “output”]
+
+def load_dataset_texts(dataset_id, text_column, split, max_samples):
+global datasets_lib
+if datasets_lib is None:
+import datasets as _ds; datasets_lib = _ds
+try:
+ds = datasets_lib.load_dataset(dataset_id.strip(), split=split, trust_remote_code=False)
+except Exception as e:
+return None, f”❌ データセット読み込みエラー: {e}”
+
+```
+cols = ds.column_names
+col  = text_column.strip() if text_column.strip() in cols else next(
+    (c for c in TEXT_CANDIDATES if c in cols), None)
+if col is None:
+    return None, f"❌ テキストカラムが見つかりません。カラム一覧: {cols}"
+
+texts = [row[col].strip() for row in ds.select(range(min(int(max_samples), len(ds))))
+         if isinstance(row.get(col), str) and len(row[col].strip()) > 4]
+
+if not texts:
+    return None, "❌ 有効なテキストが見つかりませんでした。"
+return texts, f"✅ '{col}' カラムから {len(texts)} 件取得"
+```
+
+def preview_dataset(dataset_id, text_column, split, max_samples, progress=gr.Progress()):
+if not dataset_id.strip():
+return “⚠️ データセットIDを入力してください”, “”
+progress(0.3, desc=“読み込み中…”)
+texts, msg = load_dataset_texts(dataset_id, text_column, split, max_samples)
+progress(1.0)
+if texts is None: return msg, “”
+return msg, “【先頭5件プレビュー】\n\n” + “\n—\n”.join(texts[:5])
+
+# ============================================================
+
+# 学習ループ
+
+# ============================================================
+
+def train_on_dataset(dataset_id, text_column, split, max_samples,
+epochs, lr, progress=gr.Progress()):
+global model, is_trained, stop_flag
+stop_flag = False; is_trained = False
+
+```
+if not dataset_id.strip():
+    yield "⚠️ データセットIDを入力してください", ""; return
+
+yield "📥 データセットを読み込んでいます...", ""
+texts, msg = load_dataset_texts(dataset_id, text_column, split, max_samples)
+if texts is None:
+    yield msg, ""; return
+
+yield f"{msg}\n⚙️ データを準備中...", ""
+
+data = []
+for t in texts:
+    ids = tokenizer.encode(t, max_len=MODEL_CONFIG["max_seq_len"] + 1)
+    if len(ids) >= 2: data.append(ids)
+
+if not data:
+    yield "❌ 学習可能なデータがありません", ""; return
+
+model = QBNNTransformer(MODEL_CONFIG)
+optimizer = torch.optim.AdamW(model.parameters(), lr=float(lr))
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, int(epochs))
+
+log = [
+    f"📊 データ件数 : {len(data)} 件",
+    f"🔁 エポック数 : {epochs}  |  学習率 : {lr}",
+    "=" * 44,
+]
+
+for epoch in range(int(epochs)):
+    if stop_flag:
+        log.append("⏹ 停止しました"); break
+
+    model.train()
+    total, count = 0.0, 0
+    for ids in data:
+        L = min(len(ids) - 1, MODEL_CONFIG["max_seq_len"])
+        x = torch.tensor([ids[:L]], dtype=torch.long)
+        y = torch.tensor([ids[1:L+1]], dtype=torch.long)
+        loss = F.cross_entropy(model(x).reshape(-1, tokenizer.vocab_size), y.reshape(-1))
+        optimizer.zero_grad(); loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        total += loss.item(); count += 1
+    scheduler.step()
+
+    avg  = total / max(count, 1)
+    done = int(20 * (epoch + 1) / int(epochs))
+    bar  = "█" * done + "░" * (20 - done)
+    line = f"Epoch {epoch+1:>3}/{int(epochs)}  [{bar}]  Loss: {avg:.4f}"
+    log.append(line)
+    progress((epoch + 1) / int(epochs), desc=line)
+    yield "\n".join(log), ""
+
+is_trained = True; model.eval()
+save_msg = save_checkpoint()
+log += ["", save_msg, "🎉 学習完了！「💬 チャット」タブで試してみてください。"]
+yield "\n".join(log), "✅ 完了"
+```
+
+def stop_training():
+global stop_flag; stop_flag = True
+return “⏹ 停止リクエストを送信…”
+
+# ============================================================
+
+# 推論
+
+# ============================================================
+
+def chat(message, history, temperature):
+global is_trained
+if not is_trained:
+msg = load_checkpoint()
+if not is_trained:
+return history + [(message, f”⚠️ {msg}”)]
+ids  = tokenizer.encode(message)
+if not ids: return history + [(message, “（入力が空です）”)]
+out  = model.generate(torch.tensor([ids], dtype=torch.long),
+max_new=30, temperature=float(temperature))
+resp = tokenizer.decode(out[0, len(ids):].tolist()) or “（生成結果が空です。エポック数を増やしてみてください）”
+return history + [(message, resp)]
+
+# ============================================================
+
+# Gradio UI
+
+# ============================================================
+
+CSS = “””
+@import url(‘https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Noto+Sans+JP:wght@300;500&display=swap’);
+body, .gradio-container { font-family: ‘Noto Sans JP’, sans-serif !important; background: #0b0b14 !important; }
+.hdr { text-align:center; padding:24px 0 4px; }
+.hdr h1 { font-size:2.2em; color:#e2e8f0; margin:0; letter-spacing:-0.02em; }
+.hdr .sub { font-family:‘IBM Plex Mono’,monospace; font-size:0.75em; color:#4a4a6a; margin-top:4px; }
+.badge { display:inline-block; background:rgba(139,92,246,.18); border:1px solid rgba(139,92,246,.45); border-radius:4px; padding:2px 9px; font-family:‘IBM Plex Mono’,monospace; font-size:.75em; color:#a78bfa; }
+.panel { background:rgba(255,255,255,.025); border:1px solid rgba(139,92,246,.25); border-radius:12px; padding:14px; margin-bottom:12px; }
+.mono textarea, .mono input { font-family:‘IBM Plex Mono’,monospace !important; font-size:.82em !important; background:#05050d !important; color:#86efac !important; }
+“””
+
+RECOMMENDED = [
+“kunishou/databricks-dolly-15k-ja”,
+“llm-book/aio-passages”,
+“izumi-lab/open-text-books”,
+“roneneldan/TinyStories”,
+“ag_news”,
+]
+
+with gr.Blocks(title=“neuroQ – Dataset Trainer”, css=CSS,
+theme=gr.themes.Base(primary_hue=“violet”, neutral_hue=“slate”)) as demo:
+
+```
+gr.HTML("""
+<div class='hdr'>
+    <div style='font-family:"IBM Plex Mono",monospace;font-size:.8em;color:#5a5a7a;letter-spacing:.3em;margin-bottom:4px;'>
+        QUANTUM · NEURAL · NETWORK
+    </div>
+    <h1>neuro<span style='color:#8b5cf6;'>Q</span></h1>
+    <div class='sub'>QBNN-Transformer · CPU Edition · Dataset Trainer</div>
+</div>
+""")
+
+with gr.Tabs():
+
+    # ── タブ① データセット学習 ─────────────────────────
+    with gr.Tab("⚛ データセット学習"):
+
+        gr.HTML("<div class='panel'><span class='badge'>STEP 1</span>"
+                " <span style='color:#94a3b8;font-size:.88em;'>"
+                "HuggingFace データセットIDを入力してプレビュー</span></div>")
+
+        with gr.Row():
+            dataset_id_box = gr.Textbox(
+                label="📦 データセットID（author/name 形式）",
+                placeholder="例: kunishou/databricks-dolly-15k-ja",
+                scale=3,
+            )
+            text_col_box = gr.Textbox(
+                label="📝 テキストカラム名（空=自動）",
+                value="text", scale=1,
             )
 
-    with gr.Accordion("📊 モデル情報", open=False):
-        gr.Markdown(
-            f'<div class="model-info">{get_model_info_text()}</div>'
+        with gr.Row():
+            split_box = gr.Dropdown(
+                choices=["train", "validation", "test"],
+                value="train", label="📂 スプリット", scale=1,
+            )
+            max_samples_box = gr.Slider(
+                10, 2000, value=300, step=10,
+                label="📊 最大サンプル数", scale=3,
+            )
+
+        preview_btn = gr.Button("🔍 プレビュー確認", size="sm", variant="secondary")
+        preview_status  = gr.Textbox(label="", interactive=False, lines=1)
+        preview_content = gr.Textbox(label="プレビュー", interactive=False,
+                                     lines=5, elem_classes="mono")
+
+        # おすすめ
+        rec_html = "".join(f"<span class='badge' style='margin:3px;'>{d}</span>" for d in RECOMMENDED)
+        gr.HTML(f"<div style='margin:6px 0 14px;'><div style='color:#4a4a6a;font-family:\"IBM Plex Mono\",monospace;font-size:.73em;margin-bottom:6px;'>RECOMMENDED</div>{rec_html}</div>")
+
+        gr.HTML("<hr style='border-color:rgba(139,92,246,.2);margin:4px 0 14px;'>")
+        gr.HTML("<div class='panel'><span class='badge'>STEP 2</span>"
+                " <span style='color:#94a3b8;font-size:.88em;'>学習パラメータを設定して学習開始</span></div>")
+
+        with gr.Row():
+            epochs_box = gr.Slider(5, 300, value=30, step=5, label="🔁 エポック数")
+            lr_box     = gr.Slider(0.0001, 0.01, value=0.001, step=0.0001, label="📈 学習率")
+
+        with gr.Row():
+            train_btn = gr.Button("▶  学習開始", variant="primary", scale=3)
+            stop_btn  = gr.Button("⏹  停止",    variant="stop",    scale=1)
+
+        stop_status = gr.Textbox(label="", interactive=False, lines=1)
+        train_log   = gr.Textbox(label="学習ログ", interactive=False,
+                                 lines=16, elem_classes="mono",
+                                 placeholder="学習ログがここに表示されます...")
+
+        preview_btn.click(
+            fn=preview_dataset,
+            inputs=[dataset_id_box, text_col_box, split_box, max_samples_box],
+            outputs=[preview_status, preview_content],
+            show_progress=True,
         )
-        gr.Markdown(
-            """
-            ---
-            **NeuroQ** は QBNN (Quantum Bit Neural Network) Transformer アーキテクチャを採用した
-            実験的な日本語生成AIモデルです。独自の量子もつれ層により、通常のTransformerとは異なる
-            表現学習を実現します。
-
-            - 🏗️ アーキテクチャ: QBNN-Transformer
-            - 📖 日本語3段階学習: 事前学習 → SFT → DPO
-            - ⚛️ 量子もつれ層: Bloch球マッピング + 動的エンタングルメント
-            - 🔤 トークナイザー: SentencePiece (8k語彙)
-
-            [📂 GitHubリポジトリ](https://github.com/tapiocaTakeshi/NeuroQ)
-            """
+        train_btn.click(
+            fn=train_on_dataset,
+            inputs=[dataset_id_box, text_col_box, split_box, max_samples_box,
+                    epochs_box, lr_box],
+            outputs=[train_log, stop_status],
+            show_progress=True,
         )
+        stop_btn.click(fn=stop_training, outputs=stop_status)
 
+    # ── タブ② チャット ────────────────────────────────
+    with gr.Tab("💬 チャット"):
+        chatbot = gr.Chatbot(height=420, label="neuroQ")
+        with gr.Row():
+            msg_in   = gr.Textbox(placeholder="入力してEnter...", label="", scale=4, show_label=False)
+            send_btn = gr.Button("送信", variant="primary", scale=1)
+        temp_sl = gr.Slider(0.1, 2.0, value=0.8, step=0.05, label="🌡 Temperature")
+        with gr.Row():
+            load_btn  = gr.Button("📥 チェックポイント読込", size="sm")
+            clear_btn = gr.Button("🗑 クリア",              size="sm")
+        load_out = gr.Textbox(label="", interactive=False, lines=1)
 
-if __name__ == "__main__":
-    demo.launch()
+        send_btn.click(fn=chat, inputs=[msg_in, chatbot, temp_sl], outputs=chatbot)
+        msg_in.submit(fn=chat, inputs=[msg_in, chatbot, temp_sl], outputs=chatbot)
+        load_btn.click(fn=load_checkpoint, outputs=load_out)
+        clear_btn.click(fn=lambda: [], outputs=chatbot)
+
+    # ── タブ③ モデル情報 ──────────────────────────────
+    with gr.Tab("ℹ モデル情報"):
+        p = sum(v.numel() for v in model.parameters())
+        gr.HTML(f"""
+        <div class='panel'>
+            <div style='font-family:"IBM Plex Mono",monospace;color:#8b5cf6;font-size:.82em;margin-bottom:10px;'>MODEL CONFIG</div>
+            <table style='color:#cbd5e1;font-size:.88em;border-collapse:collapse;width:100%;'>
+                {''.join(f"<tr><td style='padding:5px 0;border-bottom:1px solid rgba(139,92,246,.1);'>{k}</td><td style='font-family:IBM Plex Mono,monospace;color:#a78bfa;'>{v}</td></tr>"
+                for k,v in [('embed_dim',MODEL_CONFIG['embed_dim']),('num_heads',MODEL_CONFIG['num_heads']),
+                             ('num_layers',MODEL_CONFIG['num_layers']),('max_seq_len',MODEL_CONFIG['max_seq_len']),
+                             ('vocab_size',MODEL_CONFIG['vocab_size']),('total params',f'{p:,}'),
+                             ('entangle_strength λ',MODEL_CONFIG['entangle_strength'])])}
+            </table>
+        </div>
+        <div style='color:#4a4a6a;font-size:.78em;font-family:"IBM Plex Mono",monospace;margin-top:10px;line-height:1.9;'>
+            ⚠ CPUのみ。大規模学習には Colab / GCP を推奨<br>
+            ⚠ HF_TOKEN を Secrets に設定するとチェックポイントが自動保存されます
+        </div>
+        """)
+
+demo.load(fn=load_checkpoint, outputs=gr.Textbox(visible=False))
+```
+
+if **name** == “**main**”:
+demo.launch()
