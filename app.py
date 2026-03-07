@@ -270,31 +270,35 @@ def load_dataset_texts(dataset_id, text_column, split, max_samples):
     return texts, f"✅ '{col}' カラムから {len(texts)} 件取得"
 
 def preview_dataset(dataset_id, text_column, split, max_samples, progress=gr.Progress()):
-    if not dataset_id.strip():
-        return "⚠️ データセットIDを入力してください", ""
+    try:
+        if not dataset_id.strip():
+            return "⚠️ データセットIDを入力してください", ""
 
-    # カンマまたは改行区切りで複数データセットIDを分割
-    dataset_ids = [d.strip() for d in dataset_id.replace("\n", ",").split(",") if d.strip()]
-    if not dataset_ids:
-        return "⚠️ データセットIDを入力してください", ""
+        # カンマまたは改行区切りで複数データセットIDを分割
+        dataset_ids = [d.strip() for d in dataset_id.replace("\n", ",").split(",") if d.strip()]
+        if not dataset_ids:
+            return "⚠️ データセットIDを入力してください", ""
 
-    all_texts = []
-    messages = []
-    for i, did in enumerate(dataset_ids):
-        progress((i + 0.5) / len(dataset_ids), desc=f"読み込み中… ({did})")
-        texts, msg = load_dataset_texts(did, text_column, split, max_samples)
-        messages.append(f"📦 {did}: {msg}")
-        if texts:
-            all_texts.extend(texts)
-    progress(1.0)
+        all_texts = []
+        messages = []
+        for i, did in enumerate(dataset_ids):
+            progress((i + 0.5) / len(dataset_ids), desc=f"読み込み中… ({did})")
+            texts, msg = load_dataset_texts(did, text_column, split, max_samples)
+            messages.append(f"📦 {did}: {msg}")
+            if texts:
+                all_texts.extend(texts)
+        progress(1.0)
 
-    status = "\n".join(messages)
-    if not all_texts:
-        return status + "\n❌ 有効なテキストが見つかりませんでした。", ""
+        status = "\n".join(messages)
+        if not all_texts:
+            return status + "\n❌ 有効なテキストが見つかりませんでした。", ""
 
-    status += f"\n\n✅ 合計 {len(all_texts)} 件のテキストを取得"
-    preview = "【先頭5件プレビュー】\n\n" + "\n—\n".join(all_texts[:5])
-    return status, preview
+        status += f"\n\n✅ 合計 {len(all_texts)} 件のテキストを取得"
+        preview = "【先頭5件プレビュー】\n\n" + "\n—\n".join(all_texts[:5])
+        return status, preview
+    except Exception as e:
+        import traceback
+        return f"🚨 エラーが発生しました:\n{traceback.format_exc()}", ""
 
 # ============================================================
 # 学習ループ
@@ -302,115 +306,125 @@ def preview_dataset(dataset_id, text_column, split, max_samples, progress=gr.Pro
 
 def train_on_dataset(dataset_id, text_column, split, max_samples,
                      epochs, lr, progress=gr.Progress()):
-    global model, is_trained, stop_flag
-    stop_flag = False
-    is_trained = False
+    try:
+        global model, is_trained, stop_flag
+        stop_flag = False
+        is_trained = False
 
-    if not dataset_id.strip():
-        yield "⚠️ データセットIDを入力してください", ""
-        return
+        if not dataset_id.strip():
+            yield "⚠️ データセットIDを入力してください", ""
+            return
 
-    # カンマまたは改行区切りで複数データセットIDを分割
-    dataset_ids = [d.strip() for d in dataset_id.replace("\n", ",").split(",") if d.strip()]
-    if not dataset_ids:
-        yield "⚠️ データセットIDを入力してください", ""
-        return
+        # カンマまたは改行区切りで複数データセットIDを分割
+        dataset_ids = [d.strip() for d in dataset_id.replace("\n", ",").split(",") if d.strip()]
+        if not dataset_ids:
+            yield "⚠️ データセットIDを入力してください", ""
+            return
 
-    # ── 複数データセットからテキストを一括読み込み ──
-    all_texts = []
-    load_log = []
-    load_log.append(f"📥 {len(dataset_ids)} 個のデータセットを読み込みます...")
-    yield "\n".join(load_log), ""
-
-    for i, did in enumerate(dataset_ids):
-        load_log.append(f"\n📦 [{i+1}/{len(dataset_ids)}] {did} を読み込み中...")
+        # ── 複数データセットからテキストを一括読み込み ──
+        all_texts = []
+        load_log = []
+        load_log.append(f"📥 {len(dataset_ids)} 個のデータセットを読み込みます...")
         yield "\n".join(load_log), ""
 
-        texts, msg = load_dataset_texts(did, text_column, split, max_samples)
-        load_log.append(f"   {msg}")
-        if texts:
-            load_log.append(f"   → {len(texts)} 件取得")
-            all_texts.extend(texts)
+        for i, did in enumerate(dataset_ids):
+            load_log.append(f"\n📦 [{i+1}/{len(dataset_ids)}] {did} を読み込み中...")
+            yield "\n".join(load_log), ""
+
+            texts, msg = load_dataset_texts(did, text_column, split, max_samples)
+            load_log.append(f"   {msg}")
+            if texts:
+                load_log.append(f"   → {len(texts)} 件取得")
+                all_texts.extend(texts)
+            else:
+                load_log.append(f"   → スキップ（テキスト取得不可）")
+            yield "\n".join(load_log), ""
+
+        if not all_texts:
+            load_log.append("\n❌ すべてのデータセットから有効なテキストが見つかりませんでした")
+            yield "\n".join(load_log), ""
+            return
+
+        load_log.append(f"\n✅ 合計: {len(all_texts)} 件のテキストを取得")
+        load_log.append("⚙️ データを準備中...")
+        yield "\n".join(load_log), ""
+
+        data = []
+        for t in all_texts:
+            ids = tokenizer.encode(t, max_len=MODEL_CONFIG["max_seq_len"] + 1)
+            if len(ids) >= 2:
+                data.append(ids)
+
+        if not data:
+            yield "❌ 学習可能なデータがありません", ""
+            return
+
+        model = QBNNTransformer(MODEL_CONFIG)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=float(lr))
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, int(epochs))
+
+        log = load_log + [
+            "",
+            "=" * 44,
+            f"📊 学習データ件数     : {len(data)} 件 （{len(dataset_ids)} データセット）",
+            f"🔁 エポック数         : {epochs}  |  学習率 : {lr}",
+            "=" * 44,
+        ]
+
+        for epoch in range(int(epochs)):
+            if stop_flag:
+                log.append("⏹ 停止しました")
+                break
+
+            model.train()
+            total, count = 0.0, 0
+            for ids in data:
+                L = min(len(ids) - 1, MODEL_CONFIG["max_seq_len"])
+                x = torch.tensor([ids[:L]], dtype=torch.long)
+                y = torch.tensor([ids[1:L+1]], dtype=torch.long)
+                loss = F.cross_entropy(model(x).reshape(-1, tokenizer.vocab_size), y.reshape(-1))
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                total += loss.item()
+                count += 1
+                
+                # 10ステップごとに一時的な経過をUIに表示
+                if count % 10 == 0 or count == len(data):
+                    step_loss = total / count
+                    temp_line = f"▶ Epoch {epoch+1}/{int(epochs)}  [Step {count}/{len(data)}]  Loss: {step_loss:.4f} ..."
+                    progress((epoch + (count/len(data))) / int(epochs), desc=f"Epoch {epoch+1} - Step {count}/{len(data)}")
+                    yield "\n".join(log + [temp_line]), ""
+
+            scheduler.step()
+
+            avg  = total / max(count, 1)
+            done = int(20 * (epoch + 1) / int(epochs))
+            bar  = "█" * done + "░" * (20 - done)
+            line = f"Epoch {epoch+1:>3}/{int(epochs)}  [{bar}]  Loss: {avg:.4f}"
+            log.append(line)
+            progress((epoch + 1) / int(epochs), desc=line)
+            yield "\n".join(log), ""
+
+        is_trained = True
+        model.eval()
+        final_loss = avg if 'avg' in dir() else 0.0
+        # 学習履歴に全データセットIDを記録
+        combined_id = ", ".join(dataset_ids)
+        add_history_entry(combined_id, epochs, len(data), final_loss)
+        save_msg = save_checkpoint()
+        log += ["", save_msg, "🎉 学習完了！「💬 チャット」タブで試してみてください。"]
+        yield "\n".join(log), "✅ 完了"
+    except Exception as e:
+        import traceback
+        err_msg = f"\n\n🚨 予期せぬエラーが発生しました:\n{e}\n\n{traceback.format_exc()}"
+        if 'log' in locals() and isinstance(log, list):
+            yield "\n".join(log + [err_msg]), "❌ エラー"
+        elif 'load_log' in locals() and isinstance(load_log, list):
+             yield "\n".join(load_log + [err_msg]), "❌ エラー"
         else:
-            load_log.append(f"   → スキップ（テキスト取得不可）")
-        yield "\n".join(load_log), ""
-
-    if not all_texts:
-        load_log.append("\n❌ すべてのデータセットから有効なテキストが見つかりませんでした")
-        yield "\n".join(load_log), ""
-        return
-
-    load_log.append(f"\n✅ 合計: {len(all_texts)} 件のテキストを取得")
-    load_log.append("⚙️ データを準備中...")
-    yield "\n".join(load_log), ""
-
-    data = []
-    for t in all_texts:
-        ids = tokenizer.encode(t, max_len=MODEL_CONFIG["max_seq_len"] + 1)
-        if len(ids) >= 2:
-            data.append(ids)
-
-    if not data:
-        yield "❌ 学習可能なデータがありません", ""
-        return
-
-    model = QBNNTransformer(MODEL_CONFIG)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=float(lr))
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, int(epochs))
-
-    log = load_log + [
-        "",
-        "=" * 44,
-        f"📊 学習データ件数     : {len(data)} 件 （{len(dataset_ids)} データセット）",
-        f"🔁 エポック数         : {epochs}  |  学習率 : {lr}",
-        "=" * 44,
-    ]
-
-    for epoch in range(int(epochs)):
-        if stop_flag:
-            log.append("⏹ 停止しました")
-            break
-
-        model.train()
-        total, count = 0.0, 0
-        for ids in data:
-            L = min(len(ids) - 1, MODEL_CONFIG["max_seq_len"])
-            x = torch.tensor([ids[:L]], dtype=torch.long)
-            y = torch.tensor([ids[1:L+1]], dtype=torch.long)
-            loss = F.cross_entropy(model(x).reshape(-1, tokenizer.vocab_size), y.reshape(-1))
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            total += loss.item()
-            count += 1
-            
-            # 10ステップごとに一時的な経過をUIに表示
-            if count % 10 == 0 or count == len(data):
-                step_loss = total / count
-                temp_line = f"▶ Epoch {epoch+1}/{int(epochs)}  [Step {count}/{len(data)}]  Loss: {step_loss:.4f} ..."
-                progress((epoch + (count/len(data))) / int(epochs), desc=f"Epoch {epoch+1} - Step {count}/{len(data)}")
-                yield "\n".join(log + [temp_line]), ""
-
-        scheduler.step()
-
-        avg  = total / max(count, 1)
-        done = int(20 * (epoch + 1) / int(epochs))
-        bar  = "\u2588" * done + "\u2591" * (20 - done)
-        line = f"Epoch {epoch+1:>3}/{int(epochs)}  [{bar}]  Loss: {avg:.4f}"
-        log.append(line)
-        progress((epoch + 1) / int(epochs), desc=line)
-        yield "\n".join(log), ""
-
-    is_trained = True
-    model.eval()
-    final_loss = avg if 'avg' in dir() else 0.0
-    # 学習履歴に全データセットIDを記録
-    combined_id = ", ".join(dataset_ids)
-    add_history_entry(combined_id, epochs, len(data), final_loss)
-    save_msg = save_checkpoint()
-    log += ["", save_msg, "🎉 学習完了！「💬 チャット」タブで試してみてください。"]
-    yield "\n".join(log), "✅ 完了"
+            yield err_msg, "❌ エラー"
 
 def stop_training():
     global stop_flag
