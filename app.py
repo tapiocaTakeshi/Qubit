@@ -272,12 +272,28 @@ def load_dataset_texts(dataset_id, text_column, split, max_samples):
 def preview_dataset(dataset_id, text_column, split, max_samples, progress=gr.Progress()):
     if not dataset_id.strip():
         return "⚠️ データセットIDを入力してください", ""
-    progress(0.3, desc="読み込み中…")
-    texts, msg = load_dataset_texts(dataset_id, text_column, split, max_samples)
+
+    dataset_ids = [d.strip() for d in dataset_id.split(",") if d.strip()]
+    if not dataset_ids:
+        return "⚠️ データセットIDを入力してください", ""
+
+    all_texts = []
+    messages = []
+    for i, did in enumerate(dataset_ids):
+        progress((i + 0.5) / len(dataset_ids), desc=f"読み込み中… ({did})")
+        texts, msg = load_dataset_texts(did, text_column, split, max_samples)
+        messages.append(f"📦 {did}: {msg}")
+        if texts:
+            all_texts.extend(texts)
     progress(1.0)
-    if texts is None:
-        return msg, ""
-    return msg, "【先頭5件プレビュー】\n\n" + "\n—\n".join(texts[:5])
+
+    status = "\n".join(messages)
+    if not all_texts:
+        return status + "\n❌ 有効なテキストが見つかりませんでした。", ""
+
+    status += f"\n\n✅ 合計 {len(all_texts)} 件のテキストを取得"
+    preview = "【先頭5件プレビュー】\n\n" + "\n—\n".join(all_texts[:5])
+    return status, preview
 
 # ============================================================
 # 学習ループ
@@ -293,16 +309,42 @@ def train_on_dataset(dataset_id, text_column, split, max_samples,
         yield "⚠️ データセットIDを入力してください", ""
         return
 
-    yield "📥 データセットを読み込んでいます...", ""
-    texts, msg = load_dataset_texts(dataset_id, text_column, split, max_samples)
-    if texts is None:
-        yield msg, ""
+    # カンマ区切りで複数データセットIDを分割
+    dataset_ids = [d.strip() for d in dataset_id.split(",") if d.strip()]
+    if not dataset_ids:
+        yield "⚠️ データセットIDを入力してください", ""
         return
 
-    yield f"{msg}\n⚙️ データを準備中...", ""
+    # ── 複数データセットからテキストを一括読み込み ──
+    all_texts = []
+    load_log = []
+    load_log.append(f"📥 {len(dataset_ids)} 個のデータセットを読み込みます...")
+    yield "\n".join(load_log), ""
+
+    for i, did in enumerate(dataset_ids):
+        load_log.append(f"\n📦 [{i+1}/{len(dataset_ids)}] {did} を読み込み中...")
+        yield "\n".join(load_log), ""
+
+        texts, msg = load_dataset_texts(did, text_column, split, max_samples)
+        load_log.append(f"   {msg}")
+        if texts:
+            load_log.append(f"   → {len(texts)} 件取得")
+            all_texts.extend(texts)
+        else:
+            load_log.append(f"   → スキップ（テキスト取得不可）")
+        yield "\n".join(load_log), ""
+
+    if not all_texts:
+        load_log.append("\n❌ すべてのデータセットから有効なテキストが見つかりませんでした")
+        yield "\n".join(load_log), ""
+        return
+
+    load_log.append(f"\n✅ 合計: {len(all_texts)} 件のテキストを取得")
+    load_log.append("⚙️ データを準備中...")
+    yield "\n".join(load_log), ""
 
     data = []
-    for t in texts:
+    for t in all_texts:
         ids = tokenizer.encode(t, max_len=MODEL_CONFIG["max_seq_len"] + 1)
         if len(ids) >= 2:
             data.append(ids)
@@ -315,9 +357,11 @@ def train_on_dataset(dataset_id, text_column, split, max_samples,
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(lr))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, int(epochs))
 
-    log = [
-        f"📊 データ件数 : {len(data)} 件",
-        f"🔁 エポック数 : {epochs}  |  学習率 : {lr}",
+    log = load_log + [
+        "",
+        "=" * 44,
+        f"📊 学習データ件数     : {len(data)} 件 （{len(dataset_ids)} データセット）",
+        f"🔁 エポック数         : {epochs}  |  学習率 : {lr}",
         "=" * 44,
     ]
 
@@ -352,7 +396,9 @@ def train_on_dataset(dataset_id, text_column, split, max_samples,
     is_trained = True
     model.eval()
     final_loss = avg if 'avg' in dir() else 0.0
-    add_history_entry(dataset_id, epochs, len(data), final_loss)
+    # 学習履歴に全データセットIDを記録
+    combined_id = ", ".join(dataset_ids)
+    add_history_entry(combined_id, epochs, len(data), final_loss)
     save_msg = save_checkpoint()
     log += ["", save_msg, "🎉 学習完了！「💬 チャット」タブで試してみてください。"]
     yield "\n".join(log), "✅ 完了"
@@ -668,12 +714,12 @@ with gr.Blocks(title="neuroQ \u2013 QBNN Dataset Trainer", css=CSS,
             gr.HTML("<div class='panel-glow animate-in'>"
                     "<span class='badge-step'>STEP 1</span>"
                     "<span style='color:#cbd5e1;font-size:.88em;margin-left:10px;'>"
-                    "HuggingFace データセットIDを入力してプレビュー</span></div>")
+                    "HuggingFace データセットIDを入力（カンマ区切りで複数OK）</span></div>")
 
             with gr.Row():
                 dataset_id_box = gr.Textbox(
-                    label="\U0001f4e6 データセットID（author/name 形式）",
-                    placeholder="例: kunishou/databricks-dolly-15k-ja",
+                    label="📦 データセットID（カンマ区切りで複数指定可）",
+                    placeholder="例: kunishou/databricks-dolly-15k-ja, ag_news, roneneldan/TinyStories",
                     scale=3,
                 )
                 text_col_box = gr.Textbox(
