@@ -384,6 +384,14 @@ def train_on_dataset(dataset_id, text_column, split, max_samples,
             optimizer.step()
             total += loss.item()
             count += 1
+            
+            # 10ステップごとに一時的な経過をUIに表示
+            if count % 10 == 0 or count == len(data):
+                step_loss = total / count
+                temp_line = f"▶ Epoch {epoch+1}/{int(epochs)}  [Step {count}/{len(data)}]  Loss: {step_loss:.4f} ..."
+                progress((epoch + (count/len(data))) / int(epochs), desc=f"Epoch {epoch+1} - Step {count}/{len(data)}")
+                yield "\n".join(log + [temp_line]), ""
+
         scheduler.step()
 
         avg  = total / max(count, 1)
@@ -538,7 +546,8 @@ with gr.Blocks(title="neuroQ \u2013 QBNN Dataset Trainer", css=CSS) as demo:
             stop_status = gr.Textbox(label="", interactive=False, lines=1)
             train_log   = gr.Textbox(label="\U0001f4cb 学習ログ", interactive=False,
                                      lines=16, elem_classes="mono",
-                                     placeholder="学習ログがここに表示されます...")
+                                     placeholder="学習ログがここに表示されます...",
+                                     autoscroll=True)
 
             preview_btn.click(
                 fn=preview_dataset,
