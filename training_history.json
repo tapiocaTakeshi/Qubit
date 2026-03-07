@@ -5,5 +5,12 @@
     "epochs": 30,
     "samples": 602,
     "final_loss": 0.0001
+  },
+  {
+    "dataset_id": "range3/wiki40b-ja",
+    "timestamp": "2026-03-07 10:04",
+    "epochs": 30,
+    "samples": 2000,
+    "final_loss": 0.0002
   }
 ]
