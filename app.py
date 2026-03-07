@@ -431,222 +431,10 @@ def chat(message, history, temperature):
 # ============================================================
 
 CSS = """
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Noto+Sans+JP:wght@300;400;500;700&family=Inter:wght@300;400;500;600&display=swap');
-
-/* ── ベース ─────────────────────────────────── */
-*  { box-sizing: border-box; }
-body, .gradio-container {
-    font-family: 'Noto Sans JP', 'Inter', sans-serif !important;
-    background: linear-gradient(168deg, #050510 0%, #0a0a1a 35%, #0d0822 70%, #08061a 100%) !important;
-    min-height: 100vh;
-}
-.gradio-container { max-width: 960px !important; margin: 0 auto !important; }
-
-/* ── ヘッダー ───────────────────────────────── */
-.hdr {
-    text-align: center; padding: 40px 0 16px; position: relative;
-    overflow: hidden;
-}
-.hdr::before {
-    content: '';  position: absolute; top: -40px; left: 50%; transform: translateX(-50%);
-    width: 400px; height: 400px;
-    background: radial-gradient(circle, rgba(139,92,246,.10) 0%, rgba(99,102,241,.05) 30%, transparent 65%);
-    pointer-events: none; z-index: 0;
-}
-.hdr > * { position: relative; z-index: 1; }
-.hdr .tagline {
-    font-family: 'IBM Plex Mono', monospace; font-size: .68em;
-    color: #4a4a6a; letter-spacing: .4em; text-transform: uppercase;
-    margin-bottom: 8px;
-}
-.hdr h1 {
-    font-size: 3.2em; margin: 0; letter-spacing: -0.03em;
-    font-weight: 700; line-height: 1;
-    background: linear-gradient(135deg, #e0d4ff 0%, #a78bfa 30%, #7c3aed 70%, #6d28d9 100%);
-    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    filter: drop-shadow(0 0 40px rgba(139,92,246,.2));
-    animation: titleGlow 4s ease-in-out infinite alternate;
-}
-@keyframes titleGlow {
-    0%   { filter: drop-shadow(0 0 30px rgba(139,92,246,.15)); }
-    100% { filter: drop-shadow(0 0 50px rgba(139,92,246,.3)); }
-}
-.hdr .sub {
-    font-family: 'IBM Plex Mono', monospace; font-size: .72em;
-    color: #3e3e5a; margin-top: 8px;
-}
-.glow-line {
-    width: 140px; height: 2px; margin: 18px auto 0;
-    background: linear-gradient(90deg, transparent, #8b5cf6 30%, #a78bfa 50%, #8b5cf6 70%, transparent);
-    border-radius: 2px; opacity: .7;
-    animation: linePulse 3s ease-in-out infinite;
-}
-@keyframes linePulse {
-    0%, 100% { opacity: .5; width: 120px; }
-    50%      { opacity: .9; width: 180px; }
-}
-
-/* ── パネル ──────────────────────────────────── */
-.panel {
-    background: linear-gradient(135deg, rgba(15,15,30,.6) 0%, rgba(10,10,25,.5) 100%);
-    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
-    border: 1px solid rgba(139,92,246,.15);
-    border-radius: 16px; padding: 18px 20px; margin-bottom: 14px;
-    box-shadow: 0 8px 32px rgba(0,0,0,.2), inset 0 1px 0 rgba(255,255,255,.03);
-    transition: border-color .3s ease;
-}
-.panel:hover { border-color: rgba(139,92,246,.3); }
-
-.panel-glow {
-    background: linear-gradient(135deg, rgba(139,92,246,.07) 0%, rgba(99,102,241,.04) 50%, rgba(15,15,30,.5) 100%);
-    backdrop-filter: blur(16px);
-    border: 1px solid rgba(139,92,246,.25);
-    border-radius: 16px; padding: 18px 20px; margin-bottom: 14px;
-    box-shadow: 0 0 50px rgba(139,92,246,.05), 0 8px 32px rgba(0,0,0,.15),
-                inset 0 1px 0 rgba(255,255,255,.04);
-}
-
-/* ── バッジ ──────────────────────────────────── */
-.badge {
-    display: inline-block;
-    background: rgba(139,92,246,.08);
-    border: 1px solid rgba(139,92,246,.25);
-    border-radius: 8px; padding: 4px 12px;
-    font-family: 'IBM Plex Mono', monospace; font-size: .72em;
-    color: #a78bfa;
-    transition: all .25s cubic-bezier(.4,0,.2,1);
-    cursor: default;
-}
-.badge:hover {
-    background: rgba(139,92,246,.18);
-    border-color: rgba(139,92,246,.5);
-    color: #c4b5fd;
-    transform: translateY(-2px);
-    box-shadow: 0 4px 16px rgba(139,92,246,.15);
-}
-.badge-step {
-    background: linear-gradient(135deg, rgba(139,92,246,.3), rgba(99,102,241,.2));
-    border: 1px solid rgba(139,92,246,.5);
-    border-radius: 8px; padding: 4px 14px;
-    font-family: 'IBM Plex Mono', monospace; font-size: .72em; font-weight: 600;
-    color: #e0d4ff; letter-spacing: .1em;
-    text-shadow: 0 0 10px rgba(139,92,246,.3);
-}
-
-/* ── フォーム ──────────────────────────────── */
+/* シンプルなベーススタイル */
 .mono textarea, .mono input {
-    font-family: 'IBM Plex Mono', monospace !important;
-    font-size: .82em !important;
-    background: rgba(5,5,15,.85) !important;
-    color: #86efac !important;
-    border: 1px solid rgba(139,92,246,.12) !important;
-    border-radius: 10px !important;
-    transition: all .25s ease !important;
+    font-family: monospace !important;
 }
-.mono textarea:focus, .mono input:focus {
-    border-color: rgba(139,92,246,.4) !important;
-    box-shadow: 0 0 0 3px rgba(139,92,246,.08) !important;
-}
-
-/* ── タブ ────────────────────────────────────── */
-.tabs > .tab-nav {
-    border-bottom: 1px solid rgba(139,92,246,.1) !important;
-    background: transparent !important;
-}
-.tabs > .tab-nav > button {
-    font-family: 'Noto Sans JP', sans-serif !important;
-    font-weight: 500 !important; font-size: .88em !important;
-    border-radius: 12px 12px 0 0 !important;
-    padding: 10px 20px !important;
-    transition: all .3s cubic-bezier(.4,0,.2,1) !important;
-    border: none !important;
-    color: #6b6b8a !important;
-}
-.tabs > .tab-nav > button:hover {
-    color: #a78bfa !important;
-    background: rgba(139,92,246,.05) !important;
-}
-.tabs > .tab-nav > button.selected {
-    background: rgba(139,92,246,.1) !important;
-    border-bottom: 2px solid #8b5cf6 !important;
-    color: #c4b5fd !important;
-}
-
-/* ── ボタン ──────────────────────────────────── */
-button.primary {
-    background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 50%, #5b21b6 100%) !important;
-    border: none !important; border-radius: 12px !important;
-    font-weight: 500 !important; font-size: .92em !important;
-    box-shadow: 0 4px 20px rgba(109,40,217,.3), inset 0 1px 0 rgba(255,255,255,.1) !important;
-    transition: all .3s cubic-bezier(.4,0,.2,1) !important;
-    text-shadow: 0 1px 2px rgba(0,0,0,.2) !important;
-}
-button.primary:hover {
-    transform: translateY(-2px) !important;
-    box-shadow: 0 8px 30px rgba(109,40,217,.45), inset 0 1px 0 rgba(255,255,255,.15) !important;
-    filter: brightness(1.1) !important;
-}
-button.primary:active { transform: translateY(0) !important; }
-
-button.secondary {
-    border: 1px solid rgba(139,92,246,.3) !important;
-    border-radius: 12px !important;
-    background: rgba(139,92,246,.06) !important;
-    transition: all .25s ease !important;
-}
-button.secondary:hover {
-    background: rgba(139,92,246,.12) !important;
-    border-color: rgba(139,92,246,.5) !important;
-}
-
-button.stop {
-    background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%) !important;
-    border: none !important; border-radius: 12px !important;
-    box-shadow: 0 4px 16px rgba(185,28,28,.25) !important;
-    transition: all .25s ease !important;
-}
-button.stop:hover { box-shadow: 0 6px 24px rgba(185,28,28,.4) !important; }
-
-/* ── チャット ────────────────────────────────── */
-.chatbot {
-    border-radius: 16px !important;
-    border: 1px solid rgba(139,92,246,.12) !important;
-    background: rgba(8,8,18,.6) !important;
-    box-shadow: inset 0 2px 20px rgba(0,0,0,.15) !important;
-}
-.chatbot .message { border-radius: 14px !important; }
-
-/* ── 言語セクション ─────────────────────────── */
-.lang-section {
-    padding: 10px 0 8px;
-    border-bottom: 1px solid rgba(139,92,246,.06);
-    display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
-}
-.lang-section:last-child { border-bottom: none; }
-.lang-label {
-    color: #94a3b8; font-size: .84em; font-weight: 500;
-    min-width: 90px;
-}
-
-/* ── アニメーション ─────────────────────────── */
-@keyframes fadeInUp {
-    from { opacity: 0; transform: translateY(16px); }
-    to   { opacity: 1; transform: translateY(0); }
-}
-@keyframes pulseGlow {
-    0%, 100% { box-shadow: 0 0 20px rgba(139,92,246,.06); }
-    50%      { box-shadow: 0 0 40px rgba(139,92,246,.12); }
-}
-.animate-in { animation: fadeInUp .6s cubic-bezier(.4,0,.2,1) both; }
-.animate-in-delay { animation: fadeInUp .6s cubic-bezier(.4,0,.2,1) .15s both; }
-.pulse-glow { animation: pulseGlow 4s ease-in-out infinite; }
-
-/* ── スクロールバー & フッター ───────────── */
-footer { display: none !important; }
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(139,92,246,.25); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(139,92,246,.45); }
 """
 
 # ============================================================
@@ -691,18 +479,10 @@ RECOMMENDED = {
 # Gradio アプリ構築
 # ============================================================
 
-with gr.Blocks(title="neuroQ \u2013 QBNN Dataset Trainer", css=CSS,
-               theme=gr.themes.Base(primary_hue="violet", neutral_hue="slate")) as demo:
+with gr.Blocks(title="neuroQ \u2013 QBNN Dataset Trainer", css=CSS) as demo:
 
     # ── ヘッダー ──────────────────────────────────────
-    gr.HTML("""
-    <div class='hdr'>
-        <div class='tagline'>quantum \u00b7 neural \u00b7 network</div>
-        <h1>neuroQ</h1>
-        <div class='sub'>QBNN-Transformer \u00b7 CPU Edition \u00b7 Dataset Trainer</div>
-        <div class='glow-line'></div>
-    </div>
-    """)
+    gr.Markdown("# neuroQ\n**QBNN-Transformer · CPU Edition · Dataset Trainer**")
 
     with gr.Tabs():
 
@@ -710,11 +490,7 @@ with gr.Blocks(title="neuroQ \u2013 QBNN Dataset Trainer", css=CSS,
         # タブ① データセット学習
         # ══════════════════════════════════════════════
         with gr.Tab("\u269b データセット学習"):
-
-            gr.HTML("<div class='panel-glow animate-in'>"
-                    "<span class='badge-step'>STEP 1</span>"
-                    "<span style='color:#cbd5e1;font-size:.88em;margin-left:10px;'>"
-                    "HuggingFace データセットIDを入力（カンマ区切りで複数OK）</span></div>")
+            gr.Markdown("### STEP 1: HuggingFace データセットIDを入力（カンマ区切りで複数OK）")
 
             with gr.Row():
                 dataset_id_box = gr.Textbox(
@@ -743,30 +519,11 @@ with gr.Blocks(title="neuroQ \u2013 QBNN Dataset Trainer", css=CSS,
                                          lines=5, elem_classes="mono")
 
             # おすすめデータセット（言語別）
-            rec_sections = []
-            for lang, datasets in RECOMMENDED.items():
-                badges = "".join(
-                    f"<span class='badge' style='margin:3px;'>{d}</span>"
-                    for d in datasets
-                )
-                rec_sections.append(
-                    f"<div class='lang-section'>"
-                    f"<span class='lang-label'>{lang}</span>"
-                    f"<div style='display:flex;flex-wrap:wrap;gap:4px;'>{badges}</div></div>"
-                )
-            rec_html = "\n".join(rec_sections)
-            gr.HTML(
-                f"<div class='panel animate-in-delay' style='margin-top:12px;'>"
-                f"<div style='color:#6d6d8a;font-family:\"IBM Plex Mono\",monospace;"
-                f"font-size:.68em;margin-bottom:12px;letter-spacing:.25em;text-transform:uppercase;'>"
-                f"\U0001f4da Recommended Datasets</div>"
-                f"{rec_html}</div>"
-            )
+            with gr.Accordion("\U0001f4da おすすめデータセット", open=False):
+                for lang, datasets in RECOMMENDED.items():
+                    gr.Markdown(f"**{lang}**: {', '.join(datasets)}")
 
-            gr.HTML("<div class='panel-glow animate-in' style='margin-top:8px;'>"
-                    "<span class='badge-step'>STEP 2</span>"
-                    "<span style='color:#cbd5e1;font-size:.88em;margin-left:10px;'>"
-                    "学習パラメータを設定して学習開始</span></div>")
+            gr.Markdown("### STEP 2: 学習パラメータを設定して学習開始")
 
             with gr.Row():
                 epochs_box = gr.Slider(5, 300, value=30, step=5, label="\U0001f501 エポック数")
@@ -800,10 +557,7 @@ with gr.Blocks(title="neuroQ \u2013 QBNN Dataset Trainer", css=CSS,
         # タブ② チャット
         # ══════════════════════════════════════════════
         with gr.Tab("\U0001f4ac チャット"):
-            gr.HTML("<div class='panel' style='text-align:center;padding:12px;'>"
-                    "<span style='color:#6d6d8a;font-family:\"IBM Plex Mono\",monospace;"
-                    "font-size:.72em;letter-spacing:.2em;text-transform:uppercase;'>"
-                    "\u269b QBNN Inference Engine</span></div>")
+            gr.Markdown("### \u269b QBNN Inference Engine")
             chatbot = gr.Chatbot(height=420, label="neuroQ",
                                  bubble_full_width=False)
             with gr.Row():
@@ -826,10 +580,7 @@ with gr.Blocks(title="neuroQ \u2013 QBNN Dataset Trainer", css=CSS,
         # タブ③ 学習履歴
         # ══════════════════════════════════════════════
         with gr.Tab("\U0001f4cb 学習履歴"):
-            gr.HTML("<div class='panel-glow'>"
-                    "<span class='badge-step'>HISTORY</span>"
-                    "<span style='color:#cbd5e1;font-size:.88em;margin-left:10px;'>"
-                    "学習済みデータセットの一覧管理</span></div>")
+            gr.Markdown("### 学習履歴の管理\n履歴の一覧確認と削除が行えます。")
 
             history_display = gr.Textbox(
                 label="学習済みデータセット一覧",
@@ -866,42 +617,23 @@ with gr.Blocks(title="neuroQ \u2013 QBNN Dataset Trainer", css=CSS,
         # ══════════════════════════════════════════════
         with gr.Tab("\u2139 モデル情報"):
             p = sum(v.numel() for v in model.parameters())
-            config_rows = [
-                ("Embedding Dim",   MODEL_CONFIG['embed_dim']),
-                ("Attention Heads",  MODEL_CONFIG['num_heads']),
-                ("Layers",           MODEL_CONFIG['num_layers']),
-                ("Max Seq Length",   MODEL_CONFIG['max_seq_len']),
-                ("Vocab Size",       MODEL_CONFIG['vocab_size']),
-                ("Total Params",     f"{p:,}"),
-                ("Entangle \u03bb",  MODEL_CONFIG['entangle_strength']),
-            ]
-            table_html = "".join(
-                f"<tr>"
-                f"<td style='padding:10px 14px 10px 0;border-bottom:1px solid rgba(139,92,246,.06);"
-                f"color:#94a3b8;font-size:.88em;'>{k}</td>"
-                f"<td style='padding:10px 0;border-bottom:1px solid rgba(139,92,246,.06);"
-                f"font-family:IBM Plex Mono,monospace;color:#c4b5fd;font-weight:600;"
-                f"font-size:.92em;'>{v}</td></tr>"
-                for k, v in config_rows
-            )
-            gr.HTML(f"""
-            <div class='panel pulse-glow'>
-                <div style='font-family:"IBM Plex Mono",monospace;color:#8b5cf6;font-size:.72em;
-                            margin-bottom:16px;letter-spacing:.2em;text-transform:uppercase;'>
-                    \u269b Model Configuration
-                </div>
-                <table style='color:#cbd5e1;font-size:.88em;border-collapse:collapse;width:100%;'>
-                    {table_html}
-                </table>
-            </div>
-            <div class='panel' style='margin-top:10px;'>
-                <div style='color:#5a5a7a;font-size:.76em;font-family:"IBM Plex Mono",monospace;line-height:2.2;'>
-                    \u26a0 CPU only \u2014 大規模学習には Colab / GCP を推奨<br>
-                    \u26a0 HF_TOKEN を Secrets に設定するとチェックポイントが自動保存されます<br>
-                    \u269b Architecture: QBNN-Transformer (量子もつれ層 + Multi-Head Attention)
-                </div>
-            </div>
-            """)
+            md = f"""### \u269b Model Configuration
+| Parameter | Value |
+| --- | --- |
+| **Embedding Dim** | {MODEL_CONFIG['embed_dim']} |
+| **Attention Heads** | {MODEL_CONFIG['num_heads']} |
+| **Layers** | {MODEL_CONFIG['num_layers']} |
+| **Max Seq Length** | {MODEL_CONFIG['max_seq_len']} |
+| **Vocab Size** | {MODEL_CONFIG['vocab_size']} |
+| **Total Params** | {p:,} |
+| **Entangle λ** | {MODEL_CONFIG['entangle_strength']} |
+
+### \u26a0 注意事項
+- **CPU only** — 大規模学習には Colab / GCP を推奨
+- **HF_TOKEN** を Secrets に設定するとチェックポイントが自動保存されます
+- **Architecture**: QBNN-Transformer (量子もつれ層 + Multi-Head Attention)
+"""
+            gr.Markdown(md)
 
     demo.load(fn=load_checkpoint, outputs=gr.Textbox(visible=False))
 
