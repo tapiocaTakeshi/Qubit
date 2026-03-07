@@ -273,7 +273,8 @@ def preview_dataset(dataset_id, text_column, split, max_samples, progress=gr.Pro
     if not dataset_id.strip():
         return "⚠️ データセットIDを入力してください", ""
 
-    dataset_ids = [d.strip() for d in dataset_id.split(",") if d.strip()]
+    # カンマまたは改行区切りで複数データセットIDを分割
+    dataset_ids = [d.strip() for d in dataset_id.replace("\n", ",").split(",") if d.strip()]
     if not dataset_ids:
         return "⚠️ データセットIDを入力してください", ""
 
@@ -309,8 +310,8 @@ def train_on_dataset(dataset_id, text_column, split, max_samples,
         yield "⚠️ データセットIDを入力してください", ""
         return
 
-    # カンマ区切りで複数データセットIDを分割
-    dataset_ids = [d.strip() for d in dataset_id.split(",") if d.strip()]
+    # カンマまたは改行区切りで複数データセットIDを分割
+    dataset_ids = [d.strip() for d in dataset_id.replace("\n", ",").split(",") if d.strip()]
     if not dataset_ids:
         yield "⚠️ データセットIDを入力してください", ""
         return
@@ -494,8 +495,9 @@ with gr.Blocks(title="neuroQ \u2013 QBNN Dataset Trainer", css=CSS) as demo:
 
             with gr.Row():
                 dataset_id_box = gr.Textbox(
-                    label="📦 データセットID（カンマ区切りで複数指定可）",
-                    placeholder="例: kunishou/databricks-dolly-15k-ja, ag_news, roneneldan/TinyStories",
+                    lines=3,
+                    label="📦 データセットID（改行 または カンマ区切りで複数指定）",
+                    placeholder="【例】\nkunishou/databricks-dolly-15k-ja\nag_news\nroneneldan/TinyStories",
                     scale=3,
                 )
                 text_col_box = gr.Textbox(
