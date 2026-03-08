@@ -7,4 +7,4 @@ datasets>=2.18.0
 # image (inference-pytorch-cpu:sha-2d4f7f1) which bundles transformers==4.51.3,
 # tokenizers==0.21.2, and huggingface-inference-toolkit==0.5.6 — all of which
 # require huggingface-hub<1.0.
-huggingface_hub>=0.25.0,<1.0
+huggingface_hub>=0.30.0,<1.0
