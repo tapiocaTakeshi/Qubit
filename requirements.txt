@@ -3,10 +3,8 @@ numpy>=1.24.0
 sentencepiece>=0.1.99
 gradio>=5.0.0
 datasets>=2.18.0
-# Pin compatible versions to work around inference container image
-# (inference-pytorch-cpu:sha-2d4f7f1) package conflict where the bundled
-# transformers requires huggingface-hub<1.0 but the image ships huggingface-hub==1.6.0.
-# Pinning transformers>=4.53.0 ensures compatibility with huggingface-hub>=1.0.
-# See: https://github.com/tapiocaTakeshi/Qubit/issues (container-package-conflict)
-huggingface_hub>=1.0.0,<2.0.0
-transformers>=4.53.0
+# Pin huggingface-hub<1.0 to stay compatible with the inference container
+# image (inference-pytorch-cpu:sha-2d4f7f1) which bundles transformers==4.51.3,
+# tokenizers==0.21.2, and huggingface-inference-toolkit==0.5.6 — all of which
+# require huggingface-hub<1.0.
+huggingface_hub>=0.25.0,<1.0
