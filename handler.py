@@ -315,6 +315,17 @@ class EndpointHandler:
             col_data = row.get(text_column)
             if isinstance(col_data, str) and len(col_data.strip()) > 4:
                 texts.append(col_data.strip())
+            elif isinstance(col_data, list):
+                # Support conversation-format datasets (e.g. [{"from": "human", "value": "..."}])
+                parts = []
+                for turn in col_data:
+                    if isinstance(turn, dict) and "value" in turn:
+                        parts.append(turn["value"])
+                    elif isinstance(turn, str):
+                        parts.append(turn)
+                combined = "\n".join(parts)
+                if len(combined.strip()) > 4:
+                    texts.append(combined.strip())
 
         if not texts:
             return [{"error": "No valid text found in dataset"}]
