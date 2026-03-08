@@ -266,7 +266,8 @@ class EndpointHandler:
         if not ids:
             return [{"generated_text": ""}]
 
-        input_tensor = torch.tensor([ids], dtype=torch.long)
+        device = next(self.model.parameters()).device
+        input_tensor = torch.tensor([ids], dtype=torch.long, device=device)
 
         # Generate
         with torch.no_grad():
@@ -400,6 +401,8 @@ class EndpointHandler:
             train_result = trainer.train()
         except Exception as e:
             return [{"error": f"Training failed: {e}", "traceback": traceback.format_exc()}]
+        finally:
+            self.model.eval()
 
         final_loss = round(train_result.training_loss, 6) if train_result.training_loss else None
 
