@@ -41,16 +41,9 @@ except ImportError:
     SENTENCEPIECE_AVAILABLE = False
     warnings.warn("sentencepieceライブラリがインストールされていません。pip install sentencepiece を実行してください。")
 
-# Transformersライブラリ（アテンション用）
-try:
-    from transformers import (
-        GPT2Config,
-        GPT2Attention,
-    )
-    TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    TRANSFORMERS_AVAILABLE = False
-    # 警告は表示しない（フォールバックモードで動作可能なため）
+# transformersライブラリは依存関係の競合を避けるため使用しない
+# 純PyTorchによるSelf-Attention実装を使用
+TRANSFORMERS_AVAILABLE = False
 
 # OpenAI API（オプション）
 try:
@@ -294,117 +287,72 @@ class QBNNLayer(nn.Module):
 
 class QBNNAttention(nn.Module):
     """
-    QBNN拡張Self-Attention（transformersライブラリベース）
-    
-    transformersのGPT2Attentionをベースに、QBNN量子もつれ補正を追加
+    QBNN拡張Self-Attention（純PyTorch実装）
+
+    Multi-Head Causal Self-AttentionにQBNN量子もつれ補正を追加
     """
-    
-    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.1, 
+
+    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.1,
                  lambda_val: float = 0.5, max_positions: int = 1024):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
-        
+
         assert self.head_dim * num_heads == embed_dim, "embed_dimはnum_headsで割り切れる必要があります"
-        
-        # transformersのGPT2Attentionを使用
-        if TRANSFORMERS_AVAILABLE:
-            # GPT2Configでアテンション設定を作成
-            config = GPT2Config(
-                n_embd=embed_dim,
-                n_head=num_heads,
-                attn_pdrop=dropout,
-                resid_pdrop=dropout,
-                max_position_embeddings=max_positions,
-            )
-            # GPT2Attentionのインスタンスを作成
-            self.attention = GPT2Attention(config, layer_idx=None)
-            # QBNN量子もつれ補正パラメータ
-            self.J_attn = nn.Parameter(torch.randn(num_heads, self.head_dim, self.head_dim) * 0.02)
-            self.lambda_attn = nn.Parameter(torch.tensor(float(lambda_val)))
-        else:
-            # フォールバック：簡易実装
-            warnings.warn("transformersが利用できないため、簡易アテンションを使用します。")
-            self.q_proj = nn.Linear(embed_dim, embed_dim)
-            self.k_proj = nn.Linear(embed_dim, embed_dim)
-            self.v_proj = nn.Linear(embed_dim, embed_dim)
-            self.out_proj = nn.Linear(embed_dim, embed_dim)
-            self.J_attn = nn.Parameter(torch.randn(num_heads, self.head_dim, self.head_dim) * 0.02)
-            self.lambda_attn = nn.Parameter(torch.tensor(float(lambda_val)))
-            self.dropout = nn.Dropout(dropout)
-            self.scale = math.sqrt(self.head_dim)
-            self.attention = None
-    
+
+        self.q_proj = nn.Linear(embed_dim, embed_dim)
+        self.k_proj = nn.Linear(embed_dim, embed_dim)
+        self.v_proj = nn.Linear(embed_dim, embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        # QBNN量子もつれ補正パラメータ
+        self.J_attn = nn.Parameter(torch.randn(num_heads, self.head_dim, self.head_dim) * 0.02)
+        self.lambda_attn = nn.Parameter(torch.tensor(float(lambda_val)))
+        self.dropout = nn.Dropout(dropout)
+        self.scale = math.sqrt(self.head_dim)
+
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        transformersベースのMulti-Head Causal Self-Attention（QBNN拡張版）
-        
+        Multi-Head Causal Self-Attention（QBNN拡張版）
+
         Args:
             x: (batch, seq, embed_dim)
             mask: Optional attention mask
-        
+
         Returns:
             (batch, seq, embed_dim)
         """
-        if TRANSFORMERS_AVAILABLE and self.attention is not None:
-            # transformersのGPT2Attentionを使用
-            # GPT2Attentionの入力形式に合わせる
-            hidden_states = x
-            
-            # アテンション計算（transformersライブラリ）
-            attn_output = self.attention(hidden_states, layer_past=None, use_cache=False, output_attentions=False)[0]
-            
-            # QBNN拡張: 量子もつれ補正
-            batch_size, seq_len, _ = x.shape
-            Q = self.attention.c_attn(x).split(self.embed_dim, dim=-1)[0]  # Qプロジェクション
-            K = self.attention.c_attn(x).split(self.embed_dim, dim=-1)[1]  # Kプロジェクション
-            
-            Q = Q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-            K = K.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-            
-            Q_norm = torch.tanh(Q)
-            K_norm = torch.tanh(K)
-            # もつれ補正項
-            delta = torch.einsum('bhid,hde,bhje->bhij', Q_norm, self.J_attn, K_norm)
-            
-            # 補正を適用（簡易版：出力に加算）
-            attn_output = attn_output + self.lambda_attn * delta.view(batch_size, seq_len, self.embed_dim)
-            
-            return attn_output
+        batch_size, seq_len, _ = x.shape
+
+        Q = self.q_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        K = self.k_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        V = self.v_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+        attn_scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
+
+        # QBNN拡張: 量子もつれ補正
+        Q_norm = torch.tanh(Q)
+        K_norm = torch.tanh(K)
+        delta = torch.einsum('bhid,hde,bhje->bhij', Q_norm, self.J_attn, K_norm)
+        attn_scores = attn_scores + self.lambda_attn * delta
+
+        # Causal Mask
+        if mask is None:
+            causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
+            causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
+            attn_scores = attn_scores.masked_fill(causal_mask, float('-inf'))
         else:
-            # フォールバック：簡易実装
-            batch_size, seq_len, _ = x.shape
-            
-            Q = self.q_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-            K = self.k_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-            V = self.v_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-            
-            attn_scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
-            
-            # QBNN拡張
-            Q_norm = torch.tanh(Q)
-            K_norm = torch.tanh(K)
-            delta = torch.einsum('bhid,hde,bhje->bhij', Q_norm, self.J_attn, K_norm)
-            attn_scores = attn_scores + self.lambda_attn * delta
-            
-            # Causal Mask
-            if mask is None:
-                causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
-                causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
-                attn_scores = attn_scores.masked_fill(causal_mask, float('-inf'))
-            else:
-                if mask.dim() == 2:
-                    mask = mask.unsqueeze(0).unsqueeze(0)
-                attn_scores = attn_scores.masked_fill(mask == 0, float('-inf'))
-            
-            attn_probs = F.softmax(attn_scores, dim=-1)
-            attn_probs = self.dropout(attn_probs)
-            
-            output = torch.matmul(attn_probs, V)
-            output = output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.embed_dim)
-            
-            return self.out_proj(output)
+            if mask.dim() == 2:
+                mask = mask.unsqueeze(0).unsqueeze(0)
+            attn_scores = attn_scores.masked_fill(mask == 0, float('-inf'))
+
+        attn_probs = F.softmax(attn_scores, dim=-1)
+        attn_probs = self.dropout(attn_probs)
+
+        output = torch.matmul(attn_probs, V)
+        output = output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.embed_dim)
+
+        return self.out_proj(output)
 
 
 # ========================================
