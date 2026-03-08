@@ -50,14 +50,33 @@ class QBNNTransformer(nn.Module):
         self.head = nn.Linear(d, cfg["vocab_size"])
         self.cfg = cfg
 
-    def forward(self, x):
-        B, S = x.shape
-        h = self.embed(x) + self.pos_embed(torch.arange(S, device=x.device).unsqueeze(0))
+    def forward(self, input_ids=None, labels=None, x=None, **kwargs):
+        if input_ids is None:
+            input_ids = x
+        if input_ids is None and "inputs" in kwargs:
+            input_ids = kwargs["inputs"]
+            
+        B, S = input_ids.shape
+        h = self.embed(input_ids) + self.pos_embed(torch.arange(S, device=input_ids.device).unsqueeze(0))
         for layer in self.layers:
             a, _ = layer["attn"](h, h, h)
             h = layer["norm1"](h + a)
             h = layer["norm2"](h + layer["qbnn"](h))
-        return self.head(h)
+        logits = self.head(h)
+        
+        if labels is not None:
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            loss = F.cross_entropy(
+                shift_logits.view(-1, self.cfg["vocab_size"]), 
+                shift_labels.view(-1), 
+                ignore_index=-100
+            )
+            # Support Trainer API by returning an object with 'loss' and 'logits'
+            from transformers.modeling_outputs import CausalLMOutput
+            return CausalLMOutput(loss=loss, logits=logits)
+            
+        return logits
 
     def generate(self, tokens, max_new=30, temperature=0.8, top_k=0, top_p=1.0,
                  repetition_penalty=1.0):
@@ -216,14 +235,19 @@ class EndpointHandler:
 
     def __call__(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Handle an inference request.
+        Handle an inference or training request.
 
         Args:
             data: Request body with 'inputs' key and optional 'parameters'.
+                  Alternatively, for training: {"action": "train", "dataset_id": "...", ...}
 
         Returns:
-            List of dicts with 'generated_text' key.
+            List of dicts with 'generated_text' or training status.
         """
+        # Check if this is a training request
+        if data.get("action") == "train":
+            return self.train(data)
+
         inputs = data.get("inputs", data)
         if isinstance(inputs, list):
             inputs = inputs[0] if inputs else ""
@@ -260,3 +284,114 @@ class EndpointHandler:
         generated_text = self.tokenizer.decode(generated_ids)
 
         return [{"generated_text": generated_text}]
+
+    def train(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        from transformers import Trainer, TrainingArguments
+        from datasets import load_dataset
+        import os
+        import traceback
+        from huggingface_hub import HfApi
+
+        dataset_id = data.get("dataset_id")
+        if not dataset_id:
+            return [{"error": "dataset_id is required for training"}]
+            
+        text_column = data.get("text_column", "text")
+        split = data.get("split", "train")
+        max_samples = int(data.get("max_samples", 500))
+        epochs = float(data.get("epochs", 3.0))
+        lr = float(data.get("lr", 1e-3))
+        
+        try:
+            ds = load_dataset(dataset_id, split=split, trust_remote_code=False)
+        except Exception as e:
+            return [{"error": f"Failed to load dataset: {str(e)}", "traceback": traceback.format_exc()}]
+            
+        # Extract texts
+        texts = []
+        for row in ds.select(range(min(max_samples, len(ds)))):
+            col_data = row.get(text_column)
+            if isinstance(col_data, str) and len(col_data.strip()) > 4:
+                texts.append(col_data.strip())
+                
+        if not texts:
+            return [{"error": "No valid text found in dataset"}]
+            
+        # Prepare Dataset
+        class CustomDataset(torch.utils.data.Dataset):
+            def __init__(self, texts, tokenizer, max_seq_len):
+                self.data = []
+                for t in texts:
+                    ids = tokenizer.encode(t, max_len=max_seq_len)
+                    if len(ids) >= 2:
+                        self.data.append(ids)
+
+            def __len__(self):
+                return len(self.data)
+
+            def __getitem__(self, idx):
+                ids = self.data[idx]
+                return {"input_ids": ids, "labels": ids.copy()}
+
+        train_dataset = CustomDataset(texts, self.tokenizer, self.config["max_seq_len"] + 1)
+        
+        def collate_fn(batch):
+            max_len = max(len(x["input_ids"]) for x in batch)
+            input_ids = []
+            labels = []
+            for x in batch:
+                pad_len = max_len - len(x["input_ids"])
+                ids = x["input_ids"] + [0] * pad_len # 0 is PAD
+                lbl = x["labels"] + [-100] * pad_len
+                input_ids.append(ids)
+                labels.append(lbl)
+            return {
+                "input_ids": torch.tensor(input_ids, dtype=torch.long),
+                "labels": torch.tensor(labels, dtype=torch.long)
+            }
+
+        training_args = TrainingArguments(
+            output_dir="/tmp/qbnn_training",
+            num_train_epochs=epochs,
+            learning_rate=lr,
+            per_device_train_batch_size=8,
+            save_strategy="no",
+            logging_steps=10,
+            report_to="none"
+        )
+        
+        trainer = Trainer(
+            model=self.model,
+            args=training_args,
+            train_dataset=train_dataset,
+            data_collator=collate_fn
+        )
+        
+        try:
+            trainer.train()
+        except Exception as e:
+            return [{"error": f"Training failed: {e}", "traceback": traceback.format_exc()}]
+            
+        # Save model
+        ckpt_path = "qbnn_checkpoint.pt"
+        torch.save({
+            "model_state": self.model.state_dict(), 
+            "config": self.config
+        }, ckpt_path)
+        
+        # Upload if HF_TOKEN is available
+        token = os.environ.get("HF_TOKEN")
+        if token:
+            try:
+                repo_id = os.environ.get("REPOSITORY_ID", "tapiocaTakeshi/Qubit")
+                HfApi(token=token).upload_file(
+                    path_or_fileobj=ckpt_path,
+                    path_in_repo=ckpt_path,
+                    repo_id=repo_id,
+                    repo_type="model",
+                    commit_message="Update model checkpoint via API training"
+                )
+            except Exception as e:
+                return [{"status": "success", "message": f"Trained successfully, but upload failed: {e}"}]
+                
+        return [{"status": "success", "message": f"Trained on {len(texts)} samples for {epochs} epochs."}]
