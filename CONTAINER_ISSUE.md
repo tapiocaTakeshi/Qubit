@@ -1,63 +1,36 @@
-# Inference Endpoint Crash: huggingface-hub / transformers Version Conflict
+# Inference Endpoint Startup Failure (Container Dependency Conflict)
 
 ## Summary
 
-The Hugging Face Inference Endpoint **tapiocaTakeshi/qubit-he-ro** fails to
-start due to a package version conflict **inside** the pre-built container
-image `inference-pytorch-cpu:sha-2d4f7f1`.
+The endpoint fails during startup because the selected container image
+`inference-pytorch-cpu:sha-2d4f7f1` contains an internal dependency mismatch.
 
-## Problem
+- `huggingface-hub` in the image: `1.6.0`
+- bundled `transformers` in the same image expects: `huggingface-hub>=0.30.0,<1.0`
 
-The container image ships with **`huggingface-hub==1.6.0`**, but the bundled
-version of **`transformers`** enforces a strict upper bound of
-**`huggingface-hub<1.0`**. This causes an `ImportError` during Python startup
-(the `transformers` dependency check), crashing the process before any model
-code executes.
+Python detects this mismatch at import time and raises an `ImportError` before
+application startup completes.
 
-**Key facts:**
+## Observed Behavior
 
-- This affects **all replicas** — the crash is 100% reproducible.
-- Model files download successfully; the crash occurs seconds later at import
-  time.
-- This is a **container-level issue**, not a model or configuration problem.
-- No endpoint-side setting change can work around this since the conflict is
-  between two pre-installed packages.
+- All 4 startup attempts failed with the same error within seconds.
+- This is not transient/retry-resolvable.
+- Model download is successful every time (init container completes normally).
+- Crash occurs during app boot while importing `sentence_transformers` →
+  `transformers` dependency checks.
 
-## Affected Endpoint
+## Root Cause
 
-- **Endpoint:** `tapiocaTakeshi/qubit-he-ro`
-- **Container image:** `inference-pytorch-cpu:sha-2d4f7f1`
+The conflict is inside the prebuilt container image, not in model artifacts or
+endpoint configuration.
 
-## Error
+## Required Fix
 
-```
-ImportError: transformers requires huggingface-hub<1.0,
-             but huggingface-hub 1.6.0 is installed.
-```
+Redeploy using an updated image tag where `transformers` and
+`huggingface-hub` are mutually compatible.
 
-(Raised during `transformers` internal dependency validation at import time.)
+Recommended next steps:
 
-## Workaround Applied
-
-Pinned compatible versions in `requirements.txt` so that pip re-installs over
-the container's broken packages:
-
-```
-huggingface_hub>=1.0.0,<2.0.0
-transformers>=4.53.0
-```
-
-`transformers>=4.53.0` is compatible with `huggingface_hub>=1.0`.
-
-## Action Requested (Hugging Face Support)
-
-Please update the `inference-pytorch-cpu` container image to ship compatible
-versions of `transformers` and `huggingface-hub`. The current combination
-(`huggingface-hub==1.6.0` + a `transformers` version requiring `<1.0`) is
-fundamentally broken.
-
-Reference endpoint: **tapiocaTakeshi/qubit-he-ro**
-
-To contact HF support, open a ticket at:
-https://huggingface.co/support or email support@huggingface.co referencing
-this endpoint and container image hash.
+1. Contact Hugging Face support with the image hash and endpoint logs.
+2. Check Inference Endpoint docs for a newer `pytorch-cpu` runtime image tag.
+3. Redeploy with the updated image.
