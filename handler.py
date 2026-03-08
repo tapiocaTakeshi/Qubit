@@ -333,7 +333,7 @@ class EndpointHandler:
                 ids = self.data[idx]
                 return {"input_ids": ids, "labels": ids.copy()}
 
-        train_dataset = CustomDataset(texts, self.tokenizer, self.config["max_seq_len"] + 1)
+        train_dataset = CustomDataset(texts, self.tokenizer, self.config["max_seq_len"])
         
         def collate_fn(batch):
             max_len = max(len(x["input_ids"]) for x in batch)
