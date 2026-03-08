@@ -69,21 +69,35 @@ class QBNNTransformer(nn.Module):
         self.head = nn.Linear(d, cfg["vocab_size"])
         self.cfg  = cfg
 
-    def forward(self, x):
+    def forward(self, input_ids=None, labels=None, x=None):
+        if input_ids is not None:
+            x = input_ids
         B, S = x.shape
         h = self.embed(x) + self.pos_embed(torch.arange(S, device=x.device).unsqueeze(0))
         for layer in self.layers:
             a, _ = layer["attn"](h, h, h)
             h = layer["norm1"](h + a)
             h = layer["norm2"](h + layer["qbnn"](h))
-        return self.head(h)
+        logits = self.head(h)
+
+        if labels is not None:
+            loss = F.cross_entropy(logits.reshape(-1, self.cfg["vocab_size"]), labels.reshape(-1), ignore_index=-100)
+            return {"loss": loss, "logits": logits}
+        return logits
 
     def generate(self, tokens, max_new=30, temperature=0.8):
         self.eval()
         with torch.no_grad():
             for _ in range(max_new):
                 seq    = tokens[:, -self.cfg["max_seq_len"]:]
-                logits = self(seq)[:, -1, :] / max(temperature, 1e-5)
+                
+                outputs = self(x=seq)
+                if isinstance(outputs, dict):
+                    outputs = outputs["logits"]
+                elif isinstance(outputs, tuple):
+                    outputs = outputs[1]
+                
+                logits = outputs[:, -1, :] / max(temperature, 1e-5)
                 nxt    = torch.multinomial(F.softmax(logits, dim=-1), 1)
                 tokens = torch.cat([tokens, nxt], dim=1)
                 if nxt.item() == 1:
@@ -369,56 +383,122 @@ def train_on_dataset(dataset_id, text_column, split, max_samples,
             return
 
         model = QBNNTransformer(MODEL_CONFIG)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=float(lr))
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, int(epochs))
+        
+        dataset_list = []
+        for ids in data:
+            L = min(len(ids) - 1, MODEL_CONFIG["max_seq_len"])
+            dataset_list.append({"input_ids": ids[:L], "labels": ids[1:L+1]})
+
+        if not dataset_list:
+            yield "❌ 学習可能なデータがありません", ""
+            return
+
+        import datasets
+        from transformers import Trainer, TrainingArguments, TrainerCallback
+        import threading
+        import queue
+        from torch.nn.utils.rnn import pad_sequence
+
+        hf_dataset = datasets.Dataset.from_list(dataset_list)
+
+        def qbnn_data_collator(features):
+            input_ids = [torch.tensor(f["input_ids"], dtype=torch.long) for f in features]
+            labels = [torch.tensor(f["labels"], dtype=torch.long) for f in features]
+            input_ids = pad_sequence(input_ids, batch_first=True, padding_value=0)
+            labels = pad_sequence(labels, batch_first=True, padding_value=-100)
+            return {"input_ids": input_ids, "labels": labels}
+
+        # Automatically adjust batch size if data is too small
+        batch_size = 8 if len(dataset_list) >= 8 else len(dataset_list)
+
+        training_args = TrainingArguments(
+            output_dir="./qbnn_results",
+            learning_rate=float(lr),
+            num_train_epochs=int(epochs),
+            per_device_train_batch_size=batch_size,
+            max_grad_norm=1.0,
+            logging_steps=max(1, len(dataset_list) // batch_size // 5),
+            save_strategy="no",
+            report_to="none",
+            remove_unused_columns=False,
+            eval_strategy="no",
+            use_cpu=True, # Force CPU to avoid environment mismatches
+        )
+
+        q = queue.Queue()
+        total_steps = max(1, len(dataset_list) // batch_size * int(epochs))
+
+        class GradioCallback(TrainerCallback):
+            def on_log(self, args, state, control, logs=None, **kwargs):
+                if stop_flag:
+                    control.should_training_stop = True
+                if logs and "loss" in logs:
+                    q.put({"type": "log", "msg": f"▶ [Trainer API] Step {state.global_step}/{max(total_steps, 1)}  Loss: {logs['loss']:.4f}", "progress": state.global_step/max(total_steps, 1)})
+            def on_epoch_end(self, args, state, control, **kwargs):
+                if stop_flag:
+                    control.should_training_stop = True
+                done = int(20 * state.epoch / int(epochs))
+                bar  = "█" * done + "░" * (20 - done)
+                q.put({"type": "epoch", "msg": f"Epoch {int(state.epoch):>3}/{int(epochs)}  [{bar}]", "progress": state.epoch/int(epochs)})
+            def on_train_end(self, args, state, control, **kwargs):
+                q.put({"type": "done", "msg": "DONE"})
+
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=hf_dataset,
+            data_collator=qbnn_data_collator,
+            callbacks=[GradioCallback()],
+        )
 
         log = load_log + [
             "",
             "=" * 44,
             f"📊 学習データ件数     : {len(data)} 件 （{len(dataset_ids)} データセット）",
             f"🔁 エポック数         : {epochs}  |  学習率 : {lr}",
+            "🤖 Hugging Face Trainer API による最適化学習",
             "=" * 44,
         ]
-
-        for epoch in range(int(epochs)):
-            if stop_flag:
-                log.append("⏹ 停止しました")
-                break
-
-            model.train()
-            total, count = 0.0, 0
-            for ids in data:
-                L = min(len(ids) - 1, MODEL_CONFIG["max_seq_len"])
-                x = torch.tensor([ids[:L]], dtype=torch.long)
-                y = torch.tensor([ids[1:L+1]], dtype=torch.long)
-                loss = F.cross_entropy(model(x).reshape(-1, tokenizer.vocab_size), y.reshape(-1))
-                optimizer.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                total += loss.item()
-                count += 1
+        yield "\n".join(log), ""
+        
+        def run_train():
+            try:
+                trainer.train()
+            except Exception as e:
+                import traceback
+                q.put({"type": "error", "msg": str(e) + "\n" + traceback.format_exc()})
                 
-                # 10ステップごとに一時的な経過をUIに表示
-                if count % 10 == 0 or count == len(data):
-                    step_loss = total / count
-                    temp_line = f"▶ Epoch {epoch+1}/{int(epochs)}  [Step {count}/{len(data)}]  Loss: {step_loss:.4f} ..."
-                    progress((epoch + (count/len(data))) / int(epochs), desc=f"Epoch {epoch+1} - Step {count}/{len(data)}")
-                    yield "\n".join(log + [temp_line]), ""
+        t = threading.Thread(target=run_train)
+        t.start()
 
-            scheduler.step()
+        avg_loss = 0.0
+        while True:
+            msg_obj = q.get()
+            if msg_obj["type"] == "done":
+                break
+            elif msg_obj["type"] == "error":
+                raise RuntimeError(msg_obj["msg"])
+            elif msg_obj["type"] == "log":
+                temp_line = msg_obj["msg"]
+                progress(msg_obj["progress"], desc=temp_line)
+                yield "\n".join(log + [temp_line]), ""
+                try: 
+                    avg_loss = float(temp_line.split("Loss: ")[1])
+                except Exception:
+                    pass
+            elif msg_obj["type"] == "epoch":
+                log.append(msg_obj["msg"])
+                progress(msg_obj["progress"], desc=msg_obj["msg"])
+                yield "\n".join(log), ""
 
-            avg  = total / max(count, 1)
-            done = int(20 * (epoch + 1) / int(epochs))
-            bar  = "█" * done + "░" * (20 - done)
-            line = f"Epoch {epoch+1:>3}/{int(epochs)}  [{bar}]  Loss: {avg:.4f}"
-            log.append(line)
-            progress((epoch + 1) / int(epochs), desc=line)
-            yield "\n".join(log), ""
+        t.join()
+        
+        if stop_flag:
+            log.append("⏹ 停止しました")
 
         is_trained = True
         model.eval()
-        final_loss = avg if 'avg' in dir() else 0.0
+        final_loss = avg_loss
         # 学習履歴に全データセットIDを記録
         combined_id = ", ".join(dataset_ids)
         add_history_entry(combined_id, epochs, len(data), final_loss)
