@@ -38,13 +38,4 @@ jobs:
               repo_type="model",
               commit_message="Sync repository files to model repo via GitHub Actions"
           )
-
-          print("Uploading to Space Repository...")
-          create_repo("tapiocaTakeshi/Qubit", repo_type="space", exist_ok=True)
-          upload_folder(
-              folder_path=".",
-              repo_id="tapiocaTakeshi/Qubit",
-              repo_type="space",
-              commit_message="Sync repository files to space repo via GitHub Actions"
-          )
           '
