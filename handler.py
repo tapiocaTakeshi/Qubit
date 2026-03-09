@@ -266,7 +266,8 @@ class EndpointHandler:
         if not ids:
             return [{"generated_text": ""}]
 
-        input_tensor = torch.tensor([ids], dtype=torch.long)
+        device = next(self.model.parameters()).device
+        input_tensor = torch.tensor([ids], dtype=torch.long, device=device)
 
         # Generate
         with torch.no_grad():
@@ -286,37 +287,50 @@ class EndpointHandler:
         return [{"generated_text": generated_text}]
 
     def train(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        from transformers import Trainer, TrainingArguments
+        from transformers import Trainer, TrainingArguments, TrainerCallback
         from datasets import load_dataset
         import os
+        import json
         import traceback
+        from datetime import datetime, timezone
         from huggingface_hub import HfApi
 
         dataset_id = data.get("dataset_id")
         if not dataset_id:
             return [{"error": "dataset_id is required for training"}]
-            
+
         text_column = data.get("text_column", "text")
         split = data.get("split", "train")
         max_samples = int(data.get("max_samples", 500))
         epochs = float(data.get("epochs", 3.0))
         lr = float(data.get("lr", 1e-3))
-        
+
         try:
             ds = load_dataset(dataset_id, split=split, trust_remote_code=False)
         except Exception as e:
             return [{"error": f"Failed to load dataset: {str(e)}", "traceback": traceback.format_exc()}]
-            
+
         # Extract texts
         texts = []
         for row in ds.select(range(min(max_samples, len(ds)))):
             col_data = row.get(text_column)
             if isinstance(col_data, str) and len(col_data.strip()) > 4:
                 texts.append(col_data.strip())
-                
+            elif isinstance(col_data, list):
+                # Support conversation-format datasets (e.g. [{"from": "human", "value": "..."}])
+                parts = []
+                for turn in col_data:
+                    if isinstance(turn, dict) and "value" in turn:
+                        parts.append(turn["value"])
+                    elif isinstance(turn, str):
+                        parts.append(turn)
+                combined = "\n".join(parts)
+                if len(combined.strip()) > 4:
+                    texts.append(combined.strip())
+
         if not texts:
             return [{"error": "No valid text found in dataset"}]
-            
+
         # Prepare Dataset
         class CustomDataset(torch.utils.data.Dataset):
             def __init__(self, texts, tokenizer, max_seq_len):
@@ -334,14 +348,14 @@ class EndpointHandler:
                 return {"input_ids": ids, "labels": ids.copy()}
 
         train_dataset = CustomDataset(texts, self.tokenizer, self.config["max_seq_len"])
-        
+
         def collate_fn(batch):
             max_len = max(len(x["input_ids"]) for x in batch)
             input_ids = []
             labels = []
             for x in batch:
                 pad_len = max_len - len(x["input_ids"])
-                ids = x["input_ids"] + [0] * pad_len # 0 is PAD
+                ids = x["input_ids"] + [0] * pad_len  # 0 is PAD
                 lbl = x["labels"] + [-100] * pad_len
                 input_ids.append(ids)
                 labels.append(lbl)
@@ -349,6 +363,21 @@ class EndpointHandler:
                 "input_ids": torch.tensor(input_ids, dtype=torch.long),
                 "labels": torch.tensor(labels, dtype=torch.long)
             }
+
+        # Callback to capture training loss
+        class LossCallback(TrainerCallback):
+            def __init__(self):
+                self.logs = []
+
+            def on_log(self, args, state, control, logs=None, **kwargs):
+                if logs and "loss" in logs:
+                    self.logs.append({
+                        "step": state.global_step,
+                        "loss": round(logs["loss"], 6),
+                        "epoch": round(logs.get("epoch", 0), 2)
+                    })
+
+        loss_callback = LossCallback()
 
         training_args = TrainingArguments(
             output_dir="/tmp/qbnn_training",
@@ -359,39 +388,88 @@ class EndpointHandler:
             logging_steps=10,
             report_to="none"
         )
-        
+
         trainer = Trainer(
             model=self.model,
             args=training_args,
             train_dataset=train_dataset,
-            data_collator=collate_fn
+            data_collator=collate_fn,
+            callbacks=[loss_callback]
         )
-        
+
         try:
-            trainer.train()
+            train_result = trainer.train()
         except Exception as e:
             return [{"error": f"Training failed: {e}", "traceback": traceback.format_exc()}]
-            
-        # Save model
-        ckpt_path = "qbnn_checkpoint.pt"
+        finally:
+            self.model.eval()
+
+        final_loss = round(train_result.training_loss, 6) if train_result.training_loss else None
+
+        # Build training history entry
+        history_entry = {
+            "dataset_id": dataset_id,
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+            "epochs": int(epochs) if epochs == int(epochs) else epochs,
+            "samples": len(train_dataset),
+            "final_loss": final_loss,
+            "learning_rate": lr,
+            "text_column": text_column
+        }
+
+        # Update training_history.json
+        history_path = os.path.join(os.path.dirname(__file__), "training_history.json")
+        try:
+            if os.path.exists(history_path):
+                with open(history_path, "r") as f:
+                    history = json.load(f)
+            else:
+                history = []
+            history.append(history_entry)
+            with open(history_path, "w") as f:
+                json.dump(history, f, indent=2, ensure_ascii=False)
+        except Exception:
+            history = [history_entry]
+
+        # Save model checkpoint
+        ckpt_path = os.path.join(os.path.dirname(__file__), "qbnn_checkpoint.pt")
         torch.save({
-            "model_state": self.model.state_dict(), 
+            "model_state": self.model.state_dict(),
             "config": self.config
         }, ckpt_path)
-        
-        # Upload if HF_TOKEN is available
+
+        # Upload checkpoint and training history if HF_TOKEN is available
         token = os.environ.get("HF_TOKEN")
+        upload_status = "skipped (no HF_TOKEN)"
         if token:
             try:
                 repo_id = os.environ.get("REPOSITORY_ID", "tapiocaTakeshi/Qubit")
-                HfApi(token=token).upload_file(
+                api = HfApi(token=token)
+                api.upload_file(
                     path_or_fileobj=ckpt_path,
-                    path_in_repo=ckpt_path,
+                    path_in_repo="qbnn_checkpoint.pt",
                     repo_id=repo_id,
                     repo_type="model",
-                    commit_message="Update model checkpoint via API training"
+                    commit_message=f"Update checkpoint after training on {dataset_id}"
                 )
+                api.upload_file(
+                    path_or_fileobj=history_path,
+                    path_in_repo="training_history.json",
+                    repo_id=repo_id,
+                    repo_type="model",
+                    commit_message=f"Update training history after {dataset_id}"
+                )
+                upload_status = "uploaded"
             except Exception as e:
-                return [{"status": "success", "message": f"Trained successfully, but upload failed: {e}"}]
-                
-        return [{"status": "success", "message": f"Trained on {len(texts)} samples for {epochs} epochs."}]
+                upload_status = f"upload failed: {e}"
+
+        return [{
+            "status": "success",
+            "dataset_id": dataset_id,
+            "samples_trained": len(train_dataset),
+            "epochs": epochs,
+            "final_loss": final_loss,
+            "loss_log": loss_callback.logs,
+            "upload": upload_status,
+            "message": f"Trained on {len(train_dataset)} samples for {epochs} epochs. Final loss: {final_loss}"
+        }]
