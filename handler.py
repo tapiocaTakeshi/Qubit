@@ -6,7 +6,7 @@ Implements the EndpointHandler class for deploying the QBNN model
 as a HuggingFace Inference Endpoint with custom pre/post-processing.
 
 改善点:
-- SentencePieceトークナイザー（語彙16K）による意味単位の学習
+- SentencePieceトークナイザー（語彙32K）による意味単位の学習
 - max_seq_len=512 による文脈保持
 - embed_dim=256, num_layers=6 による表現力の向上
 - neuroquantum_layered.py のNeuroQuantumアーキテクチャを使用
