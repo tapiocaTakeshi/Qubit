@@ -113,11 +113,11 @@ class NeuroQuantumConfig:
     """ニューロQ設定"""
     def __init__(
         self,
-        vocab_size: int = 8000,
+        vocab_size: int = 32000,
         embed_dim: int = 256,
         hidden_dim: int = 512,
         num_heads: int = 8,
-        num_layers: int = 5,
+        num_layers: int = 6,
         max_seq_len: int = 512,
         dropout: float = 0.1,
         lambda_entangle: float = 0.5,  # QBNNもつれ強度
@@ -1276,7 +1276,7 @@ class NeuroQuantumTokenizer:
     - フォールバック: 文字単位トークナイザー（SentencePiece未インストール時）
     """
 
-    def __init__(self, vocab_size: int = 16000, model_file: str = None):
+    def __init__(self, vocab_size: int = 32000, model_file: str = None):
         """
         Args:
             vocab_size: 語彙サイズ（デフォルト: 16000）
@@ -1636,11 +1636,11 @@ class NeuroQuantumAI:
 
     def __init__(
         self,
-        embed_dim: int = 48,
-        hidden_dim: int = 96,       # ニューロン数（FFN層の次元）
-        num_heads: int = 4,
-        num_layers: int = 5,
-        max_seq_len: int = 128,
+        embed_dim: int = 256,
+        hidden_dim: int = 512,       # ニューロン数（FFN層の次元）
+        num_heads: int = 8,
+        num_layers: int = 6,
+        max_seq_len: int = 512,
         dropout: float = 0.1,
         lambda_entangle: float = 0.5,
         use_openai_embedding: bool = False,  # OpenAI Embeddingを使用するか
@@ -1686,8 +1686,8 @@ class NeuroQuantumAI:
             self.quantum_computer = QuantumComputer("NeuroQuantum-QC")
             print("⚛️  量子回路シミュレーターを初期化しました")
     
-    def train(self, texts: List[str], epochs: int = 50, batch_size: int = 16, 
-              lr: float = 0.001, seq_len: int = 64, vocab_size: int = 16000):
+    def train(self, texts: List[str], epochs: int = 50, batch_size: int = 16,
+              lr: float = 0.001, seq_len: int = 128, vocab_size: int = 32000):
         """学習"""
         print("\n" + "=" * 70)
         print("📚 ニューロQ 学習開始")

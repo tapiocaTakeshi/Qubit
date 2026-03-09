@@ -25,26 +25,17 @@ jobs:
         run: |
           python -c '
           import os
-          from huggingface_hub import login, upload_folder
+          from huggingface_hub import login, create_repo, upload_folder
 
           # Login with your Hugging Face credentials
           login(token=os.environ.get("HF_TOKEN"))
 
           print("Uploading to Model Repository...")
-          # Push your model files
+          create_repo("tapiocaTakeshi/Qubit", repo_type="model", exist_ok=True)
           upload_folder(
               folder_path=".",
               repo_id="tapiocaTakeshi/Qubit",
               repo_type="model",
               commit_message="Sync repository files to model repo via GitHub Actions"
-          )
-
-          print("Uploading to Space Repository...")
-          # Push to Space to update the UI App
-          upload_folder(
-              folder_path=".",
-              repo_id="tapiocaTakeshi/Qubit",
-              repo_type="space",
-              commit_message="Sync repository files to space repo via GitHub Actions"
           )
           '

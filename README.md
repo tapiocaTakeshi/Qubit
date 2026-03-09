@@ -1,20 +1,21 @@
 ---
-title: NeuroQ
-emoji: 🧠⚛️
-colorFrom: indigo
-colorTo: purple
-sdk: gradio
-sdk_version: 5.23.1
-app_file: app.py
-pinned: true
 license: mit
+language:
+  - ja
+library_name: pytorch
+pipeline_tag: text-generation
 tags:
   - japanese
   - qbnn
   - quantum
   - transformer
   - chat
-short_description: "脳型量子ビットネットワーク(QBNN)による日本語生成AI"
+  - text-generation
+  - pytorch
+model_name: NeuroQ
+model-index:
+  - name: NeuroQ-QBNN
+    results: []
 ---
 
 # 調整可能擬似量子ビット（APQB）に基づく量子インスパイアニューラルネットワーク：統計、AI、量子論の統一モデル
