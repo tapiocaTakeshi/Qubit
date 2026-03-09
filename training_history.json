@@ -1,1 +1,33 @@
-[]
+{
+  "architecture": "neuroquantum",
+  "config": {
+    "vocab_size": 32000,
+    "embed_dim": 256,
+    "hidden_dim": 512,
+    "num_heads": 8,
+    "num_layers": 6,
+    "max_seq_len": 512,
+    "dropout": 0.1,
+    "entangle_strength": 0.5
+  },
+  "datasets": [
+    "izumi-lab/llm-japanese-dataset",
+    "kunishou/oasst1-chat-44k-ja",
+    "fujiki/japanese_alpaca_data",
+    "shi3z/Japanese_wikipedia_conversation_100K",
+    "FreedomIntelligence/alpaca-gpt4-japanese",
+    "range3/cc100-ja"
+  ],
+  "total_texts": 12677,
+  "total_sequences": 12800,
+  "parameters": 26837534,
+  "training_log": [
+    {"epoch": 1, "loss": 6.894},
+    {"epoch": 2, "loss": 5.972},
+    {"epoch": 3, "loss": 5.403},
+    {"epoch": 4, "loss": 5.922},
+    {"epoch": 5, "loss": 5.226},
+    {"epoch": 6, "loss": 4.796}
+  ],
+  "trained_at": "2026-03-09T08:32:28.100093+00:00"
+}
