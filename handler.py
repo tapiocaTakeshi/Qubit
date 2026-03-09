@@ -553,8 +553,13 @@ class EndpointHandler:
         if not texts:
             return [{"error": "No valid text found in dataset"}]
 
-        # Build or rebuild tokenizer from training data if needed
-        if self.architecture == "neuroquantum" and NEUROQUANTUM_AVAILABLE:
+        # Always use neuroquantum architecture for training if available
+        # This handles upgrade from legacy to neuroquantum
+        if NEUROQUANTUM_AVAILABLE:
+            if self.architecture != "neuroquantum":
+                # Upgrade from legacy to neuroquantum
+                self.config = dict(DEFAULT_CONFIG)
+                self.architecture = "neuroquantum"
             return self._train_neuroquantum(data, texts, dataset_id, text_column,
                                             epochs, lr, max_samples)
         else:
