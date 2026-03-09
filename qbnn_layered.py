@@ -662,7 +662,7 @@ class TextDataset(Dataset):
 class EQBNNGenerativeAI:
     """Entangled QBNN 生成AI"""
     
-    def __init__(self, embed_dim=128, hidden_dims=[256, 256], 
+    def __init__(self, embed_dim=256, hidden_dims=[512, 512],
                  entangle_strength=0.5, max_vocab_size=3000,
                  num_neurons: int = None):  # ニューロン数指定可能
         self.embed_dim = embed_dim
@@ -901,13 +901,13 @@ def visualize_entanglement(ai, save_path=None):
 # 10. メイン実行
 # ========================================================================
 
-def main(lang='en', num_neurons: int = 128):
+def main(lang='en', num_neurons: int = 256):
     """
     メイン関数
-    
+
     Args:
         lang: 言語 ('en' or 'ja')
-        num_neurons: ニューロン数 (デフォルト: 128)
+        num_neurons: ニューロン数 (デフォルト: 256)
     """
     print("\n🔧 E-QBNN 生成AI を構築中...")
     print(f"   ニューロン数: {num_neurons}")
@@ -917,7 +917,7 @@ def main(lang='en', num_neurons: int = 128):
     
     # 2. AI構築（ニューロン数を指定）
     ai = EQBNNGenerativeAI(
-        embed_dim=64,
+        embed_dim=128,
         num_neurons=num_neurons,  # ニューロン数を指定
         entangle_strength=0.5,
         max_vocab_size=2000
@@ -1016,8 +1016,8 @@ def chat_mode(lang='en'):
     
     # AI構築
     ai = EQBNNGenerativeAI(
-        embed_dim=64,
-        hidden_dims=[128, 128, 64],
+        embed_dim=128,
+        hidden_dims=[256, 256, 128],
         entangle_strength=0.5,
         max_vocab_size=2000
     )
@@ -1148,7 +1148,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='E-QBNN 生成AI')
-    parser.add_argument('--neurons', type=int, default=128, help='ニューロン数 (デフォルト: 128)')
+    parser.add_argument('--neurons', type=int, default=256, help='ニューロン数 (デフォルト: 256)')
     parser.add_argument('--ja', action='store_true', help='日本語モード')
     parser.add_argument('--chat', action='store_true', help='チャットモード')
     args = parser.parse_args()
