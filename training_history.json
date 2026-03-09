@@ -1,37 +1,38 @@
-[
-  {
-    "dataset_id": "izumi-lab/llm-japanese-dataset",
-    "timestamp": "2026-03-09 05:47",
-    "epochs": 3,
-    "samples": 1540,
-    "final_loss": 0.917664
+{
+  "architecture": "neuroquantum",
+  "config": {
+    "vocab_size": 32000,
+    "embed_dim": 256,
+    "hidden_dim": 512,
+    "num_heads": 8,
+    "num_layers": 6,
+    "max_seq_len": 512,
+    "dropout": 0.1,
+    "entangle_strength": 0.5
   },
-  {
-    "dataset_id": "kunishou/oasst1-chat-44k-ja",
-    "timestamp": "2026-03-09 05:47",
-    "epochs": 3,
-    "samples": 3000,
-    "final_loss": 0.01444
-  },
-  {
-    "dataset_id": "fujiki/japanese_alpaca_data",
-    "timestamp": "2026-03-09 05:47",
-    "epochs": 3,
-    "samples": 3000,
-    "final_loss": 0.003094
-  },
-  {
-    "dataset_id": "shi3z/Japanese_wikipedia_conversation_100K",
-    "timestamp": "2026-03-09 05:47",
-    "epochs": 3,
-    "samples": 2999,
-    "final_loss": 0.00162
-  },
-  {
-    "dataset_id": "FreedomIntelligence/alpaca-gpt4-japanese",
-    "timestamp": "2026-03-09 05:47",
-    "epochs": 3,
-    "samples": 3000,
-    "final_loss": 0.000778
-  }
-]
+  "datasets": [
+    "izumi-lab/llm-japanese-dataset",
+    "kunishou/oasst1-chat-44k-ja",
+    "fujiki/japanese_alpaca_data",
+    "shi3z/Japanese_wikipedia_conversation_100K",
+    "FreedomIntelligence/alpaca-gpt4-japanese"
+  ],
+  "total_texts": 12677,
+  "total_sequences": 12800,
+  "parameters": 26837534,
+  "training_log": [
+    {
+      "epoch": 1,
+      "loss": 6.894413184225559
+    },
+    {
+      "epoch": 2,
+      "loss": 5.9722497798502445
+    },
+    {
+      "epoch": 3,
+      "loss": 5.4032139876484875
+    }
+  ],
+  "trained_at": "2026-03-09T08:20:27.793871+00:00"
+}
