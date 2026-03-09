@@ -397,15 +397,19 @@ class EndpointHandler:
         Returns:
             List of dicts with 'generated_text' or training status.
         """
+        # Support training via both top-level and parameters.action
         if data.get("action") == "train":
             return self.train(data)
+        params = data.get("parameters", {})
+        if params.get("action") == "train":
+            # Merge parameters into top-level for train()
+            train_data = dict(params)
+            return self.train(train_data)
 
         inputs = data.get("inputs", data)
         if isinstance(inputs, list):
             inputs = inputs[0] if inputs else ""
         inputs = str(inputs)
-
-        params = data.get("parameters", {})
         temperature = float(params.get("temperature", 0.8))
         max_new_tokens = int(params.get("max_new_tokens", 100))
         top_k = int(params.get("top_k", 40))
