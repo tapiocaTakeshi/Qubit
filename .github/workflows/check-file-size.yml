@@ -11,43 +11,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Check for large non-LFS files
+      - name: Check for oversized files
         run: |
           # 10MB limit for HF Spaces compatibility
           LIMIT=10485760
 
-          # Get list of extensions tracked by LFS from .gitattributes
-          LFS_PATTERNS=$(grep 'filter=lfs' .gitattributes | awk '{print $1}' || true)
+          # Model file extensions that are allowed to exceed the limit
+          ALLOWED_EXTENSIONS=".gguf"
 
           found_large=false
           while IFS= read -r -d '' file; do
             size=$(stat --format='%s' "$file")
             if [ "$size" -gt "$LIMIT" ]; then
-              # Check if file matches any LFS pattern
-              is_lfs=false
-              for pattern in $LFS_PATTERNS; do
-                case "$file" in
-                  $pattern|./$pattern) is_lfs=true; break ;;
-                esac
-                # Handle glob patterns like *.gguf
-                ext_pattern="${pattern#\*}"
-                if [ "$ext_pattern" != "$pattern" ] && [[ "$file" == *"$ext_pattern" ]]; then
-                  is_lfs=true
+              is_allowed=false
+              for ext in $ALLOWED_EXTENSIONS; do
+                if [[ "$file" == *"$ext" ]]; then
+                  is_allowed=true
                   break
                 fi
               done
 
-              if [ "$is_lfs" = false ]; then
-                echo "::error::File '$file' ($(numfmt --to=iec $size)) exceeds the ${LIMIT} byte limit and is not tracked by LFS"
+              if [ "$is_allowed" = false ]; then
+                echo "::error::File '$file' ($(numfmt --to=iec $size)) exceeds the ${LIMIT} byte limit"
                 found_large=true
               else
-                echo "::notice::File '$file' ($(numfmt --to=iec $size)) is large but tracked by LFS - OK"
+                echo "::notice::File '$file' ($(numfmt --to=iec $size)) is a model file - OK"
               fi
             fi
           done < <(find . -not -path './.git/*' -type f -print0)
 
           if [ "$found_large" = true ]; then
-            echo "::error::Large files detected that are not tracked by Git LFS. Add them to .gitattributes or reduce their size."
+            echo "::error::Large files detected. Reduce their size or add the extension to the allowed list."
             exit 1
           fi
-          echo "All files within size limits or properly tracked by LFS."
+          echo "All files within size limits."
