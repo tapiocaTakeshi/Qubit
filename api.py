@@ -58,6 +58,7 @@ class TrainRequest(BaseModel):
     grad_accum_steps: int = 8
     warmup_steps: int = 100
     max_samples_per_dataset: int = 5000
+    include_knowledge: bool = False  # Include Wikipedia/knowledge datasets
 
 
 class TrainResponse(BaseModel):
@@ -218,13 +219,20 @@ def get_lr(step, total_steps, warmup_steps, max_lr):
     return max_lr * 0.5 * (1 + math.cos(math.pi * progress))
 
 
-# Default datasets
+# Default datasets (conversation/instruction)
 DEFAULT_DATASETS = [
     {"id": "izumi-lab/llm-japanese-dataset", "col": "output"},
     {"id": "kunishou/oasst1-chat-44k-ja", "col": "conversations"},
     {"id": "fujiki/japanese_alpaca_data", "col": "output"},
     {"id": "shi3z/Japanese_wikipedia_conversation_100K", "col": "conversations"},
     {"id": "FreedomIntelligence/alpaca-gpt4-japanese", "col": "conversations"},
+]
+
+# Knowledge datasets to fill factual/grammatical gaps
+KNOWLEDGE_DATASETS = [
+    {"id": "singletongue/wikipedia-utils", "col": "text",
+     "config": "passages-c400-jawiki-20240401", "streaming": True},
+    {"id": "range3/wikipedia-ja-20230101", "col": "text", "streaming": True},
 ]
 
 
@@ -268,6 +276,30 @@ def run_training(req: TrainRequest):
         except Exception as e:
             training_status["log"].append(f"Error loading cc100-ja: {e}")
 
+        # Load knowledge datasets (Wikipedia etc.) if requested
+        if req.include_knowledge:
+            for ds_info in KNOWLEDGE_DATASETS:
+                try:
+                    ds_name = ds_info["id"]
+                    training_status["message"] = f"Loading knowledge: {ds_name}..."
+                    kwargs = {"split": "train", "streaming": ds_info.get("streaming", False)}
+                    if "config" in ds_info:
+                        kwargs["name"] = ds_info["config"]
+                    ds_k = load_dataset(ds_info["id"], **kwargs)
+                    k_texts = []
+                    for j, row in enumerate(ds_k):
+                        if j >= req.max_samples_per_dataset:
+                            break
+                        text = row.get(ds_info["col"], "").strip()
+                        if len(text) > 20:
+                            k_texts.append(text)
+                    all_texts.extend(k_texts)
+                    training_status["log"].append(
+                        f"Loaded knowledge {ds_name}: {len(k_texts)} texts")
+                except Exception as e:
+                    training_status["log"].append(
+                        f"Error loading knowledge {ds_name}: {e}")
+
         training_status["message"] = "Tokenizing..."
         max_seq_len = config["max_seq_len"]
         sequences = tokenize_texts(all_texts, tokenizer, max_seq_len)
@@ -288,6 +320,7 @@ def run_training(req: TrainRequest):
             optimizer.zero_grad()
 
             training_status["message"] = f"Training epoch {epoch+1}/{req.epochs}..."
+            log_interval = max(steps_per_epoch // 10, 1)  # Log ~10 times per epoch
 
             for i in range(0, len(sequences), req.batch_size):
                 batch_seqs = sequences[i:i + req.batch_size]
@@ -328,6 +361,15 @@ def run_training(req: TrainRequest):
                     optimizer.step()
                     optimizer.zero_grad()
                     global_step += 1
+
+                # Progress logging
+                if n_batches % log_interval == 0:
+                    avg = total_loss / n_batches
+                    pct = int(100 * n_batches / steps_per_epoch)
+                    training_status["message"] = (
+                        f"Epoch {epoch+1}/{req.epochs} | {pct}% | "
+                        f"Loss: {avg:.4f} | Step: {global_step}"
+                    )
 
             if n_batches % req.grad_accum_steps != 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
