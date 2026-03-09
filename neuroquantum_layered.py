@@ -114,8 +114,8 @@ class NeuroQuantumConfig:
     def __init__(
         self,
         vocab_size: int = 32000,
-        embed_dim: int = 512,
-        hidden_dim: int = 1024,
+        embed_dim: int = 256,
+        hidden_dim: int = 512,
         num_heads: int = 8,
         num_layers: int = 6,
         max_seq_len: int = 512,
