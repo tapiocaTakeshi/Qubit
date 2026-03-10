@@ -428,15 +428,18 @@ class EndpointHandler:
     def _generate_neuroquantum(self, text, temperature, max_new_tokens,
                                 top_k, top_p, repetition_penalty):
         """Generate text using the NeuroQuantum architecture."""
+        import time as _time
         tokens = self.tokenizer.encode(text, add_special=True)
         if not tokens:
-            return [{"generated_text": ""}]
+            return [{"generated_text": "", "tokens_generated": 0, "tok_per_sec": 0}]
 
         device = next(self.neuroq_model.parameters()).device
         input_tensor = torch.tensor([tokens], dtype=torch.long, device=device)
         generated = list(tokens)
+        gen_count = 0
 
         self.neuroq_model.eval()
+        infer_start = _time.time()
         with torch.no_grad():
             for _ in range(max_new_tokens):
                 seq = input_tensor[:, -self.config["max_seq_len"]:]
@@ -478,23 +481,29 @@ class EndpointHandler:
 
                 generated.append(nxt_id)
                 input_tensor = torch.cat([input_tensor, nxt], dim=1)
+                gen_count += 1
+
+        infer_elapsed = _time.time() - infer_start
+        tok_sec = round(gen_count / infer_elapsed, 1) if infer_elapsed > 0 else 0
 
         # Decode only generated tokens (skip input)
         generated_ids = generated[len(tokens):]
         generated_text = self.tokenizer.decode(generated_ids, skip_special=True)
 
-        return [{"generated_text": generated_text}]
+        return [{"generated_text": generated_text, "tokens_generated": gen_count, "tok_per_sec": tok_sec}]
 
     def _generate_legacy(self, text, temperature, max_new_tokens,
                           top_k, top_p, repetition_penalty):
         """Generate text using the legacy QBNNTransformer architecture."""
+        import time as _time
         ids = self.tokenizer.encode(text, max_len=self.config["max_seq_len"])
         if not ids:
-            return [{"generated_text": ""}]
+            return [{"generated_text": "", "tokens_generated": 0, "tok_per_sec": 0}]
 
         device = next(self.model.parameters()).device
         input_tensor = torch.tensor([ids], dtype=torch.long, device=device)
 
+        infer_start = _time.time()
         with torch.no_grad():
             output = self.model.generate(
                 input_tensor,
@@ -504,11 +513,14 @@ class EndpointHandler:
                 top_p=top_p,
                 repetition_penalty=repetition_penalty,
             )
+        infer_elapsed = _time.time() - infer_start
 
         generated_ids = output[0, len(ids):].tolist()
+        gen_count = len(generated_ids)
+        tok_sec = round(gen_count / infer_elapsed, 1) if infer_elapsed > 0 else 0
         generated_text = self.tokenizer.decode(generated_ids)
 
-        return [{"generated_text": generated_text}]
+        return [{"generated_text": generated_text, "tokens_generated": gen_count, "tok_per_sec": tok_sec}]
 
     def train(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         from transformers import Trainer, TrainingArguments, TrainerCallback

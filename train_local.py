@@ -238,14 +238,19 @@ def main():
     print(f"Saved: {ckpt_path} ({os.path.getsize(ckpt_path) / 1024 / 1024:.1f} MB)")
 
     # Step 7: Quick inference test
+    import time
     print("\n=== Inference test ===")
     model.eval()
     test_prompts = ["こんにちは", "量子コンピュータとは", "AIの未来について", "日本の首都は", "プログラミングを学ぶ"]
+    total_gen_tokens = 0
+    total_gen_time = 0
     for prompt in test_prompts:
         tokens = tokenizer.encode(prompt, add_special=True)
         input_tensor = torch.tensor([tokens], dtype=torch.long, device=device)
         generated = list(tokens)
+        gen_count = 0
 
+        infer_start = time.time()
         with torch.no_grad():
             for _ in range(60):
                 seq = input_tensor[:, -MAX_SEQ_LEN:]
@@ -266,9 +271,17 @@ def main():
                     continue
                 generated.append(nxt_id)
                 input_tensor = torch.cat([input_tensor, nxt], dim=1)
+                gen_count += 1
+        infer_elapsed = time.time() - infer_start
+        total_gen_tokens += gen_count
+        total_gen_time += infer_elapsed
+        tok_sec = gen_count / infer_elapsed if infer_elapsed > 0 else 0
 
         generated_text = tokenizer.decode(generated[len(tokens):], skip_special=True)
-        print(f'  "{prompt}" -> "{generated_text}"')
+        print(f'  "{prompt}" -> "{generated_text}" ({gen_count} tok, {tok_sec:.1f} tok/sec)')
+
+    avg_infer_tok_sec = total_gen_tokens / total_gen_time if total_gen_time > 0 else 0
+    print(f"\nInference avg: {avg_infer_tok_sec:.1f} tok/sec ({total_gen_tokens} tokens in {total_gen_time:.2f}s)")
 
     # Save training history
     history_path = os.path.join(os.path.dirname(__file__), "training_history.json")
@@ -282,7 +295,8 @@ def main():
         "training_log": training_log,
         "total_tokens": grand_total_tokens,
         "total_time_sec": round(grand_total_time, 1),
-        "avg_tok_per_sec": round(overall_tok_sec, 1),
+        "avg_train_tok_per_sec": round(overall_tok_sec, 1),
+        "avg_inference_tok_per_sec": round(avg_infer_tok_sec, 1),
         "trained_at": datetime.now(timezone.utc).isoformat(),
     }
     with open(history_path, "w", encoding="utf-8") as f:
