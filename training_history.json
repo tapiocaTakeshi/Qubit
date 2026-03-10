@@ -109,5 +109,51 @@
     "num_layers": 6,
     "max_seq_len": 512,
     "vocab_size": 32000
+  },
+  {
+    "architecture": "neuroquantum",
+    "dataset": "HachiML/alpaca_jp_math",
+    "dataset_split": "v1.0_cleaned",
+    "config": {
+      "vocab_size": 32000,
+      "embed_dim": 256,
+      "hidden_dim": 512,
+      "num_heads": 8,
+      "num_layers": 6,
+      "max_seq_len": 512,
+      "dropout": 0.1,
+      "entangle_strength": 0.5
+    },
+    "total_texts": 5000,
+    "total_sequences": 5003,
+    "parameters": 26837534,
+    "training_log": [
+      {
+        "epoch": 1,
+        "loss": 2.331975120815823,
+        "tokens": 676354,
+        "tok_per_sec": 1206.2,
+        "elapsed_sec": 560.7
+      },
+      {
+        "epoch": 2,
+        "loss": 1.711539985750505,
+        "tokens": 676354,
+        "tok_per_sec": 1226.0,
+        "elapsed_sec": 551.7
+      },
+      {
+        "epoch": 3,
+        "loss": 1.4772672052387235,
+        "tokens": 676354,
+        "tok_per_sec": 1201.3,
+        "elapsed_sec": 563.0
+      }
+    ],
+    "total_tokens": 2029062,
+    "total_time_sec": 1675.4,
+    "avg_train_tok_per_sec": 1211.1,
+    "avg_inference_tok_per_sec": 45.5,
+    "trained_at": "2026-03-10T16:50:02.276932+00:00"
   }
 ]
