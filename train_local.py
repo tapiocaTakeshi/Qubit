@@ -79,14 +79,18 @@ def tokenize_texts(texts, tokenizer, max_seq_len):
 
 
 def train_epoch(model, sequences, tokenizer, optimizer, epoch, device):
-    """Train one epoch."""
+    """Train one epoch. Returns (avg_loss, total_tokens, elapsed_seconds)."""
+    import time
     model.train()
     total_loss = 0
+    total_tokens = 0
     n_batches = 0
 
     # Shuffle
     import random
     random.shuffle(sequences)
+
+    epoch_start = time.time()
 
     for i in range(0, len(sequences), BATCH_SIZE):
         batch_seqs = sequences[i:i + BATCH_SIZE]
@@ -108,6 +112,9 @@ def train_epoch(model, sequences, tokenizer, optimizer, epoch, device):
         input_ids = torch.tensor(input_ids, dtype=torch.long, device=device)
         labels_t = torch.tensor(labels, dtype=torch.long, device=device)
 
+        # Count non-padding tokens
+        total_tokens += (labels_t != -100).sum().item()
+
         logits = model(input_ids)
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels_t[..., 1:].contiguous()
@@ -126,10 +133,13 @@ def train_epoch(model, sequences, tokenizer, optimizer, epoch, device):
         n_batches += 1
 
         if n_batches % 50 == 0:
+            elapsed = time.time() - epoch_start
+            tok_per_sec = total_tokens / elapsed if elapsed > 0 else 0
             avg = total_loss / n_batches
-            print(f"  Epoch {epoch+1} | Batch {n_batches} | Avg Loss: {avg:.4f}")
+            print(f"  Epoch {epoch+1} | Batch {n_batches} | Avg Loss: {avg:.4f} | {tok_per_sec:.0f} tok/sec")
 
-    return total_loss / max(n_batches, 1)
+    elapsed = time.time() - epoch_start
+    return total_loss / max(n_batches, 1), total_tokens, elapsed
 
 
 def main():
@@ -190,11 +200,19 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
     training_log = []
+    grand_total_tokens = 0
+    grand_total_time = 0
     for epoch in range(EPOCHS):
-        avg_loss = train_epoch(model, sequences, tokenizer, optimizer, epoch, device)
+        avg_loss, epoch_tokens, epoch_time = train_epoch(model, sequences, tokenizer, optimizer, epoch, device)
         scheduler.step()
-        print(f"Epoch {epoch+1}/{EPOCHS} | Avg Loss: {avg_loss:.6f}")
-        training_log.append({"epoch": epoch + 1, "loss": avg_loss})
+        grand_total_tokens += epoch_tokens
+        grand_total_time += epoch_time
+        tok_sec = epoch_tokens / epoch_time if epoch_time > 0 else 0
+        print(f"Epoch {epoch+1}/{EPOCHS} | Avg Loss: {avg_loss:.6f} | {tok_sec:.0f} tok/sec | {epoch_time:.1f}s")
+        training_log.append({"epoch": epoch + 1, "loss": avg_loss, "tokens": epoch_tokens, "tok_per_sec": round(tok_sec, 1), "elapsed_sec": round(epoch_time, 1)})
+
+    overall_tok_sec = grand_total_tokens / grand_total_time if grand_total_time > 0 else 0
+    print(f"\nOverall: {grand_total_tokens:,} tokens in {grand_total_time:.1f}s = {overall_tok_sec:.0f} tok/sec")
 
     # Step 6: Save checkpoint
     print("\n=== Saving checkpoint ===")
@@ -262,6 +280,9 @@ def main():
         "total_sequences": len(sequences),
         "parameters": n_params,
         "training_log": training_log,
+        "total_tokens": grand_total_tokens,
+        "total_time_sec": round(grand_total_time, 1),
+        "avg_tok_per_sec": round(overall_tok_sec, 1),
         "trained_at": datetime.now(timezone.utc).isoformat(),
     }
     with open(history_path, "w", encoding="utf-8") as f:

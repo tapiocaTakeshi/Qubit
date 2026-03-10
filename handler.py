@@ -644,16 +644,30 @@ class EndpointHandler:
                 "labels": torch.tensor(labels, dtype=torch.long)
             }
 
+        import time as _time
+
         class LossCallback(TrainerCallback):
             def __init__(self):
                 self.logs = []
+                self.total_tokens = 0
+                self.start_time = None
+
+            def on_train_begin(self, args, state, control, **kwargs):
+                self.start_time = _time.time()
+
+            def on_step_end(self, args, state, control, **kwargs):
+                # Count tokens per step: batch_size * seq_len * gradient_accumulation
+                self.total_tokens += args.per_device_train_batch_size * max_seq_len
 
             def on_log(self, args, state, control, logs=None, **kwargs):
                 if logs and "loss" in logs:
+                    elapsed = _time.time() - self.start_time if self.start_time else 0
+                    tok_sec = self.total_tokens / elapsed if elapsed > 0 else 0
                     self.logs.append({
                         "step": state.global_step,
                         "loss": round(logs["loss"], 6),
-                        "epoch": round(logs.get("epoch", 0), 2)
+                        "epoch": round(logs.get("epoch", 0), 2),
+                        "tok_per_sec": round(tok_sec, 1)
                     })
 
         loss_callback = LossCallback()
@@ -692,6 +706,9 @@ class EndpointHandler:
             self.neuroq_model.eval()
 
         final_loss = round(train_result.training_loss, 6) if train_result.training_loss else None
+        train_elapsed = _time.time() - loss_callback.start_time if loss_callback.start_time else 0
+        total_tokens = loss_callback.total_tokens
+        avg_tok_sec = round(total_tokens / train_elapsed, 1) if train_elapsed > 0 else 0
 
         # Build training history entry
         history_entry = {
@@ -707,6 +724,9 @@ class EndpointHandler:
             "num_layers": self.config["num_layers"],
             "max_seq_len": self.config["max_seq_len"],
             "vocab_size": self.config["vocab_size"],
+            "total_tokens": total_tokens,
+            "train_time_sec": round(train_elapsed, 1),
+            "avg_tok_per_sec": avg_tok_sec,
         }
 
         # Update training_history.json
@@ -772,9 +792,12 @@ class EndpointHandler:
                 "num_layers": self.config["num_layers"],
                 "max_seq_len": self.config["max_seq_len"],
             },
+            "total_tokens": total_tokens,
+            "train_time_sec": round(train_elapsed, 1),
+            "avg_tok_per_sec": avg_tok_sec,
             "loss_log": loss_callback.logs,
             "upload": upload_status,
-            "message": f"Trained on {len(train_dataset)} samples for {epochs} epochs. Final loss: {final_loss}"
+            "message": f"Trained on {len(train_dataset)} samples for {epochs} epochs. Final loss: {final_loss}. {avg_tok_sec} tok/sec"
         }]
 
     def _train_legacy(self, data, texts, dataset_id, text_column, epochs, lr):
