@@ -95,5 +95,19 @@
         "epoch": 3.0
       }
     ]
+  },
+  {
+    "dataset_id": "kunishou/databricks-dolly-15k-ja",
+    "timestamp": "2026-03-10 11:37",
+    "epochs": 6,
+    "samples": 4960,
+    "final_loss": 10.367768,
+    "learning_rate": 0.0005,
+    "text_column": "output",
+    "architecture": "neuroquantum",
+    "embed_dim": 256,
+    "num_layers": 6,
+    "max_seq_len": 512,
+    "vocab_size": 32000
   }
 ]
