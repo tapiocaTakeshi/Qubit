@@ -17,8 +17,8 @@ from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumT
 # Config
 CONFIG = {
     "vocab_size": 32000,
-    "embed_dim": 256,
-    "hidden_dim": 512,
+    "embed_dim": 512,
+    "hidden_dim": 1024,
     "num_heads": 8,
     "num_layers": 6,
     "max_seq_len": 512,

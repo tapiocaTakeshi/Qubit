@@ -662,7 +662,7 @@ class TextDataset(Dataset):
 class EQBNNGenerativeAI:
     """Entangled QBNN 生成AI"""
     
-    def __init__(self, embed_dim=256, hidden_dims=[512, 512],
+    def __init__(self, embed_dim=512, hidden_dims=[1024, 1024],
                  entangle_strength=0.5, max_vocab_size=3000,
                  num_neurons: int = None):  # ニューロン数指定可能
         self.embed_dim = embed_dim
@@ -1148,7 +1148,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='E-QBNN 生成AI')
-    parser.add_argument('--neurons', type=int, default=256, help='ニューロン数 (デフォルト: 256)')
+    parser.add_argument('--neurons', type=int, default=512, help='ニューロン数 (デフォルト: 512)')
     parser.add_argument('--ja', action='store_true', help='日本語モード')
     parser.add_argument('--chat', action='store_true', help='チャットモード')
     args = parser.parse_args()
