@@ -114,8 +114,8 @@ class NeuroQuantumConfig:
     def __init__(
         self,
         vocab_size: int = 32000,
-        embed_dim: int = 256,
-        hidden_dim: int = 512,
+        embed_dim: int = 512,
+        hidden_dim: int = 1024,
         num_heads: int = 8,
         num_layers: int = 6,
         max_seq_len: int = 512,
@@ -1636,8 +1636,8 @@ class NeuroQuantumAI:
 
     def __init__(
         self,
-        embed_dim: int = 512,
-        hidden_dim: int = 1024,       # ニューロン数（FFN層の次元）
+        embed_dim: int = 1024,
+        hidden_dim: int = 2048,       # ニューロン数（FFN層の次元）
         num_heads: int = 8,
         num_layers: int = 6,
         max_seq_len: int = 512,
@@ -2696,7 +2696,7 @@ def get_training_data() -> List[str]:
 # メイン
 # ========================================
 
-def main(num_neurons: int = 256):
+def main(num_neurons: int = 512):
     """
     メイン関数
 
@@ -2779,7 +2779,7 @@ def main(num_neurons: int = 256):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='ニューロQ - QBNN-LLM 生成AI')
-    parser.add_argument('--neurons', type=int, default=256, help='ニューロン数 (デフォルト: 256)')
+    parser.add_argument('--neurons', type=int, default=512, help='ニューロン数 (デフォルト: 512)')
     parser.add_argument('--chat', action='store_true', help='チャットモードで起動')
     args = parser.parse_args()
     
