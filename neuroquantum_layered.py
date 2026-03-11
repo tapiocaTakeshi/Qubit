@@ -1869,6 +1869,62 @@ class NeuroQuantumAI:
         """
         return self.train(texts, epochs=epochs, batch_size=batch_size, lr=lr, seq_len=seq_len)
 
+    def _get_conjunction_token_ids(self) -> set:
+        """
+        接続詞トークンIDのセットを返す。
+        生成テキストが接続詞で始まることを防ぐために使用。
+        """
+        if hasattr(self, '_conjunction_ids_cache'):
+            return self._conjunction_ids_cache
+
+        conjunctions = [
+            # 逆接
+            "しかし", "だが", "けれども", "けれど", "けど", "ところが",
+            "でも", "だけど", "ただし", "もっとも", "にもかかわらず",
+            # 順接・因果
+            "だから", "したがって", "そのため", "よって", "ゆえに",
+            "それで", "そこで", "すると",
+            # 添加・並列
+            "そして", "また", "さらに", "しかも", "そのうえ",
+            "それに", "および", "ならびに", "かつ",
+            # 転換
+            "ところで", "さて", "では", "それでは", "ちなみに",
+            "なお", "一方",
+            # 説明・補足
+            "つまり", "すなわち", "要するに", "いわば",
+            # 選択
+            "あるいは", "または", "もしくは", "ないし",
+            # その他
+            "それから", "次に", "なぜなら", "というのは",
+            "むしろ", "とはいえ", "それにしても",
+        ]
+
+        conjunction_ids = set()
+        if self.tokenizer.sp is not None:
+            for conj in conjunctions:
+                # SentencePieceのEncodeAsIds で先頭トークンを取得
+                ids = self.tokenizer.sp.EncodeAsIds(conj)
+                if ids:
+                    conjunction_ids.add(ids[0])
+                # "▁" (SentencePiece の空白マーカー) 付きも確認
+                ids_with_space = self.tokenizer.sp.EncodeAsIds("▁" + conj)
+                if ids_with_space:
+                    conjunction_ids.add(ids_with_space[0])
+        else:
+            # フォールバックトークナイザーの場合
+            for conj in conjunctions:
+                if conj in self.tokenizer.token_to_idx:
+                    conjunction_ids.add(self.tokenizer.token_to_idx[conj])
+
+        # 特殊トークンは除外
+        conjunction_ids.discard(self.tokenizer.pad_id)
+        conjunction_ids.discard(self.tokenizer.unk_id)
+        conjunction_ids.discard(self.tokenizer.bos_id)
+        conjunction_ids.discard(self.tokenizer.eos_id)
+
+        self._conjunction_ids_cache = conjunction_ids
+        return conjunction_ids
+
     def _quantum_circuit_influence(self, logits: torch.Tensor, step: int) -> torch.Tensor:
         """
         量子回路シミュレーションを使用してlogitsに影響を与える
@@ -1996,6 +2052,13 @@ class NeuroQuantumAI:
 
                 # ⚛️ 量子回路シミュレーションの影響を適用
                 next_logits = self._quantum_circuit_influence(next_logits, step)
+
+                # 🚫 生成開始時の接続詞抑制
+                if step == 0:
+                    conjunction_ids = self._get_conjunction_token_ids()
+                    for token_id in conjunction_ids:
+                        if token_id < next_logits.size(0):
+                            next_logits[token_id] = float('-inf')
 
                 # 強化された繰り返しペナルティ（温度調整の前に適用）
                 # 最近のトークンに対する強力なペナルティ（recency-weighted）
