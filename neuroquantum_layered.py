@@ -132,6 +132,127 @@ class NeuroQuantumConfig:
         self.lambda_entangle = lambda_entangle
 
 
+def detect_gpu_tier() -> Tuple[str, str, dict]:
+    """
+    GPUの性能を検出し、ティアを判定する。
+
+    Returns:
+        (tier, device_name, gpu_info):
+            tier: "high" | "mid" | "low" | "cpu"
+            device_name: デバイス名の文字列
+            gpu_info: VRAM等の詳細情報
+    """
+    gpu_info = {"vram_gb": 0, "compute_capability": None, "device_type": "cpu"}
+
+    if torch.cuda.is_available():
+        gpu_info["device_type"] = "cuda"
+        device_id = torch.cuda.current_device()
+        device_name = torch.cuda.get_device_name(device_id)
+        vram_bytes = torch.cuda.get_device_properties(device_id).total_mem
+        vram_gb = vram_bytes / (1024 ** 3)
+        major, minor = torch.cuda.get_device_capability(device_id)
+        gpu_info["vram_gb"] = round(vram_gb, 1)
+        gpu_info["compute_capability"] = f"{major}.{minor}"
+
+        if vram_gb >= 16:
+            return "high", device_name, gpu_info
+        elif vram_gb >= 8:
+            return "mid", device_name, gpu_info
+        else:
+            return "low", device_name, gpu_info
+
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        gpu_info["device_type"] = "mps"
+        device_name = "Apple Silicon (MPS)"
+        # Apple Siliconは統合メモリのため、midティアとして扱う
+        return "mid", device_name, gpu_info
+
+    return "cpu", "CPU", gpu_info
+
+
+def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
+    """
+    GPUの性能に基づいて最適なニューロン数・モデル設定を返す。
+
+    GPU Tier別の設定:
+        high (VRAM >= 16GB): フル設定 - 大規模モデル
+        mid  (VRAM >= 8GB):  中規模設定
+        low  (VRAM < 8GB):   軽量設定
+        cpu  (GPU無し):      最小設定
+
+    Returns:
+        dict: モデル設定パラメータとデバイス情報を含む辞書
+    """
+    tier, device_name, gpu_info = detect_gpu_tier()
+
+    # ティア別のニューロン数設定
+    TIER_CONFIGS = {
+        "high": {
+            "embed_dim": 512,
+            "hidden_dim": 1024,
+            "num_heads": 8,
+            "num_layers": 6,
+            "max_seq_len": 512,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 8,
+        },
+        "mid": {
+            "embed_dim": 384,
+            "hidden_dim": 768,
+            "num_heads": 8,
+            "num_layers": 6,
+            "max_seq_len": 512,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 4,
+        },
+        "low": {
+            "embed_dim": 256,
+            "hidden_dim": 512,
+            "num_heads": 8,
+            "num_layers": 4,
+            "max_seq_len": 256,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 2,
+        },
+        "cpu": {
+            "embed_dim": 128,
+            "hidden_dim": 256,
+            "num_heads": 4,
+            "num_layers": 3,
+            "max_seq_len": 128,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 1,
+        },
+    }
+
+    config = TIER_CONFIGS[tier].copy()
+    config["vocab_size"] = vocab_size
+    config["gpu_tier"] = tier
+    config["gpu_name"] = device_name
+    config["gpu_info"] = gpu_info
+
+    print(f"=== GPU適応設定 ===")
+    print(f"  デバイス: {device_name}")
+    print(f"  ティア: {tier}")
+    if gpu_info["vram_gb"] > 0:
+        print(f"  VRAM: {gpu_info['vram_gb']} GB")
+    if gpu_info["compute_capability"]:
+        print(f"  Compute Capability: {gpu_info['compute_capability']}")
+    print(f"  embed_dim: {config['embed_dim']}")
+    print(f"  hidden_dim: {config['hidden_dim']}")
+    print(f"  num_heads: {config['num_heads']}")
+    print(f"  num_layers: {config['num_layers']}")
+    print(f"  max_seq_len: {config['max_seq_len']}")
+    print(f"  batch_size: {config['batch_size']}")
+    print(f"===================")
+
+    return config
+
+
 # ========================================
 # Part 1: QBNN Layer（独自の量子もつれ層）
 # ========================================
