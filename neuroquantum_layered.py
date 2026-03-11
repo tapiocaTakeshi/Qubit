@@ -2696,12 +2696,12 @@ def get_training_data() -> List[str]:
 # メイン
 # ========================================
 
-def main(num_neurons: int = 1000000000000):
+def main(num_neurons: int = 4096):
     """
     メイン関数
 
     Args:
-        num_neurons: ニューロン数（hidden_dim、デフォルト: 1兆）
+        num_neurons: ニューロン数（hidden_dim、デフォルト: 4096）
     """
     print("""
 ╔═══════════════════════════════════════════════════════════════════════════════╗
@@ -2779,7 +2779,7 @@ def main(num_neurons: int = 1000000000000):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='ニューロQ - QBNN-LLM 生成AI')
-    parser.add_argument('--neurons', type=int, default=1000000000000, help='ニューロン数 (デフォルト: 1兆)')
+    parser.add_argument('--neurons', type=int, default=4096, help='ニューロン数 (デフォルト: 4096)')
     parser.add_argument('--chat', action='store_true', help='チャットモードで起動')
     args = parser.parse_args()
     
