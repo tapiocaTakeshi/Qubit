@@ -606,17 +606,25 @@ class EndpointHandler:
             def __init__(self, texts, tokenizer, max_seq_len):
                 self.data = []
                 for t in texts:
-                    ids = tokenizer.encode(t, add_special=True)
-                    # Truncate or create sliding windows for long texts
-                    if len(ids) <= max_seq_len:
-                        if len(ids) >= 4:
-                            self.data.append(ids)
+                    # Encode without special tokens, wrap each chunk with BOS/EOS
+                    content_ids = tokenizer.encode(t, add_special=False)
+                    max_content = max_seq_len - 2  # Reserve for BOS and EOS
+                    if max_content <= 0:
+                        continue
+                    if len(content_ids) <= max_content:
+                        if len(content_ids) >= 2:
+                            seq = [tokenizer.bos_id] + content_ids + [tokenizer.eos_id]
+                            self.data.append(seq)
                     else:
-                        # Sliding window with stride = max_seq_len // 2
-                        stride = max(max_seq_len // 2, 1)
-                        for start in range(0, len(ids) - max_seq_len + 1, stride):
-                            chunk = ids[start:start + max_seq_len]
-                            self.data.append(chunk)
+                        stride = max(max_content // 2, 1)
+                        for start in range(0, len(content_ids) - max_content + 1, stride):
+                            chunk = content_ids[start:start + max_content]
+                            seq = [tokenizer.bos_id] + chunk + [tokenizer.eos_id]
+                            self.data.append(seq)
+                        remaining = content_ids[-max_content:]
+                        tail_seq = [tokenizer.bos_id] + remaining + [tokenizer.eos_id]
+                        if tail_seq != self.data[-1]:
+                            self.data.append(tail_seq)
 
             def __len__(self):
                 return len(self.data)

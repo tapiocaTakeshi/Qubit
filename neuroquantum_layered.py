@@ -1788,28 +1788,45 @@ class NeuroQuantumAI:
         
         # データ準備
         print("\n📊 データ準備...")
-        all_tokens = []
-        for text in texts:
-            tokens = self.tokenizer.encode(text)
-            all_tokens.extend(tokens)
-        
-        all_tokens = torch.tensor(all_tokens, dtype=torch.long)
-        print(f"   総トークン数: {len(all_tokens):,}")
-        
-        # シーケンス作成
+        # Each text is tokenized separately with BOS/EOS boundaries preserved.
+        # This ensures the model learns proper sentence start/end patterns.
         sequences = []
-        for i in range(0, len(all_tokens) - seq_len - 1, seq_len // 2):
-            x = all_tokens[i:i+seq_len]
-            y = all_tokens[i+1:i+seq_len+1]
-            if len(x) == seq_len and len(y) == seq_len:
-                sequences.append((x, y))
-        
+        total_tokens = 0
+        max_content = seq_len - 2  # Reserve 2 slots for BOS and EOS
+        if max_content <= 0:
+            max_content = seq_len  # Fallback for very short seq_len
+
+        for text in texts:
+            content_ids = self.tokenizer.encode(text, add_special=False)
+            total_tokens += len(content_ids)
+            if len(content_ids) <= max_content:
+                if len(content_ids) >= 2:
+                    seq = [self.tokenizer.bos_id] + content_ids + [self.tokenizer.eos_id]
+                    # Pad to seq_len + 1 for (input, target) pairs
+                    pad_len = (seq_len + 1) - len(seq)
+                    if pad_len > 0:
+                        seq = seq + [self.tokenizer.pad_id] * pad_len
+                    x = torch.tensor(seq[:seq_len], dtype=torch.long)
+                    y = torch.tensor(seq[1:seq_len + 1], dtype=torch.long)
+                    # Mask padding in targets
+                    y[y == self.tokenizer.pad_id] = -100
+                    sequences.append((x, y))
+            else:
+                stride = max(max_content // 2, 1)
+                for start in range(0, len(content_ids) - max_content + 1, stride):
+                    chunk = content_ids[start:start + max_content]
+                    seq = [self.tokenizer.bos_id] + chunk + [self.tokenizer.eos_id]
+                    x = torch.tensor(seq[:seq_len], dtype=torch.long)
+                    y = torch.tensor(seq[1:seq_len + 1], dtype=torch.long)
+                    sequences.append((x, y))
+
+        print(f"   総トークン数: {total_tokens:,}")
         print(f"   シーケンス数: {len(sequences):,}")
         
         # 学習
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=0.01)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(ignore_index=-100)
         
         print("\n🚀 学習ループ...")
         self.model.train()

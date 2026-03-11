@@ -63,18 +63,36 @@ def extract_texts(ds, text_column, max_samples):
 
 
 def tokenize_texts(texts, tokenizer, max_seq_len):
-    """Tokenize texts into training sequences."""
+    """Tokenize texts into training sequences.
+
+    Each chunk always starts with BOS and ends with EOS so the model
+    learns that every sequence begins at a proper sentence boundary.
+    This prevents the model from generating text that starts mid-sentence
+    (e.g. "は東京です", "また、").
+    """
     sequences = []
     for t in texts:
-        ids = tokenizer.encode(t, add_special=True)
-        if len(ids) <= max_seq_len:
-            if len(ids) >= 4:
-                sequences.append(ids)
+        # Encode without special tokens, then wrap each chunk with BOS/EOS
+        content_ids = tokenizer.encode(t, add_special=False)
+        # Reserve 2 slots for BOS and EOS
+        max_content = max_seq_len - 2
+        if max_content <= 0:
+            continue
+        if len(content_ids) <= max_content:
+            if len(content_ids) >= 2:
+                seq = [tokenizer.bos_id] + content_ids + [tokenizer.eos_id]
+                sequences.append(seq)
         else:
-            stride = max(max_seq_len // 2, 1)
-            for start in range(0, len(ids) - max_seq_len + 1, stride):
-                chunk = ids[start:start + max_seq_len]
-                sequences.append(chunk)
+            stride = max(max_content // 2, 1)
+            for start in range(0, len(content_ids) - max_content + 1, stride):
+                chunk = content_ids[start:start + max_content]
+                seq = [tokenizer.bos_id] + chunk + [tokenizer.eos_id]
+                sequences.append(seq)
+            # Include the tail if not already covered
+            remaining = content_ids[-max_content:]
+            tail_seq = [tokenizer.bos_id] + remaining + [tokenizer.eos_id]
+            if tail_seq != sequences[-1]:
+                sequences.append(tail_seq)
     return sequences
 
 
