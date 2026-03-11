@@ -61,6 +61,7 @@ class TrainRequest(BaseModel):
 
 
 class TrainQARequest(BaseModel):
+    dataset_id: Optional[str] = None
     epochs: int = 20
     lr: float = 3e-5
     batch_size: int = 4
@@ -465,32 +466,54 @@ def run_qa_training(req: TrainQARequest):
 
     try:
         all_qa = []
-        for ds_info in QA_DATASETS_INFO:
-            ds_id = ds_info["id"]
-            fmt = ds_info["format"]
-            max_samples = req.max_samples_per_dataset
-            if fmt == "izumi":
-                max_samples = min(1000, max_samples)
+
+        # If custom dataset_id is specified, use it exclusively
+        if req.dataset_id:
+            ds_id = req.dataset_id
             try:
                 training_status["message"] = f"Loading {ds_id}..."
-                ds = load_dataset(ds_id, split="train")
-                n = min(max_samples, len(ds))
+                ds = load_dataset(ds_id, split="train", streaming=True)
                 count = 0
-                for row in ds.select(range(n)):
-                    if fmt == "alpaca":
-                        text = format_qa_alpaca(row)
-                    elif fmt == "conversations":
-                        text = format_qa_conversations(row)
-                    elif fmt == "izumi":
-                        text = format_qa_izumi(row)
-                    else:
-                        continue
-                    if text and len(text) > 10:
-                        all_qa.append(text)
+                for row in ds:
+                    if count >= req.max_samples_per_dataset:
+                        break
+                    # Auto-detect QA format
+                    q = row.get("question", row.get("instruction", "")).strip()
+                    a = row.get("answer", row.get("output", "")).strip()
+                    if q and a and len(q) > 2 and len(a) > 2:
+                        all_qa.append(f"質問: {q}\n回答: {a}")
                         count += 1
                 training_status["log"].append(f"Loaded {ds_id}: {count} QA samples")
             except Exception as e:
                 training_status["log"].append(f"Error loading {ds_id}: {e}")
+        else:
+            # Default: use built-in QA datasets
+            for ds_info in QA_DATASETS_INFO:
+                ds_id = ds_info["id"]
+                fmt = ds_info["format"]
+                max_samples = req.max_samples_per_dataset
+                if fmt == "izumi":
+                    max_samples = min(1000, max_samples)
+                try:
+                    training_status["message"] = f"Loading {ds_id}..."
+                    ds = load_dataset(ds_id, split="train")
+                    n = min(max_samples, len(ds))
+                    count = 0
+                    for row in ds.select(range(n)):
+                        if fmt == "alpaca":
+                            text = format_qa_alpaca(row)
+                        elif fmt == "conversations":
+                            text = format_qa_conversations(row)
+                        elif fmt == "izumi":
+                            text = format_qa_izumi(row)
+                        else:
+                            continue
+                        if text and len(text) > 10:
+                            all_qa.append(text)
+                            count += 1
+                    training_status["log"].append(f"Loaded {ds_id}: {count} QA samples")
+                except Exception as e:
+                    training_status["log"].append(f"Error loading {ds_id}: {e}")
 
         # Add crafted QA x40
         for _ in range(40):
@@ -576,17 +599,18 @@ def run_qa_training(req: TrainQARequest):
             training_status["log"].append(msg)
             training_status["message"] = msg
 
+            extra_ds = [req.dataset_id] if req.dataset_id else []
             if avg_loss < best_loss:
                 best_loss = avg_loss
-                # Save best checkpoint mid-training
-                save_qa_checkpoint(model, config, training_status, epoch + 1)
+                save_qa_checkpoint(model, config, training_status, epoch + 1, extra_ds)
 
             # Periodic save every 5 epochs
             if (epoch + 1) % 5 == 0:
-                save_qa_checkpoint(model, config, training_status, epoch + 1)
+                save_qa_checkpoint(model, config, training_status, epoch + 1, extra_ds)
 
         # Final save
-        save_qa_checkpoint(model, config, training_status, req.epochs)
+        extra_ds = [req.dataset_id] if req.dataset_id else []
+        save_qa_checkpoint(model, config, training_status, req.epochs, extra_ds)
         model.eval()
         training_status["message"] = f"QA Training complete! Best loss: {best_loss:.4f}"
         training_status["running"] = False
@@ -600,7 +624,7 @@ def run_qa_training(req: TrainQARequest):
             model.eval()
 
 
-def save_qa_checkpoint(mdl, cfg, status, epoch_num):
+def save_qa_checkpoint(mdl, cfg, status, epoch_num, extra_datasets=None):
     """Save QA training checkpoint."""
     checkpoint = torch.load(CKPT_PATH, map_location="cpu")
     prev_log = checkpoint.get("training_log", [])
@@ -608,15 +632,15 @@ def save_qa_checkpoint(mdl, cfg, status, epoch_num):
         {"epoch": len(prev_log) + i + 1, "loss": float(l.split("Loss: ")[1])}
         for i, l in enumerate(status["log"]) if "Loss:" in l
     ]
+    ds_list = checkpoint.get("datasets", []) + [d["id"] for d in QA_DATASETS_INFO]
+    if extra_datasets:
+        ds_list += extra_datasets
     new_checkpoint = {
         "model_state": mdl.state_dict(),
         "config": cfg,
         "training_log": prev_log + new_log_entries,
         "trained_at": datetime.now(timezone.utc).isoformat(),
-        "datasets": list(set(
-            checkpoint.get("datasets", []) +
-            [d["id"] for d in QA_DATASETS_INFO]
-        )),
+        "datasets": list(set(ds_list)),
         "qa_training": True,
         "qa_high_epoch": True,
     }
