@@ -13,13 +13,16 @@ import json
 import random
 
 sys.path.insert(0, os.path.dirname(__file__))
-from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer
+from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, get_gpu_adaptive_config
 
 CKPT_PATH = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
 MAX_SAMPLES = 5000
 EPOCHS = 3
 LR = 3e-4
-BATCH_SIZE = 4
+
+# GPUの性能に基づいてバッチサイズを自動決定
+_GPU_CONFIG = get_gpu_adaptive_config(vocab_size=32000)
+BATCH_SIZE = _GPU_CONFIG["batch_size"]
 
 
 def main():

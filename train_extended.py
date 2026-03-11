@@ -19,15 +19,18 @@ import random
 import math
 
 sys.path.insert(0, os.path.dirname(__file__))
-from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer
+from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, get_gpu_adaptive_config
 
 CKPT_PATH = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
+
+# GPUの性能に基づいてバッチサイズを自動決定
+_GPU_CONFIG = get_gpu_adaptive_config(vocab_size=32000)
 
 # Training hyperparameters
 EPOCHS = 15
 LR = 1e-4  # Lower LR for continued training
-BATCH_SIZE = 4
-GRAD_ACCUM_STEPS = 8  # Effective batch size = 4 * 8 = 32
+BATCH_SIZE = _GPU_CONFIG["batch_size"]
+GRAD_ACCUM_STEPS = max(1, 32 // BATCH_SIZE)  # 有効バッチサイズ ≈ 32を維持
 WARMUP_STEPS = 100
 GRAD_CLIP = 1.0
 

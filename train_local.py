@@ -12,19 +12,10 @@ from datetime import datetime, timezone
 import json
 
 sys.path.insert(0, os.path.dirname(__file__))
-from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer
+from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, get_gpu_adaptive_config
 
-# Config
-CONFIG = {
-    "vocab_size": 32000,
-    "embed_dim": 512,
-    "hidden_dim": 1024,
-    "num_heads": 8,
-    "num_layers": 6,
-    "max_seq_len": 512,
-    "dropout": 0.1,
-    "entangle_strength": 0.5,
-}
+# GPUの性能に基づいてニューロン数を自動決定
+CONFIG = get_gpu_adaptive_config(vocab_size=32000)
 
 DATASETS = [
     {"id": "izumi-lab/llm-japanese-dataset", "col": "output", "max_samples": 1540},
@@ -36,7 +27,7 @@ DATASETS = [
 
 EPOCHS = 3
 LR = 5e-4
-BATCH_SIZE = 4
+BATCH_SIZE = CONFIG["batch_size"]
 MAX_SEQ_LEN = CONFIG["max_seq_len"]
 
 
