@@ -901,13 +901,13 @@ def visualize_entanglement(ai, save_path=None):
 # 10. メイン実行
 # ========================================================================
 
-def main(lang='en', num_neurons: int = 1000000000000):
+def main(lang='en', num_neurons: int = 4096):
     """
     メイン関数
 
     Args:
         lang: 言語 ('en' or 'ja')
-        num_neurons: ニューロン数 (デフォルト: 1兆)
+        num_neurons: ニューロン数 (デフォルト: 4096)
     """
     print("\n🔧 E-QBNN 生成AI を構築中...")
     print(f"   ニューロン数: {num_neurons}")
@@ -1148,7 +1148,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='E-QBNN 生成AI')
-    parser.add_argument('--neurons', type=int, default=1000000000000, help='ニューロン数 (デフォルト: 1兆)')
+    parser.add_argument('--neurons', type=int, default=4096, help='ニューロン数 (デフォルト: 4096)')
     parser.add_argument('--ja', action='store_true', help='日本語モード')
     parser.add_argument('--chat', action='store_true', help='チャットモード')
     args = parser.parse_args()
