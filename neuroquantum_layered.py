@@ -33,6 +33,50 @@ import re
 from typing import List, Dict, Optional, Tuple
 import warnings
 
+# システムRAM検出用
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+
+
+def detect_system_ram_gb() -> float:
+    """
+    システムRAMの総容量をGB単位で返す。
+    psutilが利用可能な場合はそちらを使用し、
+    利用不可の場合は /proc/meminfo（Linux）またはデフォルト値を返す。
+    """
+    if PSUTIL_AVAILABLE:
+        return psutil.virtual_memory().total / (1024 ** 3)
+
+    # Linux: /proc/meminfo からの取得を試みる
+    try:
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    # MemTotal は kB 単位
+                    kb = int(line.split()[1])
+                    return kb / (1024 ** 2)
+    except (FileNotFoundError, ValueError, IndexError):
+        pass
+
+    # macOS: sysctl から取得を試みる
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["sysctl", "-n", "hw.memsize"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip()) / (1024 ** 3)
+    except (FileNotFoundError, ValueError, subprocess.TimeoutExpired):
+        pass
+
+    # デフォルト: 8GB と仮定
+    return 8.0
+
+
 # sentencepiece（日本語サブワードトークナイザー用）
 try:
     import sentencepiece as spm
@@ -135,14 +179,21 @@ class NeuroQuantumConfig:
 def detect_gpu_tier() -> Tuple[str, str, dict]:
     """
     GPUの性能を検出し、ティアを判定する。
+    システムRAMも検出し、gpu_infoに含める。
 
     Returns:
         (tier, device_name, gpu_info):
             tier: "high" | "mid" | "low" | "cpu"
             device_name: デバイス名の文字列
-            gpu_info: VRAM等の詳細情報
+            gpu_info: VRAM・RAM等の詳細情報
     """
-    gpu_info = {"vram_gb": 0, "compute_capability": None, "device_type": "cpu"}
+    ram_gb = detect_system_ram_gb()
+    gpu_info = {
+        "vram_gb": 0,
+        "ram_gb": round(ram_gb, 1),
+        "compute_capability": None,
+        "device_type": "cpu",
+    }
 
     if torch.cuda.is_available():
         gpu_info["device_type"] = "cuda"
@@ -164,28 +215,47 @@ def detect_gpu_tier() -> Tuple[str, str, dict]:
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         gpu_info["device_type"] = "mps"
         device_name = "Apple Silicon (MPS)"
-        # Apple Siliconは統合メモリのため、midティアとして扱う
-        return "mid", device_name, gpu_info
+        # Apple Siliconは統合メモリ — RAMに基づいてティアを判定
+        if ram_gb >= 32:
+            return "high", device_name, gpu_info
+        elif ram_gb >= 16:
+            return "mid", device_name, gpu_info
+        else:
+            return "low", device_name, gpu_info
 
+    # CPU専用: RAMに基づいてティアを判定
+    if ram_gb >= 64:
+        return "mid", "CPU", gpu_info
+    elif ram_gb >= 32:
+        return "low", "CPU", gpu_info
     return "cpu", "CPU", gpu_info
 
 
 def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
     """
-    GPUの性能に基づいて最適なニューロン数・モデル設定を返す。
+    GPU性能とシステムRAMに基づいて最適なニューロン数・モデル設定を返す。
 
-    GPU Tier別の設定:
-        high (VRAM >= 16GB): フル設定 - 大規模モデル
-        mid  (VRAM >= 8GB):  中規模設定
-        low  (VRAM < 8GB):   軽量設定
-        cpu  (GPU無し):      最小設定
+    ティア判定の基準:
+        GPU環境:
+            high (VRAM >= 16GB): フル設定 - 大規模モデル
+            mid  (VRAM >= 8GB):  中規模設定
+            low  (VRAM < 8GB):   軽量設定
+        MPS (Apple Silicon):
+            統合メモリ(RAM)に基づいてティアを判定
+        CPU環境:
+            RAM >= 64GB → mid, RAM >= 32GB → low, それ以下 → cpu
+
+    RAMによる追加調整:
+        GPU環境でもRAMが潤沢な場合、batch_size や max_seq_len を増加。
+        CPU環境ではRAM容量に応じてニューロン数を動的にスケーリング。
 
     Returns:
         dict: モデル設定パラメータとデバイス情報を含む辞書
     """
     tier, device_name, gpu_info = detect_gpu_tier()
+    ram_gb = gpu_info.get("ram_gb", 8.0)
 
-    # ティア別のニューロン数設定
+    # ティア別のベースニューロン数設定
     TIER_CONFIGS = {
         "high": {
             "embed_dim": 512,
@@ -230,14 +300,73 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
     }
 
     config = TIER_CONFIGS[tier].copy()
+
+    # === RAM に基づくニューロン数の動的調整 ===
+    if gpu_info["device_type"] == "cpu":
+        # CPU専用環境: RAMがモデルサイズの上限を決める
+        if ram_gb >= 128:
+            # 大容量RAM: midティアを超えてhigh相当まで拡張
+            config["embed_dim"] = 512
+            config["hidden_dim"] = 1024
+            config["num_heads"] = 8
+            config["num_layers"] = 6
+            config["max_seq_len"] = 512
+            config["batch_size"] = 4
+        elif ram_gb >= 64:
+            # mid ティア（detect_gpu_tier で判定済み）— さらに微調整
+            config["embed_dim"] = 384
+            config["hidden_dim"] = 768
+            config["num_heads"] = 8
+            config["num_layers"] = 6
+            config["max_seq_len"] = 512
+            config["batch_size"] = 2
+        elif ram_gb >= 32:
+            # low ティア（detect_gpu_tier で判定済み）
+            config["embed_dim"] = 256
+            config["hidden_dim"] = 512
+            config["num_heads"] = 8
+            config["num_layers"] = 4
+            config["max_seq_len"] = 256
+            config["batch_size"] = 2
+        elif ram_gb >= 16:
+            # RAM 16GB: cpu デフォルトより少し大きめ
+            config["embed_dim"] = 192
+            config["hidden_dim"] = 384
+            config["num_heads"] = 4
+            config["num_layers"] = 3
+            config["max_seq_len"] = 192
+            config["batch_size"] = 1
+        # ram_gb < 16: デフォルトの cpu ティア設定をそのまま使用
+
+    elif gpu_info["device_type"] == "mps":
+        # Apple Silicon: 統合メモリなのでRAM = 実質VRAM
+        if ram_gb >= 64:
+            config["embed_dim"] = 512
+            config["hidden_dim"] = 1024
+            config["num_heads"] = 8
+            config["num_layers"] = 6
+            config["max_seq_len"] = 512
+            config["batch_size"] = 8
+        elif ram_gb >= 32:
+            config["batch_size"] = min(config["batch_size"] + 2, 8)
+            config["max_seq_len"] = 512
+
+    else:
+        # CUDA GPU環境: RAMが十分にある場合、batch_size を増加
+        if ram_gb >= 64:
+            config["batch_size"] = min(config["batch_size"] * 2, 16)
+        elif ram_gb >= 32:
+            config["batch_size"] = min(config["batch_size"] + 2, 12)
+
     config["vocab_size"] = vocab_size
     config["gpu_tier"] = tier
     config["gpu_name"] = device_name
     config["gpu_info"] = gpu_info
 
-    print(f"=== GPU適応設定 ===")
+    print(f"=== GPU/RAM 適応設定 ===")
     print(f"  デバイス: {device_name}")
     print(f"  ティア: {tier}")
+    print(f"  システムRAM: {ram_gb} GB")
     if gpu_info["vram_gb"] > 0:
         print(f"  VRAM: {gpu_info['vram_gb']} GB")
     if gpu_info["compute_capability"]:
@@ -248,7 +377,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
     print(f"  num_layers: {config['num_layers']}")
     print(f"  max_seq_len: {config['max_seq_len']}")
     print(f"  batch_size: {config['batch_size']}")
-    print(f"===================")
+    print(f"========================")
 
     return config
 
