@@ -259,8 +259,11 @@ class EndpointHandler:
         Args:
             path: Path to model weights directory (provided by Inference Endpoints).
         """
+        self._init_log = []
+        self._init_log.append(f"path={path}")
         # Look for checkpoint file first to determine architecture
         ckpt_path = self._find_checkpoint(path)
+        self._init_log.append(f"ckpt_path={ckpt_path}")
         checkpoint = None
         saved_config = None
 
@@ -276,12 +279,17 @@ class EndpointHandler:
             if saved_config.get("embed_dim", 256) <= 64 and saved_config.get("max_seq_len", 512) <= 32:
                 is_legacy = True
 
+        self._init_log.append(f"is_legacy={is_legacy}, NEUROQUANTUM_AVAILABLE={NEUROQUANTUM_AVAILABLE}")
+        self._init_log.append(f"saved_config={saved_config}")
+
         if is_legacy or not NEUROQUANTUM_AVAILABLE:
             # Legacy mode: use old CharTokenizer + QBNNTransformer
             self._init_legacy(checkpoint, saved_config)
+            self._init_log.append("mode=legacy")
         else:
             # New mode: use NeuroQuantum + SentencePiece
             self._init_neuroquantum(path, checkpoint, saved_config)
+            self._init_log.append("mode=neuroquantum")
 
     def _init_legacy(self, checkpoint, saved_config):
         """Initialize with legacy architecture for old checkpoints."""
@@ -342,9 +350,13 @@ class EndpointHandler:
         if checkpoint and "model_state" in checkpoint:
             try:
                 self.neuroq_model.load_state_dict(checkpoint["model_state"])
-            except RuntimeError:
+                self._init_log.append("state_dict loaded OK")
+            except RuntimeError as e:
+                self._init_log.append(f"state_dict FAILED: {e}")
                 # State dict mismatch — reinitialize
                 self.neuroq_model = NeuroQuantum(config=nq_config)
+        else:
+            self._init_log.append(f"no checkpoint to load: checkpoint={checkpoint is not None}, has_model_state={'model_state' in checkpoint if checkpoint else False}")
 
         self.neuroq_model.eval()
         # For backward-compatible interface
@@ -397,6 +409,12 @@ class EndpointHandler:
         Returns:
             List of dicts with 'generated_text' or training status.
         """
+        # Debug: return init log
+        if data.get("action") == "debug" or data.get("inputs") == "__debug__":
+            return [{"init_log": self._init_log, "architecture": self.architecture,
+                     "config": self.config, "model_params": sum(p.numel() for p in self.model.parameters()),
+                     "handler_version": "v3_2026_03_12"}]
+
         # Support training via both top-level and parameters.action
         if data.get("action") == "train":
             return self.train(data)
