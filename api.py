@@ -70,6 +70,14 @@ class TrainQARequest(BaseModel):
     max_samples_per_dataset: int = 1500
 
 
+class TrainMarkdownRequest(BaseModel):
+    epochs: int = 25
+    lr: float = 3e-5
+    batch_size: int = 4
+    grad_accum_steps: int = 4
+    warmup_steps: int = 20
+
+
 class TrainResponse(BaseModel):
     status: str
     message: str
@@ -479,7 +487,7 @@ def run_qa_training(req: TrainQARequest):
                         break
                     # Auto-detect QA format
                     q = row.get("question", row.get("instruction", "")).strip()
-                    a = row.get("answer", row.get("output", "")).strip()
+                    a = row.get("answer", row.get("output", row.get("response", ""))).strip()
                     if q and a and len(q) > 2 and len(a) > 2:
                         all_qa.append(f"質問: {q}\n回答: {a}")
                         count += 1
@@ -649,6 +657,147 @@ def save_qa_checkpoint(mdl, cfg, status, epoch_num, extra_datasets=None):
 
 
 # ========================================
+# Markdown Training
+# ========================================
+
+MARKDOWN_QA = [
+    "質問: 日本の首都はどこですか？\n回答: ## 日本の首都\n\n日本の首都は**東京**です。\n\n### 基本情報\n- **人口**: 約1,400万人\n- **面積**: 約2,194 km²\n- **特徴**: 世界最大級の都市圏",
+    "質問: プログラミング言語の種類を教えてください。\n回答: ## プログラミング言語の種類\n\n主要なプログラミング言語を以下にまとめます。\n\n### 人気言語ランキング\n| 順位 | 言語 | 用途 |\n|------|------|------|\n| 1 | Python | AI・データ分析 |\n| 2 | JavaScript | Web開発 |\n| 3 | Java | エンタープライズ |\n| 4 | C++ | システム開発 |\n\n### 特徴\n- **Python**: 読みやすく初心者向け\n- **JavaScript**: ブラウザで動作\n- **Java**: 大規模システムに適する",
+    "質問: 機械学習の種類を教えてください。\n回答: ## 機械学習の種類\n\n機械学習は大きく**3つ**に分類されます。\n\n### 1. 教師あり学習\n- 正解ラベル付きデータで学習\n- 例: 画像分類、スパム検出\n\n### 2. 教師なし学習\n- ラベルなしデータからパターンを発見\n- 例: クラスタリング、次元削減\n\n### 3. 強化学習\n- 試行錯誤で最適な行動を学習\n- 例: ゲームAI、ロボット制御\n\n> **ポイント**: 目的に応じて適切な手法を選択することが重要です。",
+    "質問: Pythonの基本的な文法を教えてください。\n回答: ## Pythonの基本文法\n\n### 変数と型\n```python\nname = \"太郎\"  # 文字列\nage = 25        # 整数\npi = 3.14       # 浮動小数点\n```\n\n### 条件分岐\n```python\nif age >= 18:\n    print(\"成人です\")\nelse:\n    print(\"未成年です\")\n```\n\n### リスト操作\n```python\nfruits = [\"りんご\", \"みかん\", \"バナナ\"]\nfor fruit in fruits:\n    print(fruit)\n```\n\n> **Note**: Pythonはインデントでブロックを表現します。",
+    "質問: 太陽系の惑星について教えてください。\n回答: ## 太陽系の惑星\n\n太陽系には**8つの惑星**があります。\n\n### 地球型惑星（岩石惑星）\n1. **水星** - 最も太陽に近い\n2. **金星** - 最も高温\n3. **地球** - 生命が存在\n4. **火星** - 赤い惑星\n\n### 木星型惑星（巨大ガス惑星）\n5. **木星** - 最大の惑星\n6. **土星** - 美しい環を持つ\n7. **天王星** - 横倒しで自転\n8. **海王星** - 最も遠い惑星\n\n| 惑星 | 直径(km) | 太陽からの距離(億km) |\n|------|----------|--------------------|\n| 水星 | 4,879 | 0.58 |\n| 地球 | 12,742 | 1.50 |\n| 木星 | 139,820 | 7.78 |",
+    "質問: ニューラルネットワークとは何ですか？\n回答: ## ニューラルネットワーク\n\n人間の脳の**神経回路**を模倣した機械学習モデルです。\n\n### 基本構造\n1. **入力層**: データを受け取る\n2. **隠れ層**: 特徴を抽出・変換\n3. **出力層**: 結果を出力\n\n### 主要なアーキテクチャ\n- **CNN**: 画像認識に特化\n- **RNN/LSTM**: 時系列データ処理\n- **Transformer**: 自然言語処理の主流\n- **GAN**: 画像生成\n\n### 活性化関数\n```\nReLU: f(x) = max(0, x)\nSigmoid: f(x) = 1 / (1 + e^(-x))\nTanh: f(x) = (e^x - e^(-x)) / (e^x + e^(-x))\n```\n\n> 深層学習（ディープラーニング）は、多層のニューラルネットワークを用いた学習手法です。",
+    "質問: 日本の歴史の時代区分を教えてください。\n回答: ## 日本の歴史 - 時代区分\n\n### 古代\n- **縄文時代**: 約1万年前〜\n- **弥生時代**: 紀元前3世紀〜\n- **古墳時代**: 3世紀〜\n- **飛鳥時代**: 592年〜\n- **奈良時代**: 710年〜\n- **平安時代**: 794年〜\n\n### 中世\n- **鎌倉時代**: 1185年〜\n- **室町時代**: 1336年〜\n- **戦国時代**: 1467年〜\n\n### 近世・近代\n- **安土桃山時代**: 1573年〜\n- **江戸時代**: 1603年〜\n- **明治時代**: 1868年〜\n- **大正時代**: 1912年〜\n- **昭和時代**: 1926年〜\n\n### 現代\n- **平成**: 1989年〜\n- **令和**: 2019年〜",
+    "質問: HTTPステータスコードについて教えてください。\n回答: ## HTTPステータスコード\n\nHTTPレスポンスの状態を示す3桁の数字コードです。\n\n### 2xx 成功\n| コード | 意味 |\n|--------|------|\n| `200` | OK - 成功 |\n| `201` | Created - 作成成功 |\n| `204` | No Content - 内容なし |\n\n### 3xx リダイレクト\n| コード | 意味 |\n|--------|------|\n| `301` | 恒久的な移動 |\n| `302` | 一時的な移動 |\n\n### 4xx クライアントエラー\n| コード | 意味 |\n|--------|------|\n| `400` | Bad Request |\n| `401` | Unauthorized |\n| `403` | Forbidden |\n| `404` | Not Found |\n\n### 5xx サーバーエラー\n| コード | 意味 |\n|--------|------|\n| `500` | Internal Server Error |\n| `502` | Bad Gateway |\n| `503` | Service Unavailable |",
+    "質問: Gitの基本コマンドを教えてください。\n回答: ## Gitの基本コマンド\n\n### 初期設定\n```bash\ngit init              # リポジトリ初期化\ngit clone <url>       # リポジトリをクローン\n```\n\n### 基本操作\n```bash\ngit add <file>        # ステージング\ngit commit -m \"msg\"   # コミット\ngit push origin main  # プッシュ\ngit pull origin main  # プル\n```\n\n### ブランチ操作\n```bash\ngit branch <name>     # ブランチ作成\ngit checkout <name>   # ブランチ切替\ngit merge <name>      # マージ\n```\n\n### 確認コマンド\n- `git status` - 状態確認\n- `git log` - 履歴表示\n- `git diff` - 差分確認\n\n> **ベストプラクティス**: こまめにコミットし、わかりやすいコミットメッセージを書きましょう。",
+    "質問: データベースの種類を教えてください。\n回答: ## データベースの種類\n\n### リレーショナルDB（RDB）\nテーブル形式でデータを管理します。\n\n| DB | 特徴 |\n|-----|------|\n| **MySQL** | オープンソース、Web開発で人気 |\n| **PostgreSQL** | 高機能、拡張性が高い |\n| **SQLite** | 軽量、組み込み向け |\n\n### NoSQL\n- **MongoDB**: ドキュメント型、JSON形式\n- **Redis**: キーバリュー型、高速キャッシュ\n- **Cassandra**: カラム型、大規模分散処理\n- **Neo4j**: グラフ型、関係性の表現\n\n### 選択基準\n1. データの構造（構造化 vs 非構造化）\n2. スケーラビリティの要件\n3. 一貫性 vs 可用性のトレードオフ",
+    "質問: APIとは何ですか？\n回答: ## API（Application Programming Interface）\n\nソフトウェア同士が通信するための**インターフェース**です。\n\n### REST API\n最も一般的なAPI設計スタイルです。\n\n#### HTTPメソッド\n| メソッド | 操作 | 例 |\n|----------|------|-----|\n| `GET` | 取得 | ユーザー一覧取得 |\n| `POST` | 作成 | 新規ユーザー登録 |\n| `PUT` | 更新 | ユーザー情報更新 |\n| `DELETE` | 削除 | ユーザー削除 |\n\n### レスポンス例\n```json\n{\n  \"status\": 200,\n  \"data\": {\n    \"id\": 1,\n    \"name\": \"太郎\"\n  }\n}\n```\n\n> **ポイント**: RESTful APIは*ステートレス*で、各リクエストが独立しています。",
+    "質問: 量子コンピュータの仕組みを教えてください。\n回答: ## 量子コンピュータ\n\n量子力学の原理を利用した**次世代のコンピュータ**です。\n\n### 古典コンピュータとの違い\n| 項目 | 古典 | 量子 |\n|------|------|------|\n| 基本単位 | ビット（0/1） | 量子ビット（重ね合わせ） |\n| 処理方式 | 逐次処理 | 並列処理 |\n| 得意分野 | 汎用計算 | 最適化・暗号 |\n\n### 主要な原理\n1. **重ね合わせ**: 0と1を同時に表現\n2. **エンタングルメント**: 量子もつれによる相関\n3. **干渉**: 正解の確率を増幅\n\n### 応用分野\n- 創薬シミュレーション\n- 金融リスク分析\n- 暗号解読\n- 材料科学",
+    "質問: CSSの基本を教えてください。\n回答: ## CSSの基本\n\nWebページの**見た目を装飾**するスタイルシート言語です。\n\n### セレクタと宣言\n```css\n/* 要素セレクタ */\nh1 {\n  color: #333;\n  font-size: 24px;\n}\n\n/* クラスセレクタ */\n.container {\n  max-width: 1200px;\n  margin: 0 auto;\n  padding: 20px;\n}\n```\n\n### Flexbox レイアウト\n```css\n.flex-container {\n  display: flex;\n  justify-content: center;\n  align-items: center;\n  gap: 16px;\n}\n```\n\n### よく使うプロパティ\n- `margin` / `padding`: 余白\n- `color` / `background`: 色\n- `font-size` / `font-weight`: 文字装飾\n- `border` / `border-radius`: 枠線\n\n> **Tips**: レスポンシブデザインには`@media`クエリを使います。",
+    "質問: 富士山について教えてください。\n回答: ## 富士山\n\n日本の**最高峰**であり、*世界文化遺産*に登録されています。\n\n### 基本データ\n- **標高**: 3,776m\n- **所在地**: 静岡県・山梨県\n- **種類**: 成層火山（活火山）\n- **最終噴火**: 1707年（宝永噴火）\n\n### 登山シーズン\n| 月 | 状況 |\n|----|------|\n| 7月 | 開山（山梨県側） |\n| 8月 | ベストシーズン |\n| 9月 | 閉山 |\n\n### 登山ルート\n1. **吉田ルート**: 最も人気、初心者向け\n2. **富士宮ルート**: 最短距離\n3. **須走ルート**: 砂走りが特徴\n4. **御殿場ルート**: 最長、上級者向け\n\n> 富士山は日本人の心の象徴であり、古来より信仰の対象とされてきました。",
+    "質問: セキュリティ対策について教えてください。\n回答: ## Webセキュリティ対策\n\n### 主要な脅威と対策\n\n#### 1. XSS（クロスサイトスクリプティング）\n- **対策**: 出力時のエスケープ処理\n```html\n<!-- 危険 -->\n<p>{{user_input}}</p>\n<!-- 安全 -->\n<p>{{user_input | escape}}</p>\n```\n\n#### 2. SQLインジェクション\n- **対策**: プリペアドステートメントの使用\n```python\n# 危険\ncursor.execute(f\"SELECT * FROM users WHERE id={id}\")\n# 安全\ncursor.execute(\"SELECT * FROM users WHERE id=?\", (id,))\n```\n\n#### 3. CSRF\n- **対策**: CSRFトークンの使用\n\n### セキュリティチェックリスト\n- [ ] HTTPS通信の強制\n- [ ] 入力値バリデーション\n- [ ] パスワードのハッシュ化\n- [ ] 適切な認証・認可\n- [ ] セキュリティヘッダーの設定",
+    "質問: Docker とは何ですか？\n回答: ## Docker\n\nアプリケーションを**コンテナ**として仮想化するプラットフォームです。\n\n### 基本コマンド\n```bash\n# イメージ操作\ndocker pull nginx           # イメージ取得\ndocker build -t myapp .     # イメージ作成\n\n# コンテナ操作\ndocker run -d -p 80:80 nginx  # 起動\ndocker ps                     # 一覧\ndocker stop <id>              # 停止\n```\n\n### Dockerfile例\n```dockerfile\nFROM python:3.11-slim\nWORKDIR /app\nCOPY requirements.txt .\nRUN pip install -r requirements.txt\nCOPY . .\nCMD [\"python\", \"app.py\"]\n```\n\n### VMとの比較\n| 項目 | Docker | VM |\n|------|--------|----|\n| 起動速度 | 秒単位 | 分単位 |\n| リソース | 軽量 | 重い |\n| 分離レベル | プロセス | 完全 |",
+    "質問: 天気について説明してください。\n回答: ## 天気のメカニズム\n\n### 天気を決める要素\n1. **気温**: 大気の温度\n2. **気圧**: 空気の重さによる圧力\n3. **湿度**: 空気中の水蒸気量\n4. **風**: 気圧差による空気の移動\n\n### 主な天気現象\n- **晴れ**: 高気圧に覆われた状態\n- **雨**: 水蒸気が凝結して降下\n- **雪**: 水蒸気が氷晶として降下\n- **台風**: 熱帯低気圧が発達\n\n### 天気図の記号\n| 記号 | 意味 |\n|------|------|\n| ○ | 快晴 |\n| ◎ | 曇り |\n| ● | 雨 |\n\n> 天気予報は**数値予報モデル**によるスーパーコンピュータのシミュレーションで行われます。",
+    "質問: 数学の基本公式を教えてください。\n回答: ## 数学の基本公式\n\n### 代数\n- 二次方程式の解: `x = (-b ± √(b²-4ac)) / 2a`\n- 因数分解: `a²-b² = (a+b)(a-b)`\n\n### 幾何学\n| 図形 | 面積公式 |\n|------|----------|\n| 円 | `S = πr²` |\n| 三角形 | `S = ½ × 底辺 × 高さ` |\n| 長方形 | `S = 縦 × 横` |\n\n### 三角関数\n```\nsin²θ + cos²θ = 1\ntan θ = sin θ / cos θ\n```\n\n### 微積分\n1. **微分**: `f'(x) = lim(h→0) [f(x+h) - f(x)] / h`\n2. **積分**: `∫f(x)dx = F(x) + C`\n\n> **重要**: これらの公式は*物理学*や*工学*の基礎となります。",
+    "質問: 健康的な食事について教えてください。\n回答: ## 健康的な食事ガイド\n\n### 五大栄養素\n1. **炭水化物**: エネルギー源\n2. **タンパク質**: 体を作る\n3. **脂質**: エネルギー貯蔵\n4. **ビタミン**: 体の調子を整える\n5. **ミネラル**: 骨・血液の材料\n\n### 1日の推奨摂取量\n| 栄養素 | 成人男性 | 成人女性 |\n|--------|----------|----------|\n| カロリー | 2,200kcal | 1,800kcal |\n| タンパク質 | 65g | 50g |\n| 食物繊維 | 21g | 18g |\n\n### バランスの良い食事のポイント\n- 主食・主菜・副菜を揃える\n- **野菜**は1日350g以上\n- *塩分*は控えめに（1日6g未満）\n- 水分を十分に摂取\n\n> 「医食同源」- 食事は最良の薬です。",
+    "質問: 人工知能の歴史を教えてください。\n回答: ## 人工知能（AI）の歴史\n\n### 年表\n| 年代 | 出来事 |\n|------|--------|\n| 1950 | チューリングテストの提唱 |\n| 1956 | 「人工知能」という用語の誕生 |\n| 1960s | 第1次AIブーム（探索・推論） |\n| 1980s | 第2次AIブーム（エキスパートシステム） |\n| 2012 | 深層学習の躍進（AlexNet） |\n| 2022 | 生成AI（ChatGPT）の登場 |\n\n### AIの3つの波\n1. **第1次ブーム**: ルールベース\n   - 限定的な問題解決\n2. **第2次ブーム**: 知識ベース\n   - エキスパートシステムの活用\n3. **第3次ブーム**: 機械学習・深層学習\n   - ビッグデータと計算力の向上\n\n> 現在は**第3次AIブーム**の最中であり、*生成AI*が社会に大きな影響を与えています。",
+    "質問: 環境問題について教えてください。\n回答: ## 地球の環境問題\n\n### 主要な環境問題\n\n#### 1. 地球温暖化\n- **原因**: CO2などの温室効果ガスの増加\n- **影響**: 海面上昇、異常気象\n- **対策**: 再生可能エネルギーの推進\n\n#### 2. 生物多様性の喪失\n- 毎年約4万種が絶滅の危機\n- 森林破壊と生息地の減少\n\n#### 3. 海洋プラスチック汚染\n- 年間約800万トンが海に流入\n\n### SDGs関連目標\n| 目標 | 内容 |\n|------|------|\n| 7 | エネルギーをみんなに |\n| 13 | 気候変動に具体的な対策を |\n| 14 | 海の豊かさを守ろう |\n| 15 | 陸の豊かさも守ろう |\n\n### 私たちにできること\n- [ ] マイバッグ・マイボトルを使う\n- [ ] 省エネを心がける\n- [ ] フードロスを減らす\n- [ ] 公共交通機関を利用する",
+]
+
+
+def run_markdown_training(req: TrainMarkdownRequest):
+    """Run markdown format training in background thread."""
+    global model, tokenizer, config, device, training_status
+    training_status = {"running": True, "log": [], "message": "Preparing markdown training data..."}
+    min_lr_ratio = 0.1
+
+    try:
+        # Build markdown training corpus: repeat to reinforce the pattern
+        all_texts = []
+        for _ in range(80):
+            all_texts.extend(MARKDOWN_QA)
+        training_status["log"].append(f"Markdown QA samples: {len(MARKDOWN_QA)} x 80 = {len(all_texts)}")
+
+        # Tokenize
+        training_status["message"] = "Tokenizing..."
+        max_seq_len = config["max_seq_len"]
+        sequences = tokenize_texts(all_texts, tokenizer, max_seq_len)
+        training_status["log"].append(f"Training sequences: {len(sequences)}")
+
+        # Training
+        steps_per_epoch = len(sequences) // req.batch_size
+        total_steps = (steps_per_epoch * req.epochs) // req.grad_accum_steps
+        optimizer = torch.optim.AdamW(model.parameters(), lr=req.lr, weight_decay=0.01)
+
+        model.train()
+        global_step = 0
+        best_loss = float('inf')
+
+        for epoch in range(req.epochs):
+            random.shuffle(sequences)
+            total_loss = 0
+            n_batches = 0
+            optimizer.zero_grad()
+            training_status["message"] = f"Markdown Training epoch {epoch+1}/{req.epochs}..."
+
+            for i in range(0, len(sequences), req.batch_size):
+                batch_seqs = sequences[i:i + req.batch_size]
+                if not batch_seqs:
+                    continue
+
+                max_len = min(max(len(s) for s in batch_seqs), max_seq_len)
+                input_ids = []
+                labels = []
+                for s in batch_seqs:
+                    ids = s[:max_len]
+                    pad_len = max_len - len(ids)
+                    input_ids.append(ids + [tokenizer.pad_id] * pad_len)
+                    labels.append(ids + [-100] * pad_len)
+
+                input_ids_t = torch.tensor(input_ids, dtype=torch.long, device=device)
+                labels_t = torch.tensor(labels, dtype=torch.long, device=device)
+
+                logits = model(input_ids_t)
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels_t[..., 1:].contiguous()
+                loss = F.cross_entropy(
+                    shift_logits.view(-1, config["vocab_size"]),
+                    shift_labels.view(-1),
+                    ignore_index=-100
+                )
+                loss = loss / req.grad_accum_steps
+                loss.backward()
+
+                total_loss += loss.item() * req.grad_accum_steps
+                n_batches += 1
+
+                if n_batches % req.grad_accum_steps == 0:
+                    if global_step < req.warmup_steps:
+                        lr = req.lr * global_step / max(req.warmup_steps, 1)
+                    else:
+                        progress = (global_step - req.warmup_steps) / max(total_steps - req.warmup_steps, 1)
+                        cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+                        lr = req.lr * (min_lr_ratio + (1 - min_lr_ratio) * cosine_decay)
+                    for pg in optimizer.param_groups:
+                        pg['lr'] = lr
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    global_step += 1
+
+            if n_batches % req.grad_accum_steps != 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                optimizer.zero_grad()
+                global_step += 1
+
+            avg_loss = total_loss / max(n_batches, 1)
+            msg = f"Epoch {epoch+1}/{req.epochs} | Loss: {avg_loss:.4f}"
+            training_status["log"].append(msg)
+            training_status["message"] = msg
+
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                save_qa_checkpoint(model, config, training_status, epoch + 1, ["markdown_format"])
+
+            if (epoch + 1) % 5 == 0:
+                save_qa_checkpoint(model, config, training_status, epoch + 1, ["markdown_format"])
+
+        save_qa_checkpoint(model, config, training_status, req.epochs, ["markdown_format"])
+        model.eval()
+        training_status["message"] = f"Markdown Training complete! Best loss: {best_loss:.4f}"
+        training_status["running"] = False
+
+    except Exception as e:
+        import traceback
+        training_status["running"] = False
+        training_status["message"] = f"Error: {e}"
+        training_status["log"].append(traceback.format_exc())
+        if model is not None:
+            model.eval()
+
+
+# ========================================
 # API Endpoints
 # ========================================
 
@@ -714,6 +863,20 @@ async def train_qa(req: TrainQARequest, background_tasks: BackgroundTasks):
     return TrainResponse(
         status="started",
         message=f"QA Training started: {req.epochs} epochs, lr={req.lr}, "
+                f"effective_batch={req.batch_size * req.grad_accum_steps}",
+    )
+
+
+@app.post("/train/markdown", response_model=TrainResponse)
+async def train_markdown(req: TrainMarkdownRequest, background_tasks: BackgroundTasks):
+    """マークダウン形式出力の学習。"""
+    if training_status["running"]:
+        raise HTTPException(status_code=409, detail="Training already in progress")
+
+    background_tasks.add_task(run_markdown_training, req)
+    return TrainResponse(
+        status="started",
+        message=f"Markdown Training started: {req.epochs} epochs, lr={req.lr}, "
                 f"effective_batch={req.batch_size * req.grad_accum_steps}",
     )
 
