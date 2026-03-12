@@ -19,6 +19,12 @@
 
   # QA形式で分割学習
   python train_split.py --mode qa --num_chunks 4
+
+  # カスタムデータセットIDを指定して学習
+  python train_split.py --dataset_ids "user/my-dataset" "user/another-dataset"
+
+  # カスタムデータセット + 一般テキストモード
+  python train_split.py --mode general --dataset_ids "range3/cc100-ja" --max_samples 5000
 """
 import os
 import sys
@@ -168,6 +174,76 @@ def load_all_general_texts(max_samples_per_dataset):
             texts = extract_texts_general(ds, col, max_samples_per_dataset)
             print(f"    -> {len(texts)} texts")
             all_texts.extend(texts)
+        except Exception as e:
+            print(f"    -> ERROR: {e}")
+    return all_texts
+
+
+def load_custom_datasets(dataset_ids, max_samples, mode):
+    """Load custom datasets by ID with auto-format detection."""
+    all_texts = []
+    for ds_id in dataset_ids:
+        print(f"  Loading {ds_id}...")
+        try:
+            # まず通常ロードを試す、失敗したらstreaming
+            try:
+                ds = load_dataset(ds_id, split="train", trust_remote_code=True)
+                is_streaming = False
+            except Exception:
+                ds = load_dataset(ds_id, split="train", streaming=True, trust_remote_code=True)
+                is_streaming = True
+
+            count = 0
+            iterator = ds if is_streaming else ds.select(range(min(max_samples, len(ds))))
+            for row in iterator:
+                if count >= max_samples:
+                    break
+                text = None
+                if mode == "qa":
+                    # QA形式: 質問/回答ペアを自動検出
+                    q = (row.get("question") or row.get("instruction") or row.get("input") or "")
+                    if isinstance(q, str):
+                        q = q.strip()
+                    else:
+                        q = ""
+                    a = (row.get("answer") or row.get("output") or row.get("response") or "")
+                    if isinstance(a, str):
+                        a = a.strip()
+                    else:
+                        a = ""
+                    if q and a and len(q) > 2 and len(a) > 2:
+                        text = f"質問: {q}\n回答: {a}"
+                    elif not q and a and len(a) > 10:
+                        text = f"回答: {a}"
+                    # conversations形式も試す
+                    if not text:
+                        text = format_qa_conversations(row)
+                    # alpaca形式も試す
+                    if not text and row.get("instruction"):
+                        text = format_qa_alpaca(row)
+                else:
+                    # 一般テキスト: テキストフィールドを自動検出
+                    for col in ["text", "content", "output", "sentence", "document"]:
+                        val = row.get(col)
+                        if isinstance(val, str) and len(val.strip()) > 10:
+                            text = val.strip()
+                            break
+                    if not text:
+                        convs = row.get("conversations", [])
+                        if isinstance(convs, list) and convs:
+                            parts = []
+                            for turn in convs:
+                                if isinstance(turn, dict):
+                                    parts.append(turn.get("value", turn.get("content", "")))
+                                elif isinstance(turn, str):
+                                    parts.append(turn)
+                            combined = "\n".join(parts)
+                            if len(combined.strip()) > 10:
+                                text = combined.strip()
+                if text and len(text) > 10:
+                    all_texts.append(text)
+                    count += 1
+            print(f"    -> {count} texts")
         except Exception as e:
             print(f"    -> ERROR: {e}")
     return all_texts
@@ -362,6 +438,8 @@ def main():
                         help="前回の分割学習を途中から再開")
     parser.add_argument("--crafted_repeat", type=int, default=20,
                         help="手作りQAの繰り返し回数（QAモードのみ、default: 20）")
+    parser.add_argument("--dataset_ids", nargs="+", default=None,
+                        help="カスタムHugging FaceデータセットID（スペース区切り）。指定時はデフォルトの代わりに使用")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -400,7 +478,16 @@ def main():
 
     # Load data
     print(f"\n=== Loading datasets (mode: {args.mode}) ===")
-    if args.mode == "qa":
+    if args.dataset_ids:
+        # カスタムデータセットIDが指定された場合
+        print(f"  Custom datasets: {args.dataset_ids}")
+        all_texts = load_custom_datasets(args.dataset_ids, args.max_samples, args.mode)
+        if args.mode == "qa" and args.crafted_repeat > 0:
+            for _ in range(args.crafted_repeat):
+                all_texts.extend(CRAFTED_QA)
+            print(f"  + {len(CRAFTED_QA) * args.crafted_repeat} crafted QA samples")
+        dataset_ids = args.dataset_ids
+    elif args.mode == "qa":
         all_texts = load_all_qa_texts(args.max_samples)
         # Add crafted QA
         for _ in range(args.crafted_repeat):

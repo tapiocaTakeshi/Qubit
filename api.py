@@ -80,6 +80,7 @@ class TrainMarkdownRequest(BaseModel):
 
 class TrainSplitRequest(BaseModel):
     mode: str = "qa"  # "qa" or "general"
+    dataset_ids: Optional[List[str]] = None  # カスタムデータセットIDリスト（指定時はデフォルトの代わりに使用）
     num_chunks: int = 4
     chunk_index: Optional[int] = None  # None = all chunks, int = specific chunk
     epochs_per_chunk: int = 5
@@ -889,6 +890,79 @@ def _load_all_general_texts(max_samples):
     return all_texts
 
 
+def _load_custom_datasets(dataset_ids, max_samples, mode):
+    """Load custom datasets by ID. Auto-detects format."""
+    from datasets import load_dataset as _load_ds
+    all_texts = []
+    for ds_id in dataset_ids:
+        try:
+            training_status["message"] = f"Loading {ds_id}..."
+            # まずstreaming=Trueで試す（大規模データセット対応）
+            try:
+                ds = _load_ds(ds_id, split="train", trust_remote_code=True)
+                is_streaming = False
+            except Exception:
+                ds = _load_ds(ds_id, split="train", streaming=True, trust_remote_code=True)
+                is_streaming = True
+
+            count = 0
+            iterator = ds if is_streaming else ds.select(range(min(max_samples, len(ds))))
+            for row in iterator:
+                if count >= max_samples:
+                    break
+                text = None
+                if mode == "qa":
+                    # QA形式: 質問/回答ペアを自動検出
+                    q = (row.get("question") or row.get("instruction") or row.get("input") or "")
+                    if isinstance(q, str):
+                        q = q.strip()
+                    else:
+                        q = ""
+                    a = (row.get("answer") or row.get("output") or row.get("response") or "")
+                    if isinstance(a, str):
+                        a = a.strip()
+                    else:
+                        a = ""
+                    if q and a and len(q) > 2 and len(a) > 2:
+                        text = f"質問: {q}\n回答: {a}"
+                    elif not q and a and len(a) > 10:
+                        text = f"回答: {a}"
+                    # conversations形式も試す
+                    if not text:
+                        convs = row.get("conversations", [])
+                        if isinstance(convs, list) and len(convs) >= 2:
+                            text = format_qa_conversations(row)
+                    # alpaca形式も試す
+                    if not text and row.get("instruction"):
+                        text = format_qa_alpaca(row)
+                else:
+                    # 一般テキスト: 利用可能なテキストフィールドを自動検出
+                    for col in ["text", "content", "output", "sentence", "document"]:
+                        val = row.get(col)
+                        if isinstance(val, str) and len(val.strip()) > 10:
+                            text = val.strip()
+                            break
+                    if not text:
+                        convs = row.get("conversations", [])
+                        if isinstance(convs, list) and convs:
+                            parts = []
+                            for turn in convs:
+                                if isinstance(turn, dict):
+                                    parts.append(turn.get("value", turn.get("content", "")))
+                                elif isinstance(turn, str):
+                                    parts.append(turn)
+                            combined = "\n".join(parts)
+                            if len(combined.strip()) > 10:
+                                text = combined.strip()
+                if text and len(text) > 10:
+                    all_texts.append(text)
+                    count += 1
+            training_status["log"].append(f"Loaded {ds_id}: {count} texts")
+        except Exception as e:
+            training_status["log"].append(f"Error loading {ds_id}: {e}")
+    return all_texts
+
+
 def _split_into_chunks(data, num_chunks):
     """Split data into roughly equal chunks."""
     random.shuffle(data)
@@ -923,7 +997,15 @@ def run_split_training(req: TrainSplitRequest):
 
     try:
         # Load data
-        if req.mode == "qa":
+        if req.dataset_ids:
+            # カスタムデータセットIDが指定された場合
+            all_texts = _load_custom_datasets(req.dataset_ids, req.max_samples_per_dataset, req.mode)
+            if req.mode == "qa" and req.crafted_repeat > 0:
+                for _ in range(req.crafted_repeat):
+                    all_texts.extend(CRAFTED_QA)
+                training_status["log"].append(f"Added {len(CRAFTED_QA) * req.crafted_repeat} crafted QA samples")
+            dataset_ids = req.dataset_ids
+        elif req.mode == "qa":
             all_texts = _load_all_qa_texts(req.max_samples_per_dataset)
             for _ in range(req.crafted_repeat):
                 all_texts.extend(CRAFTED_QA)
