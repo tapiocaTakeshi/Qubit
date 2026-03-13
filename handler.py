@@ -542,12 +542,13 @@ class EndpointHandler:
 
         text_column = data.get("text_column", "text")
         split = data.get("split", "train")
+        config_name = data.get("config", data.get("name", None))
         max_samples = int(data.get("max_samples", 3000))
         epochs = float(data.get("epochs", 3.0))
         lr = float(data.get("lr", 1e-3))
 
         try:
-            ds = load_dataset(dataset_id, split=split, trust_remote_code=False)
+            ds = load_dataset(dataset_id, name=config_name, split=split, trust_remote_code=False)
         except Exception as e:
             return [{"error": f"Failed to load dataset: {str(e)}", "traceback": traceback.format_exc()}]
 
