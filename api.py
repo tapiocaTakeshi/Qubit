@@ -10,6 +10,7 @@ import torch.nn.functional as F
 import json
 import math
 import random
+import time
 import threading
 from datetime import datetime, timezone
 from typing import Optional, List
@@ -82,7 +83,11 @@ class TrainSplitRequest(BaseModel):
     mode: str = "qa"  # "qa" or "general"
     dataset_ids: Optional[List[str]] = None  # カスタムデータセットIDリスト（指定時はデフォルトの代わりに使用）
     num_chunks: int = 4
+    samples_per_batch: Optional[int] = None  # サンプル数ベースでバッチ分割（num_chunksの代替）
     chunk_index: Optional[int] = None  # None = all chunks, int = specific chunk
+    start_sample: Optional[int] = None  # 学習開始サンプルインデックス（範囲指定）
+    end_sample: Optional[int] = None  # 学習終了サンプルインデックス（範囲指定）
+    max_minutes_per_chunk: Optional[float] = None  # チャンクごとの最大学習時間（分）
     epochs_per_chunk: int = 5
     lr: float = 3e-5
     batch_size: int = 4
@@ -963,10 +968,19 @@ def _load_custom_datasets(dataset_ids, max_samples, mode):
     return all_texts
 
 
-def _split_into_chunks(data, num_chunks):
-    """Split data into roughly equal chunks."""
+def _split_into_chunks(data, num_chunks, samples_per_batch=None):
+    """Split data into chunks.
+
+    Args:
+        data: List of texts to split
+        num_chunks: Number of chunks (used when samples_per_batch is None)
+        samples_per_batch: If specified, split by fixed sample count instead of num_chunks
+    """
     random.shuffle(data)
-    chunk_size = math.ceil(len(data) / num_chunks)
+    if samples_per_batch is not None and samples_per_batch > 0:
+        chunk_size = samples_per_batch
+    else:
+        chunk_size = math.ceil(len(data) / num_chunks)
     chunks = []
     for i in range(0, len(data), chunk_size):
         chunk = data[i:i + chunk_size]
@@ -1022,8 +1036,22 @@ def run_split_training(req: TrainSplitRequest):
             training_status["running"] = False
             return
 
+        # Apply explicit sample range if specified
+        if req.start_sample is not None or req.end_sample is not None:
+            start = req.start_sample if req.start_sample is not None else 0
+            end = req.end_sample if req.end_sample is not None else len(all_texts)
+            start = max(0, min(start, len(all_texts)))
+            end = max(start, min(end, len(all_texts)))
+            training_status["log"].append(f"Sample range: [{start}, {end}) = {end - start} samples")
+            all_texts = all_texts[start:end]
+
+            if len(all_texts) == 0:
+                training_status["message"] = "Error: No texts in specified range"
+                training_status["running"] = False
+                return
+
         # Split into chunks
-        chunks = _split_into_chunks(all_texts, req.num_chunks)
+        chunks = _split_into_chunks(all_texts, req.num_chunks, req.samples_per_batch)
         actual_num_chunks = len(chunks)
         for i, chunk in enumerate(chunks):
             training_status["log"].append(f"Chunk {i}: {len(chunk)} texts")
@@ -1051,6 +1079,9 @@ def run_split_training(req: TrainSplitRequest):
 
         max_seq_len = config["max_seq_len"]
 
+        # Timeout setup
+        timeout_seconds = req.max_minutes_per_chunk * 60 if req.max_minutes_per_chunk else None
+
         # Train on each chunk
         for chunk_idx in chunk_indices:
             chunk_texts = chunks[chunk_idx]
@@ -1071,6 +1102,8 @@ def run_split_training(req: TrainSplitRequest):
             model.train()
             global_step = 0
             best_loss = float('inf')
+            timed_out = False
+            chunk_start_time = time.time()
 
             for epoch in range(req.epochs_per_chunk):
                 random.shuffle(sequences)
@@ -1083,6 +1116,15 @@ def run_split_training(req: TrainSplitRequest):
                 )
 
                 for i in range(0, len(sequences), req.batch_size):
+                    # Timeout check
+                    if timeout_seconds and (time.time() - chunk_start_time) >= timeout_seconds:
+                        elapsed = (time.time() - chunk_start_time) / 60
+                        msg = f"TIMEOUT: Chunk {chunk_idx+1} stopped after {elapsed:.1f} min"
+                        training_status["log"].append(msg)
+                        training_status["message"] = msg
+                        timed_out = True
+                        break
+
                     batch_seqs = sequences[i:i + req.batch_size]
                     if not batch_seqs:
                         continue
@@ -1127,6 +1169,18 @@ def run_split_training(req: TrainSplitRequest):
                         optimizer.zero_grad()
                         global_step += 1
 
+                if timed_out:
+                    # Flush remaining gradients
+                    if n_batches % req.grad_accum_steps != 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                        optimizer.step()
+                        optimizer.zero_grad()
+                    if n_batches > 0:
+                        avg_loss = total_loss / n_batches
+                        if avg_loss < best_loss:
+                            best_loss = avg_loss
+                    break
+
                 if n_batches % req.grad_accum_steps != 0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                     optimizer.step()
@@ -1153,8 +1207,14 @@ def run_split_training(req: TrainSplitRequest):
                 "num_chunks": actual_num_chunks,
                 "last_completed_chunk": chunk_idx,
                 "best_loss": best_loss,
+                "timed_out": timed_out,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
+
+            # If timed out, stop processing further chunks
+            if timed_out:
+                training_status["log"].append("Remaining chunks can be trained with resume=true")
+                break
 
         model.eval()
         training_status["message"] = f"Split training complete! {len(chunk_indices)} chunks trained"
@@ -1259,12 +1319,29 @@ async def train_split(req: TrainSplitRequest, background_tasks: BackgroundTasks)
     if training_status["running"]:
         raise HTTPException(status_code=409, detail="Training already in progress")
 
-    chunk_desc = f"chunk {req.chunk_index}" if req.chunk_index is not None else f"all {req.num_chunks} chunks"
+    if req.chunk_index is not None:
+        chunk_desc = f"chunk {req.chunk_index}"
+    elif req.samples_per_batch:
+        chunk_desc = f"batches of {req.samples_per_batch} samples"
+    else:
+        chunk_desc = f"all {req.num_chunks} chunks"
+
+    range_desc = ""
+    if req.start_sample is not None or req.end_sample is not None:
+        s = req.start_sample if req.start_sample is not None else 0
+        e = req.end_sample if req.end_sample is not None else "end"
+        range_desc = f", range=[{s},{e})"
+
+    timeout_desc = ""
+    if req.max_minutes_per_chunk:
+        timeout_desc = f", timeout={req.max_minutes_per_chunk}min/chunk"
+
     background_tasks.add_task(run_split_training, req)
     return TrainResponse(
         status="started",
-        message=f"Split Training started: mode={req.mode}, {chunk_desc}, "
-                f"{req.epochs_per_chunk} epochs/chunk, lr={req.lr}",
+        message=f"Split Batch Training started: mode={req.mode}, {chunk_desc}, "
+                f"{req.epochs_per_chunk} epochs/chunk, lr={req.lr}"
+                f"{range_desc}{timeout_desc}",
     )
 
 
