@@ -78,6 +78,17 @@ class TrainMarkdownRequest(BaseModel):
     warmup_steps: int = 20
 
 
+class SplitTrainRequest(BaseModel):
+    mode: str = "qa"  # "qa" or "wikipedia"
+    num_chunks: int = 4
+    epochs_per_chunk: int = 3
+    lr: float = 3e-5
+    batch_size: int = 4
+    grad_accum_steps: int = 4
+    warmup_steps: int = 30
+    max_samples_per_dataset: int = 5000
+
+
 class TrainResponse(BaseModel):
     status: str
     message: str
@@ -798,6 +809,177 @@ def run_markdown_training(req: TrainMarkdownRequest):
 
 
 # ========================================
+# Split (Chunked) Training
+# ========================================
+
+split_state = {
+    "chunks": [],        # list of text chunks
+    "current_index": 0,  # next chunk to train
+    "num_chunks": 0,
+    "mode": "qa",
+}
+
+
+def prepare_split_data(mode: str, num_chunks: int, max_samples: int):
+    """Prepare and split training data into chunks."""
+    from datasets import load_dataset
+
+    all_texts = []
+
+    if mode == "qa":
+        # Load QA datasets
+        for ds_info in QA_DATASETS_INFO:
+            ds_id = ds_info["id"]
+            fmt = ds_info["format"]
+            max_s = min(1000, max_samples) if fmt == "izumi" else max_samples
+            try:
+                ds = load_dataset(ds_id, split="train")
+                n = min(max_s, len(ds))
+                for row in ds.select(range(n)):
+                    if fmt == "alpaca":
+                        text = format_qa_alpaca(row)
+                    elif fmt == "conversations":
+                        text = format_qa_conversations(row)
+                    elif fmt == "izumi":
+                        text = format_qa_izumi(row)
+                    else:
+                        continue
+                    if text and len(text) > 10:
+                        all_texts.append(text)
+            except Exception:
+                pass
+        # Add crafted QA
+        for _ in range(40):
+            all_texts.extend(CRAFTED_QA)
+    elif mode == "wikipedia":
+        try:
+            ds = load_dataset("izumi-lab/wikipedia-ja-20230720", split="train", streaming=True)
+            count = 0
+            for row in ds:
+                text = row.get("text", "").strip()
+                if text and len(text) > 50:
+                    all_texts.append(text)
+                    count += 1
+                    if count >= max_samples:
+                        break
+        except Exception:
+            pass
+    else:
+        raise ValueError(f"Unknown mode: {mode}. Use 'qa' or 'wikipedia'.")
+
+    random.shuffle(all_texts)
+
+    # Split into num_chunks
+    chunk_size = max(len(all_texts) // num_chunks, 1)
+    chunks = []
+    for i in range(num_chunks):
+        start = i * chunk_size
+        end = start + chunk_size if i < num_chunks - 1 else len(all_texts)
+        chunks.append(all_texts[start:end])
+
+    return chunks
+
+
+def run_split_chunk_training(chunk_texts, req: SplitTrainRequest, chunk_index: int):
+    """Train one chunk synchronously. Returns loss info."""
+    global model, tokenizer, config, device, training_status
+    min_lr_ratio = 0.1
+
+    training_status = {"running": True, "log": [], "message": f"Split training chunk {chunk_index+1}/{req.num_chunks}..."}
+
+    max_seq_len = config["max_seq_len"]
+    sequences = tokenize_texts(chunk_texts, tokenizer, max_seq_len)
+    training_status["log"].append(f"Chunk {chunk_index+1}: {len(chunk_texts)} texts -> {len(sequences)} sequences")
+
+    if not sequences:
+        training_status["running"] = False
+        training_status["message"] = f"Chunk {chunk_index+1}: no sequences"
+        return {"chunk_index": chunk_index, "loss": None}
+
+    steps_per_epoch = len(sequences) // req.batch_size
+    total_steps = (steps_per_epoch * req.epochs_per_chunk) // req.grad_accum_steps
+    optimizer = torch.optim.AdamW(model.parameters(), lr=req.lr, weight_decay=0.01)
+
+    model.train()
+    global_step = 0
+    best_loss = float('inf')
+
+    for epoch in range(req.epochs_per_chunk):
+        random.shuffle(sequences)
+        total_loss = 0
+        n_batches = 0
+        optimizer.zero_grad()
+        training_status["message"] = f"Chunk {chunk_index+1}/{req.num_chunks} - Epoch {epoch+1}/{req.epochs_per_chunk}..."
+
+        for i in range(0, len(sequences), req.batch_size):
+            batch_seqs = sequences[i:i + req.batch_size]
+            if not batch_seqs:
+                continue
+
+            max_len = min(max(len(s) for s in batch_seqs), max_seq_len)
+            input_ids = []
+            labels = []
+            for s in batch_seqs:
+                ids = s[:max_len]
+                pad_len = max_len - len(ids)
+                input_ids.append(ids + [tokenizer.pad_id] * pad_len)
+                labels.append(ids + [-100] * pad_len)
+
+            input_ids_t = torch.tensor(input_ids, dtype=torch.long, device=device)
+            labels_t = torch.tensor(labels, dtype=torch.long, device=device)
+
+            logits = model(input_ids_t)
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels_t[..., 1:].contiguous()
+            loss = F.cross_entropy(
+                shift_logits.view(-1, config["vocab_size"]),
+                shift_labels.view(-1),
+                ignore_index=-100
+            )
+            loss = loss / req.grad_accum_steps
+            loss.backward()
+
+            total_loss += loss.item() * req.grad_accum_steps
+            n_batches += 1
+
+            if n_batches % req.grad_accum_steps == 0:
+                if global_step < req.warmup_steps:
+                    lr = req.lr * global_step / max(req.warmup_steps, 1)
+                else:
+                    progress = (global_step - req.warmup_steps) / max(total_steps - req.warmup_steps, 1)
+                    cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+                    lr = req.lr * (min_lr_ratio + (1 - min_lr_ratio) * cosine_decay)
+                for pg in optimizer.param_groups:
+                    pg['lr'] = lr
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                optimizer.zero_grad()
+                global_step += 1
+
+        if n_batches % req.grad_accum_steps != 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            optimizer.zero_grad()
+            global_step += 1
+
+        avg_loss = total_loss / max(n_batches, 1)
+        msg = f"Chunk {chunk_index+1} Epoch {epoch+1}/{req.epochs_per_chunk} | Loss: {avg_loss:.4f}"
+        training_status["log"].append(msg)
+        training_status["message"] = msg
+
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+
+    # Save checkpoint after chunk
+    save_qa_checkpoint(model, config, training_status, chunk_index + 1, [f"split_{req.mode}"])
+    model.eval()
+    training_status["running"] = False
+    training_status["message"] = f"Chunk {chunk_index+1} complete. Loss: {best_loss:.4f}"
+
+    return {"chunk_index": chunk_index, "best_loss": best_loss}
+
+
+# ========================================
 # API Endpoints
 # ========================================
 
@@ -879,6 +1061,69 @@ async def train_markdown(req: TrainMarkdownRequest, background_tasks: Background
         message=f"Markdown Training started: {req.epochs} epochs, lr={req.lr}, "
                 f"effective_batch={req.batch_size * req.grad_accum_steps}",
     )
+
+
+@app.post("/train/split/next")
+async def train_split_next(req: SplitTrainRequest):
+    """Train next chunk of split data. First call prepares data and trains chunk 0."""
+    global split_state
+
+    if training_status["running"]:
+        raise HTTPException(status_code=409, detail="Training already in progress")
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    # If no chunks prepared or params changed, prepare fresh
+    if (not split_state["chunks"]
+            or split_state["num_chunks"] != req.num_chunks
+            or split_state["mode"] != req.mode):
+        try:
+            chunks = prepare_split_data(req.mode, req.num_chunks, req.max_samples_per_dataset)
+            split_state = {
+                "chunks": chunks,
+                "current_index": 0,
+                "num_chunks": req.num_chunks,
+                "mode": req.mode,
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to prepare data: {e}")
+
+    idx = split_state["current_index"]
+    if idx >= split_state["num_chunks"]:
+        return {
+            "status": "all_chunks_completed",
+            "chunk_index": idx,
+            "chunks_remaining": 0,
+            "message": "All chunks already trained. Use /train/split/reset to start over.",
+        }
+
+    chunk_texts = split_state["chunks"][idx]
+    try:
+        result = run_split_chunk_training(chunk_texts, req, idx)
+    except Exception as e:
+        import traceback
+        training_status["running"] = False
+        raise HTTPException(status_code=500, detail=f"Training error: {e}\n{traceback.format_exc()}")
+
+    split_state["current_index"] = idx + 1
+    remaining = split_state["num_chunks"] - split_state["current_index"]
+
+    return {
+        "status": "chunk_completed",
+        "chunk_index": idx,
+        "chunks_remaining": remaining,
+        "best_loss": result.get("best_loss"),
+        "log": training_status["log"],
+        "message": f"Chunk {idx+1}/{req.num_chunks} done. {remaining} remaining.",
+    }
+
+
+@app.post("/train/split/reset")
+async def train_split_reset():
+    """Reset split training state to start over."""
+    global split_state
+    split_state = {"chunks": [], "current_index": 0, "num_chunks": 0, "mode": "qa"}
+    return {"status": "reset", "message": "Split training state has been reset."}
 
 
 @app.get("/train/status", response_model=TrainStatusResponse)
