@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-分割学習スクリプト: Hugging Faceデータセットを分割して学習する。
+分割バッチ学習スクリプト: Hugging Faceデータセットを分割して学習する。
 一度に全データを学習するとタイムアウトする問題を回避するため、
-データセットをチャンクに分割し、各チャンクごとに学習・保存を行う。
+データセットをバッチ（チャンク）に分割し、各バッチごとに学習・保存を行う。
 
 使い方:
   # デフォルト設定で分割学習（4チャンクに分割）
@@ -11,8 +11,17 @@
   # チャンク数を指定
   python train_split.py --num_chunks 8
 
+  # サンプル数ベースでバッチ分割（例: 500サンプルずつ）
+  python train_split.py --samples_per_batch 500
+
   # 特定のチャンクだけ学習（0始まり）
   python train_split.py --chunk_index 2
+
+  # 明示的なサンプル範囲を指定（例: サンプル100〜500だけ学習）
+  python train_split.py --start_sample 100 --end_sample 500
+
+  # チャンクごとのタイムアウト制限（分単位）
+  python train_split.py --max_minutes_per_chunk 10
 
   # エポック数やサンプル数を指定
   python train_split.py --epochs 5 --max_samples 2000
@@ -36,6 +45,7 @@ from datetime import datetime, timezone
 import json
 import random
 import math
+import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer
@@ -249,10 +259,19 @@ def load_custom_datasets(dataset_ids, max_samples, mode):
     return all_texts
 
 
-def split_into_chunks(data, num_chunks):
-    """Split data into roughly equal chunks."""
+def split_into_chunks(data, num_chunks, samples_per_batch=None):
+    """Split data into chunks.
+
+    Args:
+        data: List of texts to split
+        num_chunks: Number of chunks (used when samples_per_batch is None)
+        samples_per_batch: If specified, split by fixed sample count instead of num_chunks
+    """
     random.shuffle(data)
-    chunk_size = math.ceil(len(data) / num_chunks)
+    if samples_per_batch is not None and samples_per_batch > 0:
+        chunk_size = samples_per_batch
+    else:
+        chunk_size = math.ceil(len(data) / num_chunks)
     chunks = []
     for i in range(0, len(data), chunk_size):
         chunk = data[i:i + chunk_size]
@@ -294,7 +313,13 @@ def get_lr(step, total_steps, warmup_steps, max_lr, min_lr_ratio=0.1):
 
 
 def train_on_chunk(model, sequences, tokenizer, nq_config, device, args, chunk_idx, num_chunks):
-    """Train model on a single chunk of data."""
+    """Train model on a single chunk of data.
+
+    Returns:
+        training_log: List of epoch logs
+        best_loss: Best loss achieved
+        timed_out: Whether the chunk was stopped due to timeout
+    """
     max_seq_len = nq_config.max_seq_len
     batch_size = args.batch_size
     grad_accum_steps = args.grad_accum_steps
@@ -302,12 +327,16 @@ def train_on_chunk(model, sequences, tokenizer, nq_config, device, args, chunk_i
     lr = args.lr
     warmup_steps = args.warmup_steps
     grad_clip = args.grad_clip
+    max_minutes = args.max_minutes_per_chunk
+    timeout_seconds = max_minutes * 60 if max_minutes else None
 
     steps_per_epoch = len(sequences) // batch_size
     total_steps = (steps_per_epoch * epochs) // grad_accum_steps
     print(f"  Sequences: {len(sequences)}")
     print(f"  Steps/epoch: {steps_per_epoch}, Total opt steps: {total_steps}")
     print(f"  Effective batch size: {batch_size * grad_accum_steps}")
+    if timeout_seconds:
+        print(f"  Timeout: {max_minutes:.1f} minutes per chunk")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
 
@@ -315,6 +344,8 @@ def train_on_chunk(model, sequences, tokenizer, nq_config, device, args, chunk_i
     training_log = []
     global_step = 0
     best_loss = float('inf')
+    timed_out = False
+    chunk_start_time = time.time()
 
     for epoch in range(epochs):
         random.shuffle(sequences)
@@ -323,6 +354,13 @@ def train_on_chunk(model, sequences, tokenizer, nq_config, device, args, chunk_i
         optimizer.zero_grad()
 
         for i in range(0, len(sequences), batch_size):
+            # Timeout check
+            if timeout_seconds and (time.time() - chunk_start_time) >= timeout_seconds:
+                elapsed = (time.time() - chunk_start_time) / 60
+                print(f"  TIMEOUT: {elapsed:.1f}分経過。チャンク{chunk_idx+1}を安全に中断します。")
+                timed_out = True
+                break
+
             batch_seqs = sequences[i:i + batch_size]
             if not batch_seqs:
                 continue
@@ -365,8 +403,23 @@ def train_on_chunk(model, sequences, tokenizer, nq_config, device, args, chunk_i
             if n_batches % 200 == 0:
                 avg = total_loss / n_batches
                 cur_lr = get_lr(global_step, total_steps, warmup_steps, lr)
+                elapsed_min = (time.time() - chunk_start_time) / 60
                 print(f"    Chunk {chunk_idx+1}/{num_chunks} | Epoch {epoch+1}/{epochs} | "
-                      f"Batch {n_batches} | Loss: {avg:.4f} | LR: {cur_lr:.2e}")
+                      f"Batch {n_batches} | Loss: {avg:.4f} | LR: {cur_lr:.2e} | "
+                      f"Elapsed: {elapsed_min:.1f}min")
+
+        if timed_out:
+            # Flush remaining gradients before stopping
+            if n_batches % grad_accum_steps != 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
+                optimizer.zero_grad()
+            if n_batches > 0:
+                avg_loss = total_loss / n_batches
+                training_log.append({"epoch": epoch + 1, "loss": avg_loss, "timed_out": True})
+                if avg_loss < best_loss:
+                    best_loss = avg_loss
+            break
 
         if n_batches % grad_accum_steps != 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
@@ -381,7 +434,10 @@ def train_on_chunk(model, sequences, tokenizer, nq_config, device, args, chunk_i
         if avg_loss < best_loss:
             best_loss = avg_loss
 
-    return training_log, best_loss
+    elapsed_total = (time.time() - chunk_start_time) / 60
+    print(f"  Chunk {chunk_idx+1} finished in {elapsed_total:.1f} minutes")
+
+    return training_log, best_loss, timed_out
 
 
 def save_checkpoint(model, config, training_log, original_ckpt, dataset_ids, mode):
@@ -418,8 +474,16 @@ def main():
                         help="学習モード: qa=QA形式, general=一般テキスト (default: qa)")
     parser.add_argument("--num_chunks", type=int, default=4,
                         help="データセットを分割するチャンク数 (default: 4)")
+    parser.add_argument("--samples_per_batch", type=int, default=None,
+                        help="1バッチあたりのサンプル数。指定するとnum_chunksの代わりにサンプル数ベースで分割")
     parser.add_argument("--chunk_index", type=int, default=None,
                         help="特定のチャンクのみ学習（0始まり）。指定なしで全チャンク順次学習")
+    parser.add_argument("--start_sample", type=int, default=None,
+                        help="学習開始サンプルインデックス（0始まり）。範囲指定で部分学習")
+    parser.add_argument("--end_sample", type=int, default=None,
+                        help="学習終了サンプルインデックス（排他）。範囲指定で部分学習")
+    parser.add_argument("--max_minutes_per_chunk", type=float, default=None,
+                        help="チャンクごとの最大学習時間（分）。超過時は安全に中断して保存")
     parser.add_argument("--epochs_per_chunk", type=int, default=5,
                         help="各チャンクあたりのエポック数 (default: 5)")
     parser.add_argument("--lr", type=float, default=3e-5,
@@ -504,8 +568,22 @@ def main():
         print("ERROR: No texts loaded. Exiting.")
         return
 
+    # Apply explicit sample range if specified
+    if args.start_sample is not None or args.end_sample is not None:
+        start = args.start_sample if args.start_sample is not None else 0
+        end = args.end_sample if args.end_sample is not None else len(all_texts)
+        start = max(0, min(start, len(all_texts)))
+        end = max(start, min(end, len(all_texts)))
+        print(f"\n=== Applying sample range: [{start}, {end}) ===")
+        print(f"  Using {end - start} out of {len(all_texts)} total samples")
+        all_texts = all_texts[start:end]
+
+        if len(all_texts) == 0:
+            print("ERROR: No texts in specified range. Exiting.")
+            return
+
     # Split into chunks
-    chunks = split_into_chunks(all_texts, args.num_chunks)
+    chunks = split_into_chunks(all_texts, args.num_chunks, args.samples_per_batch)
     actual_num_chunks = len(chunks)
     print(f"\n=== Data split into {actual_num_chunks} chunks ===")
     for i, chunk in enumerate(chunks):
@@ -550,7 +628,7 @@ def main():
             continue
 
         # Train
-        chunk_log, best_loss = train_on_chunk(
+        chunk_log, best_loss, timed_out = train_on_chunk(
             model, sequences, tokenizer, nq_config, device,
             args, chunk_idx, actual_num_chunks
         )
@@ -561,6 +639,7 @@ def main():
                 "epoch": len(all_training_log) + 1,
                 "loss": entry["loss"],
                 "chunk": chunk_idx,
+                "timed_out": entry.get("timed_out", False),
             })
 
         # Save checkpoint after each chunk
@@ -574,16 +653,24 @@ def main():
             "last_completed_chunk": chunk_idx,
             "total_chunks_trained": chunk_idx + 1,
             "best_loss": best_loss,
+            "timed_out": timed_out,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "args": {
                 "epochs_per_chunk": args.epochs_per_chunk,
                 "lr": args.lr,
                 "batch_size": args.batch_size,
                 "max_samples": args.max_samples,
+                "samples_per_batch": args.samples_per_batch,
+                "max_minutes_per_chunk": args.max_minutes_per_chunk,
             }
         }
         save_split_state(split_state)
         print(f"  Split state saved (chunk {chunk_idx+1}/{actual_num_chunks} done)")
+
+        # If timed out, stop processing further chunks
+        if timed_out:
+            print(f"\n  タイムアウトのため残りのチャンクは次回の --resume で学習できます。")
+            break
 
     # Final inference test
     print(f"\n=== Inference test ===")
@@ -636,8 +723,16 @@ def main():
             generated_text = generated_text[:generated_text.index("質問:")].strip()
         print(f'  {prompt.strip()} {generated_text}')
 
-    print(f"\n=== Split training complete! ===")
+    print(f"\n=== Split batch training complete! ===")
     print(f"Trained on {len(chunk_indices)} chunk(s) out of {actual_num_chunks}")
+    if args.samples_per_batch:
+        print(f"Batch size: {args.samples_per_batch} samples per batch")
+    if args.start_sample is not None or args.end_sample is not None:
+        start = args.start_sample if args.start_sample is not None else 0
+        end = args.end_sample if args.end_sample is not None else "end"
+        print(f"Sample range: [{start}, {end})")
+    if args.max_minutes_per_chunk:
+        print(f"Timeout: {args.max_minutes_per_chunk} minutes per chunk")
     print("Done!")
 
 
