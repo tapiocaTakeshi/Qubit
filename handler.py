@@ -543,7 +543,7 @@ class EndpointHandler:
         text_column = data.get("text_column", "text")
         split = data.get("split", "train")
         config_name = data.get("config", data.get("name", None))
-        max_samples = int(data.get("max_samples", 3000))
+        max_samples = int(data.get("max_samples", 0))  # 0 = use all samples
         epochs = float(data.get("epochs", 10.0))
         lr = float(data.get("lr", 1e-3))
 
@@ -554,7 +554,8 @@ class EndpointHandler:
 
         # Extract texts
         texts = []
-        for row in ds.select(range(min(max_samples, len(ds)))):
+        n = min(max_samples, len(ds)) if max_samples > 0 else len(ds)
+        for row in ds.select(range(n)):
             col_data = row.get(text_column)
             if isinstance(col_data, str) and len(col_data.strip()) > 4:
                 texts.append(col_data.strip())

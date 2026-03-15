@@ -26,29 +26,24 @@ BATCH_SIZE = 4
 GRAD_ACCUM_STEPS = 4
 WARMUP_STEPS = 30
 GRAD_CLIP = 1.0
-MAX_SAMPLES = 1500  # Per dataset, reduced for CPU feasibility
 MIN_LR_RATIO = 0.1  # Minimum LR as fraction of max LR
 
 # QA datasets
 QA_DATASETS = [
     {
         "id": "fujiki/japanese_alpaca_data",
-        "max_samples": MAX_SAMPLES,
         "format": "alpaca",
     },
     {
         "id": "FreedomIntelligence/alpaca-gpt4-japanese",
-        "max_samples": MAX_SAMPLES,
         "format": "conversations",
     },
     {
         "id": "kunishou/oasst1-chat-44k-ja",
-        "max_samples": MAX_SAMPLES,
         "format": "conversations",
     },
     {
         "id": "izumi-lab/llm-japanese-dataset",
-        "max_samples": 1000,
         "format": "izumi",
     },
 ]
@@ -110,12 +105,11 @@ def load_qa_data():
     for ds_info in QA_DATASETS:
         ds_id = ds_info["id"]
         fmt = ds_info["format"]
-        max_samples = ds_info["max_samples"]
         print(f"  Loading {ds_id}...")
 
         try:
             ds = load_dataset(ds_id, split="train", trust_remote_code=True)
-            n = min(max_samples, len(ds))
+            n = len(ds)
             count = 0
 
             for row in ds.select(range(n)):

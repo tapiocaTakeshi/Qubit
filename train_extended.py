@@ -33,19 +33,18 @@ GRAD_CLIP = 1.0
 
 # Datasets with increased sample sizes
 DATASETS = [
-    {"id": "izumi-lab/llm-japanese-dataset", "col": "output", "max_samples": 3000},
-    {"id": "kunishou/oasst1-chat-44k-ja", "col": "conversations", "max_samples": 8000},
-    {"id": "fujiki/japanese_alpaca_data", "col": "output", "max_samples": 8000},
-    {"id": "shi3z/Japanese_wikipedia_conversation_100K", "col": "conversations", "max_samples": 8000},
-    {"id": "FreedomIntelligence/alpaca-gpt4-japanese", "col": "conversations", "max_samples": 8000},
+    {"id": "izumi-lab/llm-japanese-dataset", "col": "output"},
+    {"id": "kunishou/oasst1-chat-44k-ja", "col": "conversations"},
+    {"id": "fujiki/japanese_alpaca_data", "col": "output"},
+    {"id": "shi3z/Japanese_wikipedia_conversation_100K", "col": "conversations"},
+    {"id": "FreedomIntelligence/alpaca-gpt4-japanese", "col": "conversations"},
 ]
-CC100_SAMPLES = 10000
 
 
-def extract_texts(ds, text_column, max_samples):
-    """Extract text from dataset."""
+def extract_texts(ds, text_column):
+    """Extract text from dataset (all samples)."""
     texts = []
-    n = min(max_samples, len(ds))
+    n = len(ds)
     for row in ds.select(range(n)):
         col_data = row.get(text_column)
         if isinstance(col_data, str) and len(col_data.strip()) > 4:
@@ -129,20 +128,18 @@ def main():
         print(f"  Loading {ds_info['id']}...")
         try:
             ds = load_dataset(ds_info["id"], split="train", trust_remote_code=True)
-            texts = extract_texts(ds, ds_info["col"], ds_info["max_samples"])
+            texts = extract_texts(ds, ds_info["col"])
             print(f"    -> {len(texts)} texts")
             all_texts.extend(texts)
         except Exception as e:
             print(f"    -> ERROR: {e}")
 
     # Load CC100-ja
-    print(f"  Loading range3/cc100-ja (streaming, {CC100_SAMPLES} samples)...")
+    print(f"  Loading range3/cc100-ja (streaming, all samples)...")
     try:
         ds_cc = load_dataset("range3/cc100-ja", split="train", streaming=True)
         cc_texts = []
         for i, row in enumerate(ds_cc):
-            if i >= CC100_SAMPLES:
-                break
             text = row.get("text", "").strip()
             if len(text) > 10:
                 cc_texts.append(text)

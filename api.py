@@ -57,7 +57,7 @@ class TrainRequest(BaseModel):
     batch_size: int = 4
     grad_accum_steps: int = 8
     warmup_steps: int = 100
-    max_samples_per_dataset: int = 5000
+    max_samples_per_dataset: int = 0  # 0 = use all samples
 
 
 class TrainQARequest(BaseModel):
@@ -67,7 +67,7 @@ class TrainQARequest(BaseModel):
     batch_size: int = 4
     grad_accum_steps: int = 4
     warmup_steps: int = 30
-    max_samples_per_dataset: int = 1500
+    max_samples_per_dataset: int = 0  # 0 = use all samples
 
 
 class TrainMarkdownRequest(BaseModel):
@@ -86,7 +86,7 @@ class SplitTrainRequest(BaseModel):
     batch_size: int = 4
     grad_accum_steps: int = 4
     warmup_steps: int = 30
-    max_samples_per_dataset: int = 5000
+    max_samples_per_dataset: int = 0  # 0 = use all samples
 
 
 class TrainResponse(BaseModel):
@@ -201,10 +201,10 @@ def generate_text(prompt: str, max_new_tokens: int = 100, temperature: float = 0
 # Training
 # ========================================
 
-def extract_texts(ds, text_column, max_samples):
-    """Extract text from dataset."""
+def extract_texts(ds, text_column, max_samples=0):
+    """Extract text from dataset. max_samples=0 means use all."""
     texts = []
-    n = min(max_samples, len(ds))
+    n = min(max_samples, len(ds)) if max_samples > 0 else len(ds)
     for row in ds.select(range(n)):
         col_data = row.get(text_column)
         if isinstance(col_data, str) and len(col_data.strip()) > 4:
@@ -287,7 +287,7 @@ def run_training(req: TrainRequest):
             ds_cc = load_dataset("range3/cc100-ja", split="train", streaming=True)
             cc_texts = []
             for i, row in enumerate(ds_cc):
-                if i >= req.max_samples_per_dataset:
+                if req.max_samples_per_dataset > 0 and i >= req.max_samples_per_dataset:
                     break
                 text = row.get("text", "").strip()
                 if len(text) > 10:
@@ -494,7 +494,7 @@ def run_qa_training(req: TrainQARequest):
                 ds = load_dataset(ds_id, split="train", streaming=True)
                 count = 0
                 for row in ds:
-                    if count >= req.max_samples_per_dataset:
+                    if req.max_samples_per_dataset > 0 and count >= req.max_samples_per_dataset:
                         break
                     # Auto-detect QA format
                     q = row.get("question", row.get("instruction", "")).strip()
@@ -511,12 +511,10 @@ def run_qa_training(req: TrainQARequest):
                 ds_id = ds_info["id"]
                 fmt = ds_info["format"]
                 max_samples = req.max_samples_per_dataset
-                if fmt == "izumi":
-                    max_samples = min(1000, max_samples)
                 try:
                     training_status["message"] = f"Loading {ds_id}..."
                     ds = load_dataset(ds_id, split="train")
-                    n = min(max_samples, len(ds))
+                    n = min(max_samples, len(ds)) if max_samples > 0 else len(ds)
                     count = 0
                     for row in ds.select(range(n)):
                         if fmt == "alpaca":
@@ -820,8 +818,8 @@ split_state = {
 }
 
 
-def prepare_split_data(mode: str, num_chunks: int, max_samples: int):
-    """Prepare and split training data into chunks."""
+def prepare_split_data(mode: str, num_chunks: int, max_samples: int = 0):
+    """Prepare and split training data into chunks. max_samples=0 means use all."""
     from datasets import load_dataset
 
     all_texts = []
@@ -831,10 +829,9 @@ def prepare_split_data(mode: str, num_chunks: int, max_samples: int):
         for ds_info in QA_DATASETS_INFO:
             ds_id = ds_info["id"]
             fmt = ds_info["format"]
-            max_s = min(1000, max_samples) if fmt == "izumi" else max_samples
             try:
                 ds = load_dataset(ds_id, split="train")
-                n = min(max_s, len(ds))
+                n = min(max_samples, len(ds)) if max_samples > 0 else len(ds)
                 for row in ds.select(range(n)):
                     if fmt == "alpaca":
                         text = format_qa_alpaca(row)
@@ -860,7 +857,7 @@ def prepare_split_data(mode: str, num_chunks: int, max_samples: int):
                 if text and len(text) > 50:
                     all_texts.append(text)
                     count += 1
-                    if count >= max_samples:
+                    if max_samples > 0 and count >= max_samples:
                         break
         except Exception:
             pass

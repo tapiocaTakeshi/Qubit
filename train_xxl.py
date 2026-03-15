@@ -50,18 +50,14 @@ GRAD_ACCUM_STEPS = 16
 WARMUP_RATIO = 0.05
 GRAD_CLIP = 1.0
 MIN_LR_RATIO = 0.1
-MAX_SAMPLES_PER_DS = 5000
 SAVE_EVERY_STEPS = 200
 LOG_EVERY_STEPS = 10
 
 # ===== Datasets (train split) =====
 DATASETS = [
-    {"id": "kunishou/databricks-dolly-15k-ja", "text_column": "output", "split": "train",
-     "max_samples": MAX_SAMPLES_PER_DS},
-    {"id": "fujiki/japanese_alpaca_data", "text_column": "output", "split": "train",
-     "max_samples": MAX_SAMPLES_PER_DS},
-    {"id": "izumi-lab/llm-japanese-dataset", "text_column": "output", "split": "train",
-     "max_samples": 3000},
+    {"id": "kunishou/databricks-dolly-15k-ja", "text_column": "output", "split": "train"},
+    {"id": "fujiki/japanese_alpaca_data", "text_column": "output", "split": "train"},
+    {"id": "izumi-lab/llm-japanese-dataset", "text_column": "output", "split": "train"},
 ]
 
 
@@ -71,12 +67,11 @@ def load_all_data():
         ds_id = ds_info["id"]
         col = ds_info["text_column"]
         split = ds_info["split"]
-        max_samples = ds_info["max_samples"]
-        print(f"  Loading {ds_id} (split={split}, max={max_samples})...")
+        print(f"  Loading {ds_id} (split={split}, all samples)...")
         try:
             ds = load_dataset(ds_id, split=split, trust_remote_code=True)
             count = 0
-            for row in ds.select(range(min(max_samples, len(ds)))):
+            for row in ds.select(range(len(ds))):
                 text = row.get(col, "")
                 if isinstance(text, str) and len(text.strip()) > 15:
                     all_texts.append(text.strip())

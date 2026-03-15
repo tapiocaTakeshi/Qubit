@@ -30,22 +30,18 @@ GRAD_CLIP = 1.0
 QA_DATASETS = [
     {
         "id": "fujiki/japanese_alpaca_data",
-        "max_samples": 8000,
         "format": "alpaca",  # instruction, input, output
     },
     {
         "id": "FreedomIntelligence/alpaca-gpt4-japanese",
-        "max_samples": 8000,
         "format": "conversations",  # list of turns
     },
     {
         "id": "kunishou/oasst1-chat-44k-ja",
-        "max_samples": 8000,
         "format": "conversations",
     },
     {
         "id": "izumi-lab/llm-japanese-dataset",
-        "max_samples": 3000,
         "format": "izumi",  # output field with Q&A
     },
 ]
@@ -112,12 +108,11 @@ def load_qa_data():
     for ds_info in QA_DATASETS:
         ds_id = ds_info["id"]
         fmt = ds_info["format"]
-        max_samples = ds_info["max_samples"]
         print(f"  Loading {ds_id}...")
 
         try:
             ds = load_dataset(ds_id, split="train", trust_remote_code=True)
-            n = min(max_samples, len(ds))
+            n = len(ds)
             count = 0
 
             for row in ds.select(range(n)):

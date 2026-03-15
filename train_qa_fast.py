@@ -25,7 +25,8 @@ BATCH_SIZE = 4
 GRAD_ACCUM_STEPS = 4
 WARMUP_STEPS = 20
 GRAD_CLIP = 1.0
-MAX_SAMPLES = 2000  # Per dataset
+
+
 
 
 def format_qa_alpaca(row):
@@ -91,7 +92,7 @@ def main():
     print("  Loading fujiki/japanese_alpaca_data...")
     try:
         ds = load_dataset("fujiki/japanese_alpaca_data", split="train")
-        n = min(MAX_SAMPLES, len(ds))
+        n = len(ds)
         count = 0
         for row in ds.select(range(n)):
             text = format_qa_alpaca(row)
@@ -106,7 +107,7 @@ def main():
     print("  Loading FreedomIntelligence/alpaca-gpt4-japanese...")
     try:
         ds = load_dataset("FreedomIntelligence/alpaca-gpt4-japanese", split="train")
-        n = min(MAX_SAMPLES, len(ds))
+        n = len(ds)
         count = 0
         for row in ds.select(range(n)):
             text = format_qa_conversations(row)
@@ -121,7 +122,7 @@ def main():
     print("  Loading kunishou/oasst1-chat-44k-ja...")
     try:
         ds = load_dataset("kunishou/oasst1-chat-44k-ja", split="train")
-        n = min(MAX_SAMPLES, len(ds))
+        n = len(ds)
         count = 0
         for row in ds.select(range(n)):
             text = format_qa_conversations(row)

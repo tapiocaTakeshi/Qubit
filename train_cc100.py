@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer
 
 CKPT_PATH = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
-MAX_SAMPLES = 5000
 EPOCHS = 10
 LR = 3e-4
 BATCH_SIZE = 4
@@ -56,8 +55,7 @@ def main():
     ds = load_dataset("range3/cc100-ja", split="train", streaming=True)
     texts = []
     for i, row in enumerate(ds):
-        if i >= MAX_SAMPLES:
-            break
+        pass  # use all samples
         text = row.get("text", "").strip()
         if len(text) > 10:
             texts.append(text)

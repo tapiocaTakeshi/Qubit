@@ -27,11 +27,11 @@ CONFIG = {
 }
 
 DATASETS = [
-    {"id": "izumi-lab/llm-japanese-dataset", "col": "output", "max_samples": 1540},
-    {"id": "kunishou/oasst1-chat-44k-ja", "col": "conversations", "max_samples": 3000},
-    {"id": "fujiki/japanese_alpaca_data", "col": "output", "max_samples": 3000},
-    {"id": "shi3z/Japanese_wikipedia_conversation_100K", "col": "conversations", "max_samples": 3000},
-    {"id": "FreedomIntelligence/alpaca-gpt4-japanese", "col": "conversations", "max_samples": 3000},
+    {"id": "izumi-lab/llm-japanese-dataset", "col": "output"},
+    {"id": "kunishou/oasst1-chat-44k-ja", "col": "conversations"},
+    {"id": "fujiki/japanese_alpaca_data", "col": "output"},
+    {"id": "shi3z/Japanese_wikipedia_conversation_100K", "col": "conversations"},
+    {"id": "FreedomIntelligence/alpaca-gpt4-japanese", "col": "conversations"},
 ]
 
 EPOCHS = 10
@@ -40,10 +40,10 @@ BATCH_SIZE = 4
 MAX_SEQ_LEN = CONFIG["max_seq_len"]
 
 
-def extract_texts(ds, text_column, max_samples):
-    """Extract text from dataset."""
+def extract_texts(ds, text_column):
+    """Extract text from dataset (all samples)."""
     texts = []
-    for row in ds.select(range(min(max_samples, len(ds)))):
+    for row in ds.select(range(len(ds))):
         col_data = row.get(text_column)
         if isinstance(col_data, str) and len(col_data.strip()) > 4:
             texts.append(col_data.strip())
@@ -143,7 +143,7 @@ def main():
         print(f"  Loading {ds_info['id']}...")
         try:
             ds = load_dataset(ds_info["id"], split="train", trust_remote_code=True)
-            texts = extract_texts(ds, ds_info["col"], ds_info["max_samples"])
+            texts = extract_texts(ds, ds_info["col"])
             print(f"    -> {len(texts)} texts extracted")
             all_texts.extend(texts)
         except Exception as e:
