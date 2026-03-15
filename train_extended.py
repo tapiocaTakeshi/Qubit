@@ -24,7 +24,7 @@ from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumT
 CKPT_PATH = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
 
 # Training hyperparameters
-EPOCHS = 15
+EPOCHS = 30
 LR = 1e-4  # Lower LR for continued training
 BATCH_SIZE = 4
 GRAD_ACCUM_STEPS = 8  # Effective batch size = 4 * 8 = 32

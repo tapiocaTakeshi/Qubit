@@ -17,7 +17,7 @@ from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumT
 
 CKPT_PATH = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
 MAX_SAMPLES = 5000
-EPOCHS = 3
+EPOCHS = 10
 LR = 3e-4
 BATCH_SIZE = 4
 

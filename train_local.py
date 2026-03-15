@@ -34,7 +34,7 @@ DATASETS = [
     {"id": "FreedomIntelligence/alpaca-gpt4-japanese", "col": "conversations", "max_samples": 3000},
 ]
 
-EPOCHS = 3
+EPOCHS = 10
 LR = 5e-4
 BATCH_SIZE = 4
 MAX_SEQ_LEN = CONFIG["max_seq_len"]

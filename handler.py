@@ -544,7 +544,7 @@ class EndpointHandler:
         split = data.get("split", "train")
         config_name = data.get("config", data.get("name", None))
         max_samples = int(data.get("max_samples", 3000))
-        epochs = float(data.get("epochs", 3.0))
+        epochs = float(data.get("epochs", 10.0))
         lr = float(data.get("lr", 1e-3))
 
         try:

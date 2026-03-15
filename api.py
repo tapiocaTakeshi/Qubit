@@ -52,7 +52,7 @@ class InferenceResponse(BaseModel):
 
 class TrainRequest(BaseModel):
     dataset_ids: Optional[List[str]] = None
-    epochs: int = 10
+    epochs: int = 20
     lr: float = 1e-4
     batch_size: int = 4
     grad_accum_steps: int = 8
@@ -62,7 +62,7 @@ class TrainRequest(BaseModel):
 
 class TrainQARequest(BaseModel):
     dataset_id: Optional[str] = None
-    epochs: int = 20
+    epochs: int = 40
     lr: float = 3e-5
     batch_size: int = 4
     grad_accum_steps: int = 4
@@ -71,7 +71,7 @@ class TrainQARequest(BaseModel):
 
 
 class TrainMarkdownRequest(BaseModel):
-    epochs: int = 25
+    epochs: int = 50
     lr: float = 3e-5
     batch_size: int = 4
     grad_accum_steps: int = 4
@@ -81,7 +81,7 @@ class TrainMarkdownRequest(BaseModel):
 class SplitTrainRequest(BaseModel):
     mode: str = "qa"  # "qa" or "wikipedia"
     num_chunks: int = 4
-    epochs_per_chunk: int = 3
+    epochs_per_chunk: int = 6
     lr: float = 3e-5
     batch_size: int = 4
     grad_accum_steps: int = 4

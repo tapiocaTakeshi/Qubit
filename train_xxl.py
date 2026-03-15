@@ -43,7 +43,7 @@ MODEL_CONFIG = {
 }
 
 # ===== Training Hyperparameters =====
-EPOCHS = 3
+EPOCHS = 10
 LR = 2e-4
 BATCH_SIZE = 1
 GRAD_ACCUM_STEPS = 16
