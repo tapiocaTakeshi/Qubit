@@ -1,0 +1,14 @@
+.git
+.github
+.gitignore
+.DS_Store
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist
+build
+*.md
+LICENSE
+.env
+.env.*
