@@ -1,14 +1,8 @@
-# PyTorch環境をベースにする（RunPodのようなGPU環境を想定してCUDA対応コンテナを使います）
-FROM pytorch/pytorch:2.1.2-cuda11.8-cudnn8-runtime
+# RunPod公式ベースイメージを使用（Docker Hub認証不要）
+FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
 
 # 作業ディレクトリの設定
 WORKDIR /app
-
-# 必要なシステムパッケージのインストール
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
 
 # 依存パッケージのリストをコピーしてインストール
 COPY requirements.txt .
