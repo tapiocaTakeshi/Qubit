@@ -9,7 +9,7 @@ jobs:
   sync-to-hub:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           lfs: true
@@ -19,23 +19,53 @@ jobs:
           python-version: "3.10"
       - name: Install dependencies
         run: pip install huggingface_hub
+      - name: Validate HF credentials
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::error::HF_TOKEN secret is not set. Please add it in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -c '
           import os
+          import sys
           from huggingface_hub import login, create_repo, upload_folder
+          from huggingface_hub.utils import HfHubHTTPError
 
-          # Login with your Hugging Face credentials
-          login(token=os.environ.get("HF_TOKEN"))
+          token = os.environ.get("HF_TOKEN")
+          if not token:
+              print("::error::HF_TOKEN is empty or not set.")
+              sys.exit(1)
+
+          try:
+              login(token=token)
+          except Exception as e:
+              print(f"::error::Hugging Face authentication failed: {e}")
+              print("Please verify your HF_TOKEN is valid and has write permissions.")
+              sys.exit(1)
 
           print("Uploading to Model Repository...")
-          create_repo("tapiocaTakeshi/Qubit", repo_type="model", exist_ok=True)
-          upload_folder(
-              folder_path=".",
-              repo_id="tapiocaTakeshi/Qubit",
-              repo_type="model",
-              commit_message="Sync repository files to model repo via GitHub Actions"
-          )
+          try:
+              create_repo("tapiocaTakeshi/Qubit", repo_type="model", exist_ok=True)
+              upload_folder(
+                  folder_path=".",
+                  repo_id="tapiocaTakeshi/Qubit",
+                  repo_type="model",
+                  commit_message="Sync repository files to model repo via GitHub Actions"
+              )
+          except HfHubHTTPError as e:
+              print(f"::error::Hugging Face API error: {e}")
+              if "401" in str(e) or "403" in str(e):
+                  print("Authentication or permission error. Check that your HF_TOKEN has write access.")
+              sys.exit(1)
+          except Exception as e:
+              print(f"::error::Upload failed: {e}")
+              sys.exit(1)
+
+          print("Successfully synced to Hugging Face Hub.")
           '
