@@ -426,8 +426,18 @@ class EndpointHandler:
             train_data = dict(params)
             return self.train(train_data)
 
-        # Federated learning actions
+        # Batch training actions
         action = data.get("action") or params.get("action", "")
+        if action == "batch_train":
+            bt_data = dict(data)
+            bt_data.update(params)
+            return self.batch_train(bt_data)
+        if action == "batch_train_status":
+            bt_data = dict(data)
+            bt_data.update(params)
+            return self.batch_train_status(bt_data)
+
+        # Federated learning actions
         if action.startswith("federated_"):
             fed_data = dict(data)
             if params.get("action"):
@@ -965,6 +975,433 @@ class EndpointHandler:
             "loss_log": loss_callback.logs,
             "upload": upload_status,
             "message": f"Trained on {len(train_dataset)} samples for {epochs} epochs. Final loss: {final_loss}"
+        }]
+
+    # ============================================================
+    # Batch Training Endpoint
+    # ============================================================
+    #
+    # データセットを分割（バッチ）して学習するエンドポイント。
+    # 大規模データセットをメモリに収まるサイズに分割し、
+    # 各バッチごとに学習・チェックポイント保存を行う。
+    #
+    # Request example:
+    #   {"action": "batch_train", "dataset_id": "izumi-lab/wikipedia-ja-20230720",
+    #    "batch_size": 500, "epochs_per_batch": 1, "max_samples": 5000,
+    #    "text_column": "text", "lr": 1e-3}
+    #
+    # Status check:
+    #   {"action": "batch_train_status", "job_id": "..."}
+    # ============================================================
+
+    _batch_jobs: Dict[str, Dict[str, Any]] = {}
+
+    def batch_train(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Train on a dataset split into sequential batches.
+        Each batch loads a subset of the dataset, trains, saves checkpoint,
+        then moves to the next batch. This keeps memory usage bounded.
+        """
+        from transformers import Trainer, TrainingArguments, TrainerCallback
+        from datasets import load_dataset
+        import json
+        import traceback
+        from datetime import datetime, timezone
+        from huggingface_hub import HfApi
+        import uuid
+
+        dataset_id = data.get("dataset_id")
+        if not dataset_id:
+            return [{"error": "dataset_id is required for batch training"}]
+
+        text_column = data.get("text_column", "text")
+        split = data.get("split", "train")
+        batch_size = int(data.get("batch_size", 500))
+        max_samples = int(data.get("max_samples", 5000))
+        epochs_per_batch = float(data.get("epochs_per_batch", 1.0))
+        lr = float(data.get("lr", 1e-3))
+        start_batch = int(data.get("start_batch", 0))
+
+        # Generate job_id
+        job_id = data.get("job_id") or f"batch_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+        # Load dataset
+        try:
+            ds = load_dataset(dataset_id, split=split, trust_remote_code=False)
+        except Exception as e:
+            return [{"error": f"Failed to load dataset: {str(e)}", "traceback": traceback.format_exc()}]
+
+        total_available = min(max_samples, len(ds))
+        num_batches = (total_available + batch_size - 1) // batch_size
+
+        # Initialize job tracking
+        job_info = {
+            "job_id": job_id,
+            "dataset_id": dataset_id,
+            "status": "running",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "total_samples": total_available,
+            "batch_size": batch_size,
+            "num_batches": num_batches,
+            "epochs_per_batch": epochs_per_batch,
+            "lr": lr,
+            "current_batch": start_batch,
+            "batch_results": [],
+        }
+        EndpointHandler._batch_jobs[job_id] = job_info
+
+        # Ensure neuroquantum architecture
+        if NEUROQUANTUM_AVAILABLE and self.architecture != "neuroquantum":
+            self.config = dict(DEFAULT_CONFIG)
+            self.architecture = "neuroquantum"
+
+        if not NEUROQUANTUM_AVAILABLE:
+            return [{"error": "NeuroQuantum architecture not available for batch training"}]
+
+        max_seq_len = self.config["max_seq_len"]
+
+        # --- Inner classes (same as _train_neuroquantum) ---
+
+        class SeqDataset(torch.utils.data.Dataset):
+            def __init__(self, texts, tokenizer, max_seq_len):
+                self.data = []
+                for t in texts:
+                    content_ids = tokenizer.encode(t, add_special=False)
+                    max_content = max_seq_len - 2
+                    if max_content <= 0:
+                        continue
+                    if len(content_ids) <= max_content:
+                        if len(content_ids) >= 2:
+                            seq = [tokenizer.bos_id] + content_ids + [tokenizer.eos_id]
+                            self.data.append(seq)
+                    else:
+                        stride = max(max_content // 2, 1)
+                        for start in range(0, len(content_ids) - max_content + 1, stride):
+                            chunk = content_ids[start:start + max_content]
+                            seq = [tokenizer.bos_id] + chunk + [tokenizer.eos_id]
+                            self.data.append(seq)
+                        remaining = content_ids[-max_content:]
+                        tail_seq = [tokenizer.bos_id] + remaining + [tokenizer.eos_id]
+                        if tail_seq != self.data[-1]:
+                            self.data.append(tail_seq)
+
+            def __len__(self):
+                return len(self.data)
+
+            def __getitem__(self, idx):
+                ids = self.data[idx]
+                return {"input_ids": ids, "labels": ids.copy()}
+
+        def collate_fn(batch):
+            max_len = min(max(len(x["input_ids"]) for x in batch), max_seq_len)
+            input_ids = []
+            labels = []
+            for x in batch:
+                ids = x["input_ids"][:max_len]
+                lbl = x["labels"][:max_len]
+                pad_len = max_len - len(ids)
+                ids = ids + [self.tokenizer.pad_id] * pad_len
+                lbl = lbl + [-100] * pad_len
+                input_ids.append(ids)
+                labels.append(lbl)
+            return {
+                "input_ids": torch.tensor(input_ids, dtype=torch.long),
+                "labels": torch.tensor(labels, dtype=torch.long)
+            }
+
+        class LossCallback(TrainerCallback):
+            def __init__(self):
+                self.logs = []
+
+            def on_log(self, args, state, control, logs=None, **kwargs):
+                if logs and "loss" in logs:
+                    self.logs.append({
+                        "step": state.global_step,
+                        "loss": round(logs["loss"], 6),
+                        "epoch": round(logs.get("epoch", 0), 2)
+                    })
+
+        # Build tokenizer if needed
+        if self.tokenizer.sp is None:
+            # Gather sample texts for tokenizer training
+            sample_texts = []
+            for row in ds.select(range(min(2000, len(ds)))):
+                col_data = row.get(text_column)
+                if isinstance(col_data, str) and len(col_data.strip()) > 4:
+                    sample_texts.append(col_data.strip())
+            if not sample_texts:
+                return [{"error": "No valid text found for tokenizer training"}]
+
+            self.tokenizer = NeuroQuantumTokenizer(vocab_size=self.config["vocab_size"])
+            self.tokenizer.build_vocab(
+                sample_texts,
+                model_prefix=os.path.join(os.path.dirname(__file__), "neuroq_tokenizer"),
+                character_coverage=0.9995,
+            )
+            actual_vocab = self.tokenizer.actual_vocab_size or self.tokenizer.vocab_size
+            self.config["vocab_size"] = actual_vocab
+            nq_config = NeuroQuantumConfig(
+                vocab_size=actual_vocab,
+                embed_dim=self.config["embed_dim"],
+                hidden_dim=self.config.get("hidden_dim", self.config["embed_dim"] * 2),
+                num_heads=self.config["num_heads"],
+                num_layers=self.config["num_layers"],
+                max_seq_len=self.config["max_seq_len"],
+                dropout=self.config.get("dropout", 0.1),
+                lambda_entangle=self.config.get("entangle_strength", 0.5),
+            )
+            self.neuroq_model = NeuroQuantum(config=nq_config)
+            self.model = self.neuroq_model
+
+        # --- Batch training loop ---
+        all_loss_logs = []
+        overall_first_loss = None
+        overall_last_loss = None
+
+        for batch_idx in range(start_batch, num_batches):
+            job_info["current_batch"] = batch_idx
+            offset = batch_idx * batch_size
+            end = min(offset + batch_size, total_available)
+
+            # Extract texts for this batch
+            texts = []
+            for row in ds.select(range(offset, end)):
+                col_data = row.get(text_column)
+                if isinstance(col_data, str) and len(col_data.strip()) > 4:
+                    texts.append(col_data.strip())
+                elif isinstance(col_data, list):
+                    parts = []
+                    for turn in col_data:
+                        if isinstance(turn, dict) and "value" in turn:
+                            parts.append(turn["value"])
+                        elif isinstance(turn, str):
+                            parts.append(turn)
+                    combined = "\n".join(parts)
+                    if len(combined.strip()) > 4:
+                        texts.append(combined.strip())
+
+            if not texts:
+                job_info["batch_results"].append({
+                    "batch": batch_idx,
+                    "status": "skipped",
+                    "reason": "no valid texts in batch"
+                })
+                continue
+
+            train_dataset = SeqDataset(texts, self.tokenizer, max_seq_len)
+            if len(train_dataset) == 0:
+                job_info["batch_results"].append({
+                    "batch": batch_idx,
+                    "status": "skipped",
+                    "reason": "no sequences after tokenization"
+                })
+                continue
+
+            loss_callback = LossCallback()
+            wrapper = NeuroQTrainerWrapper(self.neuroq_model, self.config["vocab_size"])
+
+            training_args = TrainingArguments(
+                output_dir="/tmp/neuroq_batch_training",
+                num_train_epochs=epochs_per_batch,
+                learning_rate=lr,
+                per_device_train_batch_size=8,
+                gradient_accumulation_steps=2,
+                warmup_ratio=0.1,
+                weight_decay=0.01,
+                save_strategy="no",
+                logging_steps=10,
+                report_to="none",
+                fp16=torch.cuda.is_available(),
+            )
+
+            trainer = Trainer(
+                model=wrapper,
+                args=training_args,
+                train_dataset=train_dataset,
+                data_collator=collate_fn,
+                callbacks=[loss_callback]
+            )
+
+            try:
+                train_result = trainer.train()
+                batch_loss = round(train_result.training_loss, 6) if train_result.training_loss else None
+            except Exception as e:
+                job_info["batch_results"].append({
+                    "batch": batch_idx,
+                    "status": "error",
+                    "error": str(e),
+                    "traceback": traceback.format_exc()
+                })
+                job_info["status"] = "error"
+                self.neuroq_model.eval()
+                break
+            finally:
+                self.neuroq_model.eval()
+
+            # Track loss
+            if loss_callback.logs:
+                all_loss_logs.extend([
+                    {**log, "batch": batch_idx} for log in loss_callback.logs
+                ])
+                if overall_first_loss is None:
+                    overall_first_loss = loss_callback.logs[0]["loss"]
+                overall_last_loss = loss_callback.logs[-1]["loss"]
+
+            batch_result = {
+                "batch": batch_idx,
+                "status": "completed",
+                "samples_raw": len(texts),
+                "sequences": len(train_dataset),
+                "final_loss": batch_loss,
+                "loss_log": loss_callback.logs,
+            }
+            job_info["batch_results"].append(batch_result)
+
+            # Save checkpoint after each batch
+            ckpt_path = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
+            torch.save({
+                "model_state": self.neuroq_model.state_dict(),
+                "config": self.config
+            }, ckpt_path)
+
+        # --- All batches done ---
+        job_info["status"] = "completed" if job_info["status"] == "running" else job_info["status"]
+        job_info["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+        completed_batches = [b for b in job_info["batch_results"] if b.get("status") == "completed"]
+        total_sequences = sum(b.get("sequences", 0) for b in completed_batches)
+        final_loss = completed_batches[-1]["final_loss"] if completed_batches else None
+
+        # Save training history
+        history_entry = {
+            "dataset_id": dataset_id,
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+            "mode": "batch_train",
+            "total_batches": num_batches,
+            "completed_batches": len(completed_batches),
+            "batch_size": batch_size,
+            "epochs_per_batch": epochs_per_batch,
+            "total_sequences": total_sequences,
+            "first_loss": overall_first_loss,
+            "final_loss": final_loss,
+            "learning_rate": lr,
+            "text_column": text_column,
+            "architecture": "neuroquantum",
+            "embed_dim": self.config["embed_dim"],
+            "num_layers": self.config["num_layers"],
+            "max_seq_len": self.config["max_seq_len"],
+            "vocab_size": self.config["vocab_size"],
+        }
+
+        history_path = os.path.join(os.path.dirname(__file__), "training_history.json")
+        try:
+            if os.path.exists(history_path):
+                with open(history_path, "r") as f:
+                    history = json.load(f)
+            else:
+                history = []
+            history.append(history_entry)
+            with open(history_path, "w") as f:
+                json.dump(history, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+        # Save tokenizer
+        tokenizer_path = os.path.join(os.path.dirname(__file__), "neuroq_tokenizer")
+        self.tokenizer.save(tokenizer_path)
+
+        # Upload if HF_TOKEN available
+        token = os.environ.get("HF_TOKEN")
+        upload_status = "skipped (no HF_TOKEN)"
+        if token:
+            try:
+                repo_id = os.environ.get("REPOSITORY_ID", "tapiocaTakeshi/Qubit")
+                api = HfApi(token=token)
+                ckpt_path = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
+                api.upload_file(
+                    path_or_fileobj=ckpt_path,
+                    path_in_repo="neuroq_checkpoint.pt",
+                    repo_id=repo_id,
+                    repo_type="model",
+                    commit_message=f"Batch training on {dataset_id}: {len(completed_batches)}/{num_batches} batches"
+                )
+                api.upload_file(
+                    path_or_fileobj=history_path,
+                    path_in_repo="training_history.json",
+                    repo_id=repo_id,
+                    repo_type="model",
+                    commit_message=f"Update training history after batch training on {dataset_id}"
+                )
+                upload_status = "uploaded"
+            except Exception as e:
+                upload_status = f"upload failed: {e}"
+
+        return [{
+            "status": job_info["status"],
+            "job_id": job_id,
+            "architecture": "neuroquantum",
+            "dataset_id": dataset_id,
+            "total_samples": total_available,
+            "batch_size": batch_size,
+            "num_batches": num_batches,
+            "completed_batches": len(completed_batches),
+            "epochs_per_batch": epochs_per_batch,
+            "total_sequences_trained": total_sequences,
+            "first_loss": overall_first_loss,
+            "final_loss": final_loss,
+            "batch_results": job_info["batch_results"],
+            "config": {
+                "vocab_size": self.config["vocab_size"],
+                "embed_dim": self.config["embed_dim"],
+                "num_layers": self.config["num_layers"],
+                "max_seq_len": self.config["max_seq_len"],
+            },
+            "upload": upload_status,
+            "message": f"Batch training complete: {len(completed_batches)}/{num_batches} batches, "
+                       f"{total_sequences} sequences. Loss: {overall_first_loss} -> {final_loss}"
+        }]
+
+    def batch_train_status(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Return the status of a batch training job."""
+        job_id = data.get("job_id")
+
+        # If no job_id, return all jobs
+        if not job_id:
+            jobs_summary = []
+            for jid, info in EndpointHandler._batch_jobs.items():
+                completed = [b for b in info["batch_results"] if b.get("status") == "completed"]
+                jobs_summary.append({
+                    "job_id": jid,
+                    "dataset_id": info["dataset_id"],
+                    "status": info["status"],
+                    "current_batch": info["current_batch"],
+                    "num_batches": info["num_batches"],
+                    "completed_batches": len(completed),
+                    "started_at": info["started_at"],
+                    "completed_at": info.get("completed_at"),
+                })
+            return [{"jobs": jobs_summary, "total_jobs": len(jobs_summary)}]
+
+        if job_id not in EndpointHandler._batch_jobs:
+            return [{"error": f"Job '{job_id}' not found"}]
+
+        info = EndpointHandler._batch_jobs[job_id]
+        completed = [b for b in info["batch_results"] if b.get("status") == "completed"]
+
+        return [{
+            "job_id": job_id,
+            "dataset_id": info["dataset_id"],
+            "status": info["status"],
+            "total_samples": info["total_samples"],
+            "batch_size": info["batch_size"],
+            "num_batches": info["num_batches"],
+            "current_batch": info["current_batch"],
+            "completed_batches": len(completed),
+            "epochs_per_batch": info["epochs_per_batch"],
+            "lr": info["lr"],
+            "batch_results": info["batch_results"],
+            "started_at": info["started_at"],
+            "completed_at": info.get("completed_at"),
         }]
 
     # ============================================================
