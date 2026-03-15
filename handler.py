@@ -15,10 +15,12 @@ Reference: https://huggingface.co/docs/inference-endpoints/main/en/engines/toolk
 """
 
 import os
+import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, List, Any
+from datetime import datetime, timezone
 
 # ============================================================
 # Import NeuroQuantum architecture from neuroquantum_layered.py
@@ -423,6 +425,23 @@ class EndpointHandler:
             # Merge parameters into top-level for train()
             train_data = dict(params)
             return self.train(train_data)
+
+        # Federated learning actions
+        action = data.get("action") or params.get("action", "")
+        if action.startswith("federated_"):
+            fed_data = dict(data)
+            if params.get("action"):
+                fed_data.update(params)
+            if action == "federated_init":
+                return self.federated_init(fed_data)
+            elif action == "federated_submit":
+                return self.federated_submit(fed_data)
+            elif action == "federated_aggregate":
+                return self.federated_aggregate(fed_data)
+            elif action == "federated_status":
+                return self.federated_status(fed_data)
+            else:
+                return [{"error": f"Unknown federated action: {action}"}]
 
         inputs = data.get("inputs", data)
         if isinstance(inputs, list):
@@ -946,4 +965,292 @@ class EndpointHandler:
             "loss_log": loss_callback.logs,
             "upload": upload_status,
             "message": f"Trained on {len(train_dataset)} samples for {epochs} epochs. Final loss: {final_loss}"
+        }]
+
+    # ============================================================
+    # Federated Learning (Split Learning) Endpoint
+    # ============================================================
+    #
+    # Flow:
+    #   1. federated_init   — サーバーが現在のモデル重みとラウンドIDを返す
+    #   2. federated_submit — クライアントがローカル学習後の勾配差分を送信
+    #   3. federated_aggregate — 集約（FedAvg）を実行しグローバルモデルを更新
+    #   4. federated_status  — 現在のラウンド状態を確認
+    #
+    # Request examples:
+    #   {"action": "federated_init", "round_id": "round_001", "min_clients": 2}
+    #   {"action": "federated_submit", "round_id": "round_001", "client_id": "client_A",
+    #    "model_delta": {<param_name>: <list>}, "num_samples": 500}
+    #   {"action": "federated_aggregate", "round_id": "round_001"}
+    #   {"action": "federated_status", "round_id": "round_001"}
+    # ============================================================
+
+    # Class-level storage for federated rounds (shared across requests)
+    _federated_rounds: Dict[str, Dict[str, Any]] = {}
+
+    def federated_init(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Initialize a new federated learning round.
+        Returns the current global model weights so clients can start local training.
+        """
+        round_id = data.get("round_id")
+        if not round_id:
+            return [{"error": "round_id is required"}]
+
+        min_clients = int(data.get("min_clients", 2))
+        epochs_per_client = int(data.get("epochs_per_client", 3))
+        lr = float(data.get("lr", 1e-3))
+
+        # Serialize current model state for distribution
+        model_state = {}
+        for name, param in self.model.state_dict().items():
+            model_state[name] = param.cpu().tolist()
+
+        # Register this round
+        EndpointHandler._federated_rounds[round_id] = {
+            "round_id": round_id,
+            "status": "waiting_for_clients",
+            "min_clients": min_clients,
+            "epochs_per_client": epochs_per_client,
+            "lr": lr,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "client_updates": {},
+            "aggregated": False,
+            "global_model_snapshot": copy.deepcopy(self.model.state_dict()),
+        }
+
+        return [{
+            "status": "initialized",
+            "round_id": round_id,
+            "min_clients": min_clients,
+            "epochs_per_client": epochs_per_client,
+            "lr": lr,
+            "model_weights": model_state,
+            "architecture": self.architecture,
+            "config": {
+                "vocab_size": self.config["vocab_size"],
+                "embed_dim": self.config["embed_dim"],
+                "num_layers": self.config["num_layers"],
+                "max_seq_len": self.config["max_seq_len"],
+            },
+            "message": f"Federated round '{round_id}' initialized. Distribute weights to clients."
+        }]
+
+    def federated_submit(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Receive a client's local training result (model delta or full weights).
+        Clients send their updated model parameters after local training.
+        """
+        round_id = data.get("round_id")
+        client_id = data.get("client_id")
+
+        if not round_id or not client_id:
+            return [{"error": "round_id and client_id are required"}]
+
+        if round_id not in EndpointHandler._federated_rounds:
+            return [{"error": f"Round '{round_id}' not found. Call federated_init first."}]
+
+        round_info = EndpointHandler._federated_rounds[round_id]
+
+        if round_info["aggregated"]:
+            return [{"error": f"Round '{round_id}' already aggregated. Start a new round."}]
+
+        model_delta = data.get("model_delta")
+        model_weights = data.get("model_weights")
+        num_samples = int(data.get("num_samples", 1))
+        client_loss = data.get("final_loss")
+
+        if not model_delta and not model_weights:
+            return [{"error": "Either model_delta or model_weights is required"}]
+
+        # Convert submitted data to tensors
+        update_tensors = {}
+        global_snapshot = round_info["global_model_snapshot"]
+
+        if model_delta:
+            # Client sent parameter deltas (difference from global model)
+            for name, values in model_delta.items():
+                if name in global_snapshot:
+                    update_tensors[name] = torch.tensor(values, dtype=global_snapshot[name].dtype)
+        elif model_weights:
+            # Client sent full weights — compute delta from global snapshot
+            for name, values in model_weights.items():
+                if name in global_snapshot:
+                    client_param = torch.tensor(values, dtype=global_snapshot[name].dtype)
+                    update_tensors[name] = client_param - global_snapshot[name].cpu()
+
+        if not update_tensors:
+            return [{"error": "No valid parameter updates found"}]
+
+        round_info["client_updates"][client_id] = {
+            "delta": update_tensors,
+            "num_samples": num_samples,
+            "final_loss": client_loss,
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        num_submitted = len(round_info["client_updates"])
+        min_clients = round_info["min_clients"]
+
+        return [{
+            "status": "submitted",
+            "round_id": round_id,
+            "client_id": client_id,
+            "num_samples": num_samples,
+            "final_loss": client_loss,
+            "clients_submitted": num_submitted,
+            "min_clients": min_clients,
+            "ready_to_aggregate": num_submitted >= min_clients,
+            "message": f"Client '{client_id}' update received ({num_submitted}/{min_clients} clients)."
+        }]
+
+    def federated_aggregate(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Aggregate client updates using Federated Averaging (FedAvg).
+        Weighted average of deltas based on each client's num_samples.
+        """
+        round_id = data.get("round_id")
+        if not round_id:
+            return [{"error": "round_id is required"}]
+
+        if round_id not in EndpointHandler._federated_rounds:
+            return [{"error": f"Round '{round_id}' not found"}]
+
+        round_info = EndpointHandler._federated_rounds[round_id]
+
+        if round_info["aggregated"]:
+            return [{"error": f"Round '{round_id}' already aggregated"}]
+
+        client_updates = round_info["client_updates"]
+        if not client_updates:
+            return [{"error": "No client updates to aggregate"}]
+
+        force = data.get("force", False)
+        if len(client_updates) < round_info["min_clients"] and not force:
+            return [{
+                "error": f"Not enough clients: {len(client_updates)}/{round_info['min_clients']}. "
+                         f"Use force=true to aggregate anyway.",
+                "clients_submitted": len(client_updates),
+                "min_clients": round_info["min_clients"]
+            }]
+
+        # FedAvg: weighted average of deltas by number of samples
+        total_samples = sum(u["num_samples"] for u in client_updates.values())
+        global_state = round_info["global_model_snapshot"]
+        aggregated_state = {}
+
+        for name, param in global_state.items():
+            aggregated_delta = torch.zeros_like(param, dtype=torch.float32)
+            has_update = False
+            for client_id, update in client_updates.items():
+                if name in update["delta"]:
+                    weight = update["num_samples"] / total_samples
+                    aggregated_delta += weight * update["delta"][name].float()
+                    has_update = True
+
+            if has_update:
+                aggregated_state[name] = param.float() + aggregated_delta
+                aggregated_state[name] = aggregated_state[name].to(param.dtype)
+            else:
+                aggregated_state[name] = param
+
+        # Apply aggregated weights to the global model
+        self.model.load_state_dict(aggregated_state)
+        self.model.eval()
+
+        round_info["aggregated"] = True
+        round_info["status"] = "completed"
+        round_info["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+        # Save checkpoint
+        ckpt_path = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
+        torch.save({
+            "model_state": self.model.state_dict(),
+            "config": self.config
+        }, ckpt_path)
+
+        # Upload if HF_TOKEN available
+        upload_status = "skipped (no HF_TOKEN)"
+        token = os.environ.get("HF_TOKEN")
+        if token:
+            try:
+                from huggingface_hub import HfApi
+                repo_id = os.environ.get("REPOSITORY_ID", "tapiocaTakeshi/Qubit")
+                api = HfApi(token=token)
+                api.upload_file(
+                    path_or_fileobj=ckpt_path,
+                    path_in_repo="neuroq_checkpoint.pt",
+                    repo_id=repo_id,
+                    repo_type="model",
+                    commit_message=f"Federated learning round {round_id}: aggregated {len(client_updates)} clients"
+                )
+                upload_status = "uploaded"
+            except Exception as e:
+                upload_status = f"upload failed: {e}"
+
+        # Build client summary
+        client_summary = {}
+        for cid, u in client_updates.items():
+            client_summary[cid] = {
+                "num_samples": u["num_samples"],
+                "final_loss": u["final_loss"],
+                "weight": round(u["num_samples"] / total_samples, 4),
+            }
+
+        # Clean up large data from memory
+        for u in client_updates.values():
+            u["delta"] = None
+        round_info.pop("global_model_snapshot", None)
+
+        return [{
+            "status": "aggregated",
+            "round_id": round_id,
+            "num_clients": len(client_updates),
+            "total_samples": total_samples,
+            "clients": client_summary,
+            "upload": upload_status,
+            "message": f"FedAvg aggregation complete. {len(client_updates)} clients, {total_samples} total samples."
+        }]
+
+    def federated_status(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Return the current status of a federated learning round."""
+        round_id = data.get("round_id")
+
+        # If no round_id, return all active rounds
+        if not round_id:
+            rounds_summary = []
+            for rid, info in EndpointHandler._federated_rounds.items():
+                rounds_summary.append({
+                    "round_id": rid,
+                    "status": info["status"],
+                    "clients_submitted": len(info["client_updates"]),
+                    "min_clients": info["min_clients"],
+                    "aggregated": info["aggregated"],
+                    "created_at": info["created_at"],
+                })
+            return [{"active_rounds": rounds_summary, "total_rounds": len(rounds_summary)}]
+
+        if round_id not in EndpointHandler._federated_rounds:
+            return [{"error": f"Round '{round_id}' not found"}]
+
+        info = EndpointHandler._federated_rounds[round_id]
+        client_info = {}
+        for cid, u in info["client_updates"].items():
+            client_info[cid] = {
+                "num_samples": u["num_samples"],
+                "final_loss": u["final_loss"],
+                "submitted_at": u["submitted_at"],
+            }
+
+        return [{
+            "round_id": round_id,
+            "status": info["status"],
+            "min_clients": info["min_clients"],
+            "epochs_per_client": info["epochs_per_client"],
+            "lr": info["lr"],
+            "clients_submitted": len(info["client_updates"]),
+            "clients": client_info,
+            "aggregated": info["aggregated"],
+            "created_at": info["created_at"],
+            "completed_at": info.get("completed_at"),
         }]
