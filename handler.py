@@ -159,53 +159,10 @@ class CharTokenizer:
 
 
 # ============================================================
-# NeuroQuantum wrapper for HuggingFace Trainer API compatibility
+# Default model config (matches app.py)
 # ============================================================
 
-class NeuroQTrainerWrapper(nn.Module):
-    """Wraps NeuroQuantum model to support HuggingFace Trainer API (input_ids/labels)."""
-
-    def __init__(self, model: 'NeuroQuantum', vocab_size: int):
-        super().__init__()
-        self.model = model
-        self.vocab_size = vocab_size
-
-    def forward(self, input_ids=None, labels=None, **kwargs):
-        logits = self.model(input_ids)
-
-        if labels is not None:
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            loss = F.cross_entropy(
-                shift_logits.view(-1, self.vocab_size),
-                shift_labels.view(-1),
-                ignore_index=-100
-            )
-            from transformers.modeling_outputs import CausalLMOutput
-            return CausalLMOutput(loss=loss, logits=logits)
-
-        return logits
-
-    def parameters(self, recurse=True):
-        return self.model.parameters(recurse=recurse)
-
-    def named_parameters(self, prefix='', recurse=True):
-        return self.model.named_parameters(prefix=prefix, recurse=recurse)
-
-    def train(self, mode=True):
-        self.model.train(mode)
-        return super().train(mode)
-
-    def eval(self):
-        self.model.eval()
-        return super().eval()
-
-
-# ============================================================
-# Default model config — Improved architecture
-# ============================================================
-
-LEGACY_CONFIG = {
+DEFAULT_CONFIG = {
     "vocab_size": 200,
     "embed_dim": 64,
     "num_heads": 2,
@@ -228,1354 +185,225 @@ DEFAULT_CONFIG = {
 
 
 # ============================================================
-# EndpointHandler
+# RunPod Serverless Handler
 # ============================================================
 
-class EndpointHandler:
+import runpod
+
+def find_checkpoint(path: str):
+    """Search for a checkpoint file in the model directory."""
+    candidates = [
+        os.path.join(path, "qbnn_checkpoint.pt"),
+        os.path.join(path, "neuroq_checkpoint.pt"),
+        os.path.join(path, "checkpoint.pt"),
+        os.path.join(path, "model.pt"),
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    # Also check for any .pt file
+    if os.path.isdir(path):
+        for fname in os.listdir(path):
+            if fname.endswith(".pt"):
+                return os.path.join(path, fname)
+    return None
+
+# Use global variables for model, tokenizer, and config to persist across requests
+tokenizer = CharTokenizer()
+
+# Determine config - try loading from checkpoint first
+config = dict(DEFAULT_CONFIG)
+config["vocab_size"] = tokenizer.vocab_size
+
+# Look for checkpoint file
+model_path = os.environ.get("MODEL_PATH", ".")
+ckpt_path = find_checkpoint(model_path)
+
+if ckpt_path is not None:
+    checkpoint = torch.load(ckpt_path, map_location="cpu")
+
+    # Use saved config if available
+    if "config" in checkpoint:
+        saved_config = checkpoint["config"]
+        config.update(saved_config)
+        # Ensure vocab_size matches tokenizer
+        config["vocab_size"] = tokenizer.vocab_size
+
+    model = QBNNTransformer(config)
+    model.load_state_dict(checkpoint["model_state"])
+else:
+    # No checkpoint found - initialize with default weights
+    model = QBNNTransformer(config)
+
+model.eval()
+
+def train(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    from transformers import Trainer, TrainingArguments
+    from datasets import load_dataset
+    import os
+    import traceback
+    from huggingface_hub import HfApi
+
+    dataset_id = data.get("dataset_id")
+    if not dataset_id:
+        return [{"error": "dataset_id is required for training"}]
+        
+    text_column = data.get("text_column", "text")
+    split = data.get("split", "train")
+    max_samples = int(data.get("max_samples", 500))
+    epochs = float(data.get("epochs", 3.0))
+    lr = float(data.get("lr", 1e-3))
+    
+    try:
+        ds = load_dataset(dataset_id, split=split, trust_remote_code=False)
+    except Exception as e:
+        return [{"error": f"Failed to load dataset: {str(e)}", "traceback": traceback.format_exc()}]
+        
+    # Extract texts
+    texts = []
+    for row in ds.select(range(min(max_samples, len(ds)))):
+        col_data = row.get(text_column)
+        if isinstance(col_data, str) and len(col_data.strip()) > 4:
+            texts.append(col_data.strip())
+            
+    if not texts:
+        return [{"error": "No valid text found in dataset"}]
+        
+    # Prepare Dataset
+    class CustomDataset(torch.utils.data.Dataset):
+        def __init__(self, texts, tokenizer, max_seq_len):
+            self.data = []
+            for t in texts:
+                ids = tokenizer.encode(t, max_len=max_seq_len)
+                if len(ids) >= 2:
+                    self.data.append(ids)
+
+        def __len__(self):
+            return len(self.data)
+
+        def __getitem__(self, idx):
+            ids = self.data[idx]
+            return {"input_ids": ids, "labels": ids.copy()}
+
+    train_dataset = CustomDataset(texts, tokenizer, config["max_seq_len"])
+    
+    def collate_fn(batch):
+        max_len = max(len(x["input_ids"]) for x in batch)
+        input_ids = []
+        labels = []
+        for x in batch:
+            pad_len = max_len - len(x["input_ids"])
+            ids = x["input_ids"] + [0] * pad_len # 0 is PAD
+            lbl = x["labels"] + [-100] * pad_len
+            input_ids.append(ids)
+            labels.append(lbl)
+        return {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "labels": torch.tensor(labels, dtype=torch.long)
+        }
+
+    training_args = TrainingArguments(
+        output_dir="/tmp/qbnn_training",
+        num_train_epochs=epochs,
+        learning_rate=lr,
+        per_device_train_batch_size=8,
+        save_strategy="no",
+        logging_steps=10,
+        report_to="none"
+    )
+    
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        data_collator=collate_fn
+    )
+    
+    try:
+        trainer.train()
+    except Exception as e:
+        return [{"error": f"Training failed: {e}", "traceback": traceback.format_exc()}]
+        
+    # Save model
+    ckpt_path_out = "qbnn_checkpoint.pt"
+    torch.save({
+        "model_state": model.state_dict(), 
+        "config": config
+    }, ckpt_path_out)
+    
+    # Upload if HF_TOKEN is available
+    token = os.environ.get("HF_TOKEN")
+    if token:
+        try:
+            repo_id = os.environ.get("REPOSITORY_ID", "tapiocaTakeshi/Qubit")
+            HfApi(token=token).upload_file(
+                path_or_fileobj=ckpt_path_out,
+                path_in_repo=ckpt_path_out,
+                repo_id=repo_id,
+                repo_type="model",
+                commit_message="Update model checkpoint via API training"
+            )
+        except Exception as e:
+            return [{"status": "success", "message": f"Trained successfully, but upload failed: {e}"}]
+            
+    return [{"status": "success", "message": f"Trained on {len(texts)} samples for {epochs} epochs."}]
+
+
+def handler(job):
     """
-    Custom handler for HuggingFace Inference Endpoints.
-
-    Loads the QBNN-Transformer checkpoint and serves text generation requests.
-    Uses the improved NeuroQuantum architecture with SentencePiece tokenizer.
-
-    Request format:
+    Handle an inference or training request for RunPod serverless.
+    
+    Job format:
         {
-            "inputs": "your prompt text",
-            "parameters": {              # all optional
-                "temperature": 0.8,
-                "max_new_tokens": 100,
-                "top_k": 40,
-                "top_p": 0.9,
-                "repetition_penalty": 1.2
+            "input": {
+                "inputs": "your prompt text",
+                "parameters": { ... }
             }
         }
-
-    Response format:
-        [{"generated_text": "..."}]
     """
+    job_input = job.get("input", {})
+    
+    # Check if this is a training request
+    if job_input.get("action") == "train":
+        return train(job_input)
 
-    def __init__(self, path: str = ""):
-        """
-        Initialize the handler by loading the model from the given path.
+    inputs = job_input.get("inputs", job_input.get("prompt", ""))
+    if isinstance(inputs, list):
+        inputs = inputs[0] if inputs else ""
+    inputs = str(inputs)
 
-        Args:
-            path: Path to model weights directory (provided by Inference Endpoints).
-        """
-        self._init_log = []
-        self._init_log.append(f"path={path}")
-        # Look for checkpoint file first to determine architecture
-        ckpt_path = self._find_checkpoint(path)
-        self._init_log.append(f"ckpt_path={ckpt_path}")
-        checkpoint = None
-        saved_config = None
+    # Extract generation parameters
+    params = job_input.get("parameters", {})
+    temperature = float(params.get("temperature", 0.8))
+    max_new_tokens = int(params.get("max_new_tokens", 30))
+    top_k = int(params.get("top_k", 0))
+    top_p = float(params.get("top_p", 1.0))
+    repetition_penalty = float(params.get("repetition_penalty", 1.0))
 
-        if ckpt_path is not None:
-            checkpoint = torch.load(ckpt_path, map_location="cpu")
-            saved_config = checkpoint.get("config", {})
+    # Encode input
+    ids = tokenizer.encode(inputs, max_len=config["max_seq_len"])
+    if not ids:
+        return [{"generated_text": ""}]
 
-        # Determine if this is a legacy checkpoint
-        is_legacy = False
-        if saved_config:
-            is_legacy = saved_config.get("architecture") != "neuroquantum"
-            # Also detect legacy by small parameter values
-            if saved_config.get("embed_dim", 256) <= 64 and saved_config.get("max_seq_len", 512) <= 32:
-                is_legacy = True
+    input_tensor = torch.tensor([ids], dtype=torch.long)
 
-        self._init_log.append(f"is_legacy={is_legacy}, NEUROQUANTUM_AVAILABLE={NEUROQUANTUM_AVAILABLE}")
-        self._init_log.append(f"saved_config={saved_config}")
-
-        if is_legacy or not NEUROQUANTUM_AVAILABLE:
-            # Legacy mode: use old CharTokenizer + QBNNTransformer
-            self._init_legacy(checkpoint, saved_config)
-            self._init_log.append("mode=legacy")
-        else:
-            # New mode: use NeuroQuantum + SentencePiece
-            self._init_neuroquantum(path, checkpoint, saved_config)
-            self._init_log.append("mode=neuroquantum")
-
-    def _init_legacy(self, checkpoint, saved_config):
-        """Initialize with legacy architecture for old checkpoints."""
-        self.architecture = "legacy"
-        self.tokenizer = CharTokenizer()
-        self.config = dict(LEGACY_CONFIG)
-        self.config["vocab_size"] = self.tokenizer.vocab_size
-
-        if saved_config:
-            self.config.update(saved_config)
-            self.config["vocab_size"] = self.tokenizer.vocab_size
-
-        self.model = QBNNTransformer(self.config)
-        if checkpoint and "model_state" in checkpoint:
-            self.model.load_state_dict(checkpoint["model_state"])
-        self.model.eval()
-        self.neuroq_model = None
-
-    def _init_neuroquantum(self, path, checkpoint, saved_config):
-        """Initialize with improved NeuroQuantum architecture."""
-        self.architecture = "neuroquantum"
-        self.config = dict(DEFAULT_CONFIG)
-
-        # Load or create SentencePiece tokenizer
-        tokenizer_path = self._find_tokenizer(path)
-        if tokenizer_path:
-            self.tokenizer = NeuroQuantumTokenizer(
-                vocab_size=self.config["vocab_size"],
-                model_file=tokenizer_path
-            )
-        else:
-            # No trained tokenizer found — create one with fallback vocab
-            self.tokenizer = NeuroQuantumTokenizer(vocab_size=self.config["vocab_size"])
-
-        # Update vocab_size from tokenizer
-        actual_vocab = self.tokenizer.actual_vocab_size or self.tokenizer.vocab_size
-        self.config["vocab_size"] = actual_vocab
-
-        if saved_config and saved_config.get("architecture") == "neuroquantum":
-            # Use saved config but keep tokenizer's vocab_size
-            saved_vocab = actual_vocab
-            self.config.update(saved_config)
-            self.config["vocab_size"] = saved_vocab
-
-        # Build NeuroQuantum model
-        nq_config = NeuroQuantumConfig(
-            vocab_size=self.config["vocab_size"],
-            embed_dim=self.config["embed_dim"],
-            hidden_dim=self.config.get("hidden_dim", self.config["embed_dim"] * 2),
-            num_heads=self.config["num_heads"],
-            num_layers=self.config["num_layers"],
-            max_seq_len=self.config["max_seq_len"],
-            dropout=self.config.get("dropout", 0.1),
-            lambda_entangle=self.config.get("entangle_strength", 0.5),
-        )
-        self.neuroq_model = NeuroQuantum(config=nq_config)
-
-        if checkpoint and "model_state" in checkpoint:
-            try:
-                self.neuroq_model.load_state_dict(checkpoint["model_state"])
-                self._init_log.append("state_dict loaded OK")
-            except RuntimeError as e:
-                self._init_log.append(f"state_dict FAILED: {e}")
-                # State dict mismatch — reinitialize
-                self.neuroq_model = NeuroQuantum(config=nq_config)
-        else:
-            self._init_log.append(f"no checkpoint to load: checkpoint={checkpoint is not None}, has_model_state={'model_state' in checkpoint if checkpoint else False}")
-
-        self.neuroq_model.eval()
-        # For backward-compatible interface
-        self.model = self.neuroq_model
-
-    def _find_tokenizer(self, path: str):
-        """Search for a SentencePiece tokenizer model file."""
-        candidates = [
-            os.path.join(path, "neuroq_tokenizer.model"),
-            os.path.join(path, "neuroq_tokenizer_16k.model"),
-            os.path.join(path, "neuroq_tokenizer_8k.model"),
-            os.path.join(path, "neuroq_tokenizer.json"),
-            # Also check script directory
-            os.path.join(os.path.dirname(__file__), "neuroq_tokenizer.model"),
-            os.path.join(os.path.dirname(__file__), "neuroq_tokenizer_16k.model"),
-            os.path.join(os.path.dirname(__file__), "neuroq_tokenizer_8k.model"),
-            os.path.join(os.path.dirname(__file__), "neuroq_tokenizer.json"),
-        ]
-        for candidate in candidates:
-            if os.path.isfile(candidate):
-                return candidate
-        return None
-
-    def _find_checkpoint(self, path: str):
-        """Search for a checkpoint file in the model directory."""
-        candidates = [
-            os.path.join(path, "neuroq_checkpoint.pt"),
-            os.path.join(path, "qbnn_checkpoint.pt"),
-            os.path.join(path, "checkpoint.pt"),
-            os.path.join(path, "model.pt"),
-        ]
-        for candidate in candidates:
-            if os.path.isfile(candidate):
-                return candidate
-
-        if os.path.isdir(path):
-            for fname in os.listdir(path):
-                if fname.endswith(".pt"):
-                    return os.path.join(path, fname)
-        return None
-
-    def __call__(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Handle an inference or training request.
-
-        Args:
-            data: Request body with 'inputs' key and optional 'parameters'.
-                  Alternatively, for training: {"action": "train", "dataset_id": "...", ...}
-
-        Returns:
-            List of dicts with 'generated_text' or training status.
-        """
-        # Debug: return init log
-        if data.get("action") == "debug" or data.get("inputs") == "__debug__":
-            return [{"init_log": self._init_log, "architecture": self.architecture,
-                     "config": self.config, "model_params": sum(p.numel() for p in self.model.parameters()),
-                     "handler_version": "v3_2026_03_12"}]
-
-        # Support training via both top-level and parameters.action
-        if data.get("action") == "train":
-            return self.train(data)
-        params = data.get("parameters", {})
-        if params.get("action") == "train":
-            # Merge parameters into top-level for train()
-            train_data = dict(params)
-            return self.train(train_data)
-
-        # Batch training actions
-        action = data.get("action") or params.get("action", "")
-        if action == "batch_train":
-            bt_data = dict(data)
-            bt_data.update(params)
-            return self.batch_train(bt_data)
-        # Federated learning actions
-        if action.startswith("federated_"):
-            fed_data = dict(data)
-            if params.get("action"):
-                fed_data.update(params)
-            if action == "federated_init":
-                return self.federated_init(fed_data)
-            elif action == "federated_submit":
-                return self.federated_submit(fed_data)
-            elif action == "federated_aggregate":
-                return self.federated_aggregate(fed_data)
-            elif action == "federated_status":
-                return self.federated_status(fed_data)
-            else:
-                return [{"error": f"Unknown federated action: {action}"}]
-
-        inputs = data.get("inputs", data)
-        if isinstance(inputs, list):
-            inputs = inputs[0] if inputs else ""
-        inputs = str(inputs)
-        temperature = float(params.get("temperature", 0.8))
-        max_new_tokens = int(params.get("max_new_tokens", 100))
-        top_k = int(params.get("top_k", 40))
-        top_p = float(params.get("top_p", 0.9))
-        repetition_penalty = float(params.get("repetition_penalty", 1.2))
-
-        if self.architecture == "neuroquantum":
-            return self._generate_neuroquantum(
-                inputs, temperature, max_new_tokens, top_k, top_p, repetition_penalty
-            )
-        else:
-            return self._generate_legacy(
-                inputs, temperature, max_new_tokens, top_k, top_p, repetition_penalty
-            )
-
-    def _generate_neuroquantum(self, text, temperature, max_new_tokens,
-                                top_k, top_p, repetition_penalty):
-        """Generate text using the NeuroQuantum architecture."""
-        tokens = self.tokenizer.encode(text, add_special=True)
-        if not tokens:
-            return [{"generated_text": ""}]
-
-        device = next(self.neuroq_model.parameters()).device
-        input_tensor = torch.tensor([tokens], dtype=torch.long, device=device)
-        generated = list(tokens)
-
-        self.neuroq_model.eval()
-        with torch.no_grad():
-            for _ in range(max_new_tokens):
-                seq = input_tensor[:, -self.config["max_seq_len"]:]
-                logits = self.neuroq_model(seq)[:, -1, :] / max(temperature, 1e-5)
-
-                # Repetition penalty
-                if len(generated) > 1 and repetition_penalty > 1.0:
-                    window = generated[-min(50, len(generated)):]
-                    for prev_token in set(window):
-                        if prev_token < logits.size(-1):
-                            logits[0, prev_token] /= repetition_penalty
-
-                # Top-K filtering
-                if top_k > 0:
-                    k = min(top_k, logits.size(-1))
-                    topk_vals = torch.topk(logits, k)[0]
-                    logits[logits < topk_vals[:, -1:]] = float('-inf')
-
-                # Top-P filtering
-                if top_p < 1.0:
-                    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-                    cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-                    to_remove = cumulative_probs > top_p
-                    to_remove[:, 1:] = to_remove[:, :-1].clone()
-                    to_remove[:, 0] = False
-                    indices_to_remove = sorted_indices[to_remove]
-                    logits[0, indices_to_remove] = float('-inf')
-
-                probs = F.softmax(logits, dim=-1)
-                nxt = torch.multinomial(probs, 1)
-                nxt_id = nxt.item()
-
-                # EOS check
-                if nxt_id == self.tokenizer.eos_id:
-                    break
-                # Skip PAD
-                if nxt_id == self.tokenizer.pad_id:
-                    continue
-
-                generated.append(nxt_id)
-                input_tensor = torch.cat([input_tensor, nxt], dim=1)
-
-        # Decode only generated tokens (skip input)
-        generated_ids = generated[len(tokens):]
-        generated_text = self.tokenizer.decode(generated_ids, skip_special=True)
-
-        return [{"generated_text": generated_text}]
-
-    def _generate_legacy(self, text, temperature, max_new_tokens,
-                          top_k, top_p, repetition_penalty):
-        """Generate text using the legacy QBNNTransformer architecture."""
-        ids = self.tokenizer.encode(text, max_len=self.config["max_seq_len"])
-        if not ids:
-            return [{"generated_text": ""}]
-
-        device = next(self.model.parameters()).device
-        input_tensor = torch.tensor([ids], dtype=torch.long, device=device)
-
-        with torch.no_grad():
-            output = self.model.generate(
-                input_tensor,
-                max_new=max_new_tokens,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-                repetition_penalty=repetition_penalty,
-            )
-
-        generated_ids = output[0, len(ids):].tolist()
-        generated_text = self.tokenizer.decode(generated_ids)
-
-        return [{"generated_text": generated_text}]
-
-    def train(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        from transformers import Trainer, TrainingArguments, TrainerCallback
-        from datasets import load_dataset
-        import json
-        import traceback
-        from datetime import datetime, timezone
-        from huggingface_hub import HfApi
-
-        dataset_id = data.get("dataset_id")
-        if not dataset_id:
-            return [{"error": "dataset_id is required for training"}]
-
-        text_column = data.get("text_column", "text")
-        split = data.get("split", "train")
-        max_samples = int(data.get("max_samples", 3000))
-        epochs = float(data.get("epochs", 3.0))
-        lr = float(data.get("lr", 1e-3))
-
-        try:
-            ds = load_dataset(dataset_id, split=split, trust_remote_code=False)
-        except Exception as e:
-            return [{"error": f"Failed to load dataset: {str(e)}", "traceback": traceback.format_exc()}]
-
-        # Extract texts
-        texts = []
-        for row in ds.select(range(min(max_samples, len(ds)))):
-            col_data = row.get(text_column)
-            if isinstance(col_data, str) and len(col_data.strip()) > 4:
-                texts.append(col_data.strip())
-            elif isinstance(col_data, list):
-                parts = []
-                for turn in col_data:
-                    if isinstance(turn, dict) and "value" in turn:
-                        parts.append(turn["value"])
-                    elif isinstance(turn, str):
-                        parts.append(turn)
-                combined = "\n".join(parts)
-                if len(combined.strip()) > 4:
-                    texts.append(combined.strip())
-
-        if not texts:
-            return [{"error": "No valid text found in dataset"}]
-
-        # Always use neuroquantum architecture for training if available
-        # This handles upgrade from legacy to neuroquantum
-        if NEUROQUANTUM_AVAILABLE:
-            if self.architecture != "neuroquantum":
-                # Upgrade from legacy to neuroquantum
-                self.config = dict(DEFAULT_CONFIG)
-                self.architecture = "neuroquantum"
-            return self._train_neuroquantum(data, texts, dataset_id, text_column,
-                                            epochs, lr, max_samples)
-        else:
-            return self._train_legacy(data, texts, dataset_id, text_column,
-                                      epochs, lr)
-
-    def _train_neuroquantum(self, data, texts, dataset_id, text_column,
-                             epochs, lr, max_samples):
-        """Train using the improved NeuroQuantum architecture."""
-        from transformers import Trainer, TrainingArguments, TrainerCallback
-        import json
-        import traceback
-        from datetime import datetime, timezone
-        from huggingface_hub import HfApi
-
-        max_seq_len = self.config["max_seq_len"]
-
-        # Build SentencePiece tokenizer if not already trained
-        if self.tokenizer.sp is None:
-            self.tokenizer = NeuroQuantumTokenizer(vocab_size=self.config["vocab_size"])
-            self.tokenizer.build_vocab(
-                texts,
-                model_prefix=os.path.join(os.path.dirname(__file__), "neuroq_tokenizer"),
-                character_coverage=0.9995,
-            )
-            # Rebuild model with actual vocab size
-            actual_vocab = self.tokenizer.actual_vocab_size or self.tokenizer.vocab_size
-            self.config["vocab_size"] = actual_vocab
-            nq_config = NeuroQuantumConfig(
-                vocab_size=actual_vocab,
-                embed_dim=self.config["embed_dim"],
-                hidden_dim=self.config.get("hidden_dim", self.config["embed_dim"] * 2),
-                num_heads=self.config["num_heads"],
-                num_layers=self.config["num_layers"],
-                max_seq_len=self.config["max_seq_len"],
-                dropout=self.config.get("dropout", 0.1),
-                lambda_entangle=self.config.get("entangle_strength", 0.5),
-            )
-            self.neuroq_model = NeuroQuantum(config=nq_config)
-            self.model = self.neuroq_model
-
-        # Tokenize texts into sequences
-        class SeqDataset(torch.utils.data.Dataset):
-            def __init__(self, texts, tokenizer, max_seq_len):
-                self.data = []
-                for t in texts:
-                    # Encode without special tokens, wrap each chunk with BOS/EOS
-                    content_ids = tokenizer.encode(t, add_special=False)
-                    max_content = max_seq_len - 2  # Reserve for BOS and EOS
-                    if max_content <= 0:
-                        continue
-                    if len(content_ids) <= max_content:
-                        if len(content_ids) >= 2:
-                            seq = [tokenizer.bos_id] + content_ids + [tokenizer.eos_id]
-                            self.data.append(seq)
-                    else:
-                        stride = max(max_content // 2, 1)
-                        for start in range(0, len(content_ids) - max_content + 1, stride):
-                            chunk = content_ids[start:start + max_content]
-                            seq = [tokenizer.bos_id] + chunk + [tokenizer.eos_id]
-                            self.data.append(seq)
-                        remaining = content_ids[-max_content:]
-                        tail_seq = [tokenizer.bos_id] + remaining + [tokenizer.eos_id]
-                        if tail_seq != self.data[-1]:
-                            self.data.append(tail_seq)
-
-            def __len__(self):
-                return len(self.data)
-
-            def __getitem__(self, idx):
-                ids = self.data[idx]
-                return {"input_ids": ids, "labels": ids.copy()}
-
-        train_dataset = SeqDataset(texts, self.tokenizer, max_seq_len)
-
-        def collate_fn(batch):
-            max_len = min(max(len(x["input_ids"]) for x in batch), max_seq_len)
-            input_ids = []
-            labels = []
-            for x in batch:
-                ids = x["input_ids"][:max_len]
-                lbl = x["labels"][:max_len]
-                pad_len = max_len - len(ids)
-                ids = ids + [self.tokenizer.pad_id] * pad_len
-                lbl = lbl + [-100] * pad_len
-                input_ids.append(ids)
-                labels.append(lbl)
-            return {
-                "input_ids": torch.tensor(input_ids, dtype=torch.long),
-                "labels": torch.tensor(labels, dtype=torch.long)
-            }
-
-        class LossCallback(TrainerCallback):
-            def __init__(self):
-                self.logs = []
-
-            def on_log(self, args, state, control, logs=None, **kwargs):
-                if logs and "loss" in logs:
-                    self.logs.append({
-                        "step": state.global_step,
-                        "loss": round(logs["loss"], 6),
-                        "epoch": round(logs.get("epoch", 0), 2)
-                    })
-
-        loss_callback = LossCallback()
-
-        # Wrap model for Trainer compatibility
-        wrapper = NeuroQTrainerWrapper(self.neuroq_model, self.config["vocab_size"])
-
-        training_args = TrainingArguments(
-            output_dir="/tmp/neuroq_training",
-            num_train_epochs=epochs,
-            learning_rate=lr,
-            per_device_train_batch_size=8,
-            gradient_accumulation_steps=2,
-            warmup_ratio=0.1,
-            weight_decay=0.01,
-            save_strategy="no",
-            logging_steps=10,
-            report_to="none",
-            fp16=torch.cuda.is_available(),
+    # Generate
+    with torch.no_grad():
+        output = model.generate(
+            input_tensor,
+            max_new=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
         )
 
-        trainer = Trainer(
-            model=wrapper,
-            args=training_args,
-            train_dataset=train_dataset,
-            data_collator=collate_fn,
-            callbacks=[loss_callback]
-        )
+    # Decode only the newly generated tokens
+    generated_ids = output[0, len(ids):].tolist()
+    generated_text = tokenizer.decode(generated_ids)
 
-        try:
-            train_result = trainer.train()
-        except Exception as e:
-            import traceback
-            return [{"error": f"Training failed: {e}", "traceback": traceback.format_exc()}]
-        finally:
-            self.neuroq_model.eval()
+    return [{"generated_text": generated_text}]
 
-        final_loss = round(train_result.training_loss, 6) if train_result.training_loss else None
-
-        # Build training history entry
-        history_entry = {
-            "dataset_id": dataset_id,
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
-            "epochs": int(epochs) if epochs == int(epochs) else epochs,
-            "samples": len(train_dataset),
-            "final_loss": final_loss,
-            "learning_rate": lr,
-            "text_column": text_column,
-            "architecture": "neuroquantum",
-            "embed_dim": self.config["embed_dim"],
-            "num_layers": self.config["num_layers"],
-            "max_seq_len": self.config["max_seq_len"],
-            "vocab_size": self.config["vocab_size"],
-        }
-
-        # Update training_history.json
-        history_path = os.path.join(os.path.dirname(__file__), "training_history.json")
-        try:
-            if os.path.exists(history_path):
-                with open(history_path, "r") as f:
-                    history = json.load(f)
-            else:
-                history = []
-            history.append(history_entry)
-            with open(history_path, "w") as f:
-                json.dump(history, f, indent=2, ensure_ascii=False)
-        except Exception:
-            history = [history_entry]
-
-        # Save model checkpoint with architecture tag
-        ckpt_path = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
-        torch.save({
-            "model_state": self.neuroq_model.state_dict(),
-            "config": self.config
-        }, ckpt_path)
-
-        # Save tokenizer
-        tokenizer_path = os.path.join(os.path.dirname(__file__), "neuroq_tokenizer")
-        self.tokenizer.save(tokenizer_path)
-
-        # Upload if HF_TOKEN available
-        token = os.environ.get("HF_TOKEN")
-        upload_status = "skipped (no HF_TOKEN)"
-        if token:
-            try:
-                repo_id = os.environ.get("REPOSITORY_ID", "tapiocaTakeshi/Qubit")
-                api = HfApi(token=token)
-                api.upload_file(
-                    path_or_fileobj=ckpt_path,
-                    path_in_repo="neuroq_checkpoint.pt",
-                    repo_id=repo_id,
-                    repo_type="model",
-                    commit_message=f"Update neuroQ checkpoint after training on {dataset_id}"
-                )
-                api.upload_file(
-                    path_or_fileobj=history_path,
-                    path_in_repo="training_history.json",
-                    repo_id=repo_id,
-                    repo_type="model",
-                    commit_message=f"Update training history after {dataset_id}"
-                )
-                upload_status = "uploaded"
-            except Exception as e:
-                upload_status = f"upload failed: {e}"
-
-        return [{
-            "status": "success",
-            "architecture": "neuroquantum",
-            "dataset_id": dataset_id,
-            "samples_trained": len(train_dataset),
-            "epochs": epochs,
-            "final_loss": final_loss,
-            "config": {
-                "vocab_size": self.config["vocab_size"],
-                "embed_dim": self.config["embed_dim"],
-                "num_layers": self.config["num_layers"],
-                "max_seq_len": self.config["max_seq_len"],
-            },
-            "loss_log": loss_callback.logs,
-            "upload": upload_status,
-            "message": f"Trained on {len(train_dataset)} samples for {epochs} epochs. Final loss: {final_loss}"
-        }]
-
-    def _train_legacy(self, data, texts, dataset_id, text_column, epochs, lr):
-        """Train using the legacy QBNNTransformer architecture."""
-        from transformers import Trainer, TrainingArguments, TrainerCallback
-        import json
-        import traceback
-        from datetime import datetime, timezone
-        from huggingface_hub import HfApi
-
-        class CustomDataset(torch.utils.data.Dataset):
-            def __init__(self, texts, tokenizer, max_seq_len):
-                self.data = []
-                for t in texts:
-                    ids = tokenizer.encode(t, max_len=max_seq_len)
-                    if len(ids) >= 2:
-                        self.data.append(ids)
-
-            def __len__(self):
-                return len(self.data)
-
-            def __getitem__(self, idx):
-                ids = self.data[idx]
-                return {"input_ids": ids, "labels": ids.copy()}
-
-        train_dataset = CustomDataset(texts, self.tokenizer, self.config["max_seq_len"])
-
-        def collate_fn(batch):
-            max_len = max(len(x["input_ids"]) for x in batch)
-            input_ids = []
-            labels = []
-            for x in batch:
-                pad_len = max_len - len(x["input_ids"])
-                ids = x["input_ids"] + [0] * pad_len
-                lbl = x["labels"] + [-100] * pad_len
-                input_ids.append(ids)
-                labels.append(lbl)
-            return {
-                "input_ids": torch.tensor(input_ids, dtype=torch.long),
-                "labels": torch.tensor(labels, dtype=torch.long)
-            }
-
-        class LossCallback(TrainerCallback):
-            def __init__(self):
-                self.logs = []
-
-            def on_log(self, args, state, control, logs=None, **kwargs):
-                if logs and "loss" in logs:
-                    self.logs.append({
-                        "step": state.global_step,
-                        "loss": round(logs["loss"], 6),
-                        "epoch": round(logs.get("epoch", 0), 2)
-                    })
-
-        loss_callback = LossCallback()
-
-        training_args = TrainingArguments(
-            output_dir="/tmp/qbnn_training",
-            num_train_epochs=epochs,
-            learning_rate=lr,
-            per_device_train_batch_size=8,
-            save_strategy="no",
-            logging_steps=10,
-            report_to="none"
-        )
-
-        trainer = Trainer(
-            model=self.model,
-            args=training_args,
-            train_dataset=train_dataset,
-            data_collator=collate_fn,
-            callbacks=[loss_callback]
-        )
-
-        try:
-            train_result = trainer.train()
-        except Exception as e:
-            return [{"error": f"Training failed: {e}", "traceback": traceback.format_exc()}]
-        finally:
-            self.model.eval()
-
-        final_loss = round(train_result.training_loss, 6) if train_result.training_loss else None
-
-        history_entry = {
-            "dataset_id": dataset_id,
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
-            "epochs": int(epochs) if epochs == int(epochs) else epochs,
-            "samples": len(train_dataset),
-            "final_loss": final_loss,
-            "learning_rate": lr,
-            "text_column": text_column
-        }
-
-        history_path = os.path.join(os.path.dirname(__file__), "training_history.json")
-        try:
-            if os.path.exists(history_path):
-                with open(history_path, "r") as f:
-                    history = json.load(f)
-            else:
-                history = []
-            history.append(history_entry)
-            with open(history_path, "w") as f:
-                json.dump(history, f, indent=2, ensure_ascii=False)
-        except Exception:
-            history = [history_entry]
-
-        ckpt_path = os.path.join(os.path.dirname(__file__), "qbnn_checkpoint.pt")
-        torch.save({
-            "model_state": self.model.state_dict(),
-            "config": self.config
-        }, ckpt_path)
-
-        token = os.environ.get("HF_TOKEN")
-        upload_status = "skipped (no HF_TOKEN)"
-        if token:
-            try:
-                repo_id = os.environ.get("REPOSITORY_ID", "tapiocaTakeshi/Qubit")
-                api = HfApi(token=token)
-                api.upload_file(
-                    path_or_fileobj=ckpt_path,
-                    path_in_repo="qbnn_checkpoint.pt",
-                    repo_id=repo_id,
-                    repo_type="model",
-                    commit_message=f"Update checkpoint after training on {dataset_id}"
-                )
-                api.upload_file(
-                    path_or_fileobj=history_path,
-                    path_in_repo="training_history.json",
-                    repo_id=repo_id,
-                    repo_type="model",
-                    commit_message=f"Update training history after {dataset_id}"
-                )
-                upload_status = "uploaded"
-            except Exception as e:
-                upload_status = f"upload failed: {e}"
-
-        return [{
-            "status": "success",
-            "dataset_id": dataset_id,
-            "samples_trained": len(train_dataset),
-            "epochs": epochs,
-            "final_loss": final_loss,
-            "loss_log": loss_callback.logs,
-            "upload": upload_status,
-            "message": f"Trained on {len(train_dataset)} samples for {epochs} epochs. Final loss: {final_loss}"
-        }]
-
-    # ============================================================
-    # Batch Training Endpoint (レンジ指定による分割学習)
-    # ============================================================
-    #
-    # データセットのレンジ（start_index〜end_index）を指定して学習する。
-    # 大規模データセットを一度に学習するとタイムアウトするため、
-    # 呼び出し側が範囲を分割して複数回呼び出す想定。
-    # 各呼び出しでチェックポイントを保存するので、次回は前回の続きから学習される。
-    #
-    # Usage (例: 10000件を1000件ずつ分割):
-    #   {"action": "batch_train", "dataset_id": "izumi-lab/wikipedia-ja", "start_index": 0, "end_index": 1000}
-    #   {"action": "batch_train", "dataset_id": "izumi-lab/wikipedia-ja", "start_index": 1000, "end_index": 2000}
-    #   {"action": "batch_train", "dataset_id": "izumi-lab/wikipedia-ja", "start_index": 2000, "end_index": 3000}
-    #   ...
-    # ============================================================
-
-    def batch_train(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Train on a specified range of a dataset.
-        Caller specifies start_index and end_index to control which slice
-        of the dataset to train on. Checkpoint is saved after training,
-        so the next call continues from the updated model weights.
-        """
-        from transformers import Trainer, TrainingArguments, TrainerCallback
-        from datasets import load_dataset
-        import json
-        import traceback
-        from datetime import datetime, timezone
-        from huggingface_hub import HfApi
-
-        dataset_id = data.get("dataset_id")
-        if not dataset_id:
-            return [{"error": "dataset_id is required for batch training"}]
-
-        text_column = data.get("text_column", "text")
-        split = data.get("split", "train")
-        start_index = int(data.get("start_index", 0))
-        end_index = data.get("end_index")
-        epochs = float(data.get("epochs", 1.0))
-        lr = float(data.get("lr", 1e-3))
-
-        # Load dataset
-        try:
-            ds = load_dataset(dataset_id, split=split, trust_remote_code=False)
-        except Exception as e:
-            return [{"error": f"Failed to load dataset: {str(e)}", "traceback": traceback.format_exc()}]
-
-        dataset_size = len(ds)
-        if end_index is None:
-            end_index = min(start_index + 1000, dataset_size)
-        else:
-            end_index = int(end_index)
-
-        # Validate range
-        if start_index < 0:
-            start_index = 0
-        if end_index > dataset_size:
-            end_index = dataset_size
-        if start_index >= end_index:
-            return [{"error": f"Invalid range: start_index={start_index} >= end_index={end_index}, dataset_size={dataset_size}"}]
-
-        # Extract texts from the specified range
-        texts = []
-        for row in ds.select(range(start_index, end_index)):
-            col_data = row.get(text_column)
-            if isinstance(col_data, str) and len(col_data.strip()) > 4:
-                texts.append(col_data.strip())
-            elif isinstance(col_data, list):
-                parts = []
-                for turn in col_data:
-                    if isinstance(turn, dict) and "value" in turn:
-                        parts.append(turn["value"])
-                    elif isinstance(turn, str):
-                        parts.append(turn)
-                combined = "\n".join(parts)
-                if len(combined.strip()) > 4:
-                    texts.append(combined.strip())
-
-        if not texts:
-            return [{"error": f"No valid text found in range [{start_index}:{end_index}]"}]
-
-        # Ensure neuroquantum architecture
-        if not NEUROQUANTUM_AVAILABLE:
-            return [{"error": "NeuroQuantum architecture not available for batch training"}]
-
-        if self.architecture != "neuroquantum":
-            self.config = dict(DEFAULT_CONFIG)
-            self.architecture = "neuroquantum"
-
-        max_seq_len = self.config["max_seq_len"]
-
-        # Build tokenizer if needed
-        if self.tokenizer.sp is None:
-            sample_texts = []
-            for row in ds.select(range(min(2000, dataset_size))):
-                col_data = row.get(text_column)
-                if isinstance(col_data, str) and len(col_data.strip()) > 4:
-                    sample_texts.append(col_data.strip())
-            if not sample_texts:
-                return [{"error": "No valid text found for tokenizer training"}]
-
-            self.tokenizer = NeuroQuantumTokenizer(vocab_size=self.config["vocab_size"])
-            self.tokenizer.build_vocab(
-                sample_texts,
-                model_prefix=os.path.join(os.path.dirname(__file__), "neuroq_tokenizer"),
-                character_coverage=0.9995,
-            )
-            actual_vocab = self.tokenizer.actual_vocab_size or self.tokenizer.vocab_size
-            self.config["vocab_size"] = actual_vocab
-            nq_config = NeuroQuantumConfig(
-                vocab_size=actual_vocab,
-                embed_dim=self.config["embed_dim"],
-                hidden_dim=self.config.get("hidden_dim", self.config["embed_dim"] * 2),
-                num_heads=self.config["num_heads"],
-                num_layers=self.config["num_layers"],
-                max_seq_len=self.config["max_seq_len"],
-                dropout=self.config.get("dropout", 0.1),
-                lambda_entangle=self.config.get("entangle_strength", 0.5),
-            )
-            self.neuroq_model = NeuroQuantum(config=nq_config)
-            self.model = self.neuroq_model
-
-        # Tokenize texts into sequences
-        class SeqDataset(torch.utils.data.Dataset):
-            def __init__(self, texts, tokenizer, max_seq_len):
-                self.data = []
-                for t in texts:
-                    content_ids = tokenizer.encode(t, add_special=False)
-                    max_content = max_seq_len - 2
-                    if max_content <= 0:
-                        continue
-                    if len(content_ids) <= max_content:
-                        if len(content_ids) >= 2:
-                            seq = [tokenizer.bos_id] + content_ids + [tokenizer.eos_id]
-                            self.data.append(seq)
-                    else:
-                        stride = max(max_content // 2, 1)
-                        for start in range(0, len(content_ids) - max_content + 1, stride):
-                            chunk = content_ids[start:start + max_content]
-                            seq = [tokenizer.bos_id] + chunk + [tokenizer.eos_id]
-                            self.data.append(seq)
-                        remaining = content_ids[-max_content:]
-                        tail_seq = [tokenizer.bos_id] + remaining + [tokenizer.eos_id]
-                        if tail_seq != self.data[-1]:
-                            self.data.append(tail_seq)
-
-            def __len__(self):
-                return len(self.data)
-
-            def __getitem__(self, idx):
-                ids = self.data[idx]
-                return {"input_ids": ids, "labels": ids.copy()}
-
-        train_dataset = SeqDataset(texts, self.tokenizer, max_seq_len)
-        if len(train_dataset) == 0:
-            return [{"error": f"No sequences after tokenization for range [{start_index}:{end_index}]"}]
-
-        def collate_fn(batch):
-            max_len = min(max(len(x["input_ids"]) for x in batch), max_seq_len)
-            input_ids = []
-            labels = []
-            for x in batch:
-                ids = x["input_ids"][:max_len]
-                lbl = x["labels"][:max_len]
-                pad_len = max_len - len(ids)
-                ids = ids + [self.tokenizer.pad_id] * pad_len
-                lbl = lbl + [-100] * pad_len
-                input_ids.append(ids)
-                labels.append(lbl)
-            return {
-                "input_ids": torch.tensor(input_ids, dtype=torch.long),
-                "labels": torch.tensor(labels, dtype=torch.long)
-            }
-
-        class LossCallback(TrainerCallback):
-            def __init__(self):
-                self.logs = []
-
-            def on_log(self, args, state, control, logs=None, **kwargs):
-                if logs and "loss" in logs:
-                    self.logs.append({
-                        "step": state.global_step,
-                        "loss": round(logs["loss"], 6),
-                        "epoch": round(logs.get("epoch", 0), 2)
-                    })
-
-        loss_callback = LossCallback()
-        wrapper = NeuroQTrainerWrapper(self.neuroq_model, self.config["vocab_size"])
-
-        training_args = TrainingArguments(
-            output_dir="/tmp/neuroq_batch_training",
-            num_train_epochs=epochs,
-            learning_rate=lr,
-            per_device_train_batch_size=8,
-            gradient_accumulation_steps=2,
-            warmup_ratio=0.1,
-            weight_decay=0.01,
-            save_strategy="no",
-            logging_steps=10,
-            report_to="none",
-            fp16=torch.cuda.is_available(),
-        )
-
-        trainer = Trainer(
-            model=wrapper,
-            args=training_args,
-            train_dataset=train_dataset,
-            data_collator=collate_fn,
-            callbacks=[loss_callback]
-        )
-
-        try:
-            train_result = trainer.train()
-        except Exception as e:
-            return [{"error": f"Training failed: {e}", "traceback": traceback.format_exc()}]
-        finally:
-            self.neuroq_model.eval()
-
-        final_loss = round(train_result.training_loss, 6) if train_result.training_loss else None
-
-        # Save training history
-        history_entry = {
-            "dataset_id": dataset_id,
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
-            "mode": "batch_train",
-            "range": f"{start_index}-{end_index}",
-            "start_index": start_index,
-            "end_index": end_index,
-            "samples": len(texts),
-            "sequences": len(train_dataset),
-            "epochs": epochs,
-            "final_loss": final_loss,
-            "learning_rate": lr,
-            "text_column": text_column,
-            "architecture": "neuroquantum",
-            "embed_dim": self.config["embed_dim"],
-            "num_layers": self.config["num_layers"],
-            "max_seq_len": self.config["max_seq_len"],
-            "vocab_size": self.config["vocab_size"],
-        }
-
-        history_path = os.path.join(os.path.dirname(__file__), "training_history.json")
-        try:
-            if os.path.exists(history_path):
-                with open(history_path, "r") as f:
-                    history = json.load(f)
-            else:
-                history = []
-            history.append(history_entry)
-            with open(history_path, "w") as f:
-                json.dump(history, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
-
-        # Save checkpoint
-        ckpt_path = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
-        torch.save({
-            "model_state": self.neuroq_model.state_dict(),
-            "config": self.config
-        }, ckpt_path)
-
-        # Save tokenizer
-        tokenizer_path = os.path.join(os.path.dirname(__file__), "neuroq_tokenizer")
-        self.tokenizer.save(tokenizer_path)
-
-        # Upload if HF_TOKEN available
-        token = os.environ.get("HF_TOKEN")
-        upload_status = "skipped (no HF_TOKEN)"
-        if token:
-            try:
-                repo_id = os.environ.get("REPOSITORY_ID", "tapiocaTakeshi/Qubit")
-                api = HfApi(token=token)
-                api.upload_file(
-                    path_or_fileobj=ckpt_path,
-                    path_in_repo="neuroq_checkpoint.pt",
-                    repo_id=repo_id,
-                    repo_type="model",
-                    commit_message=f"Batch train on {dataset_id} [{start_index}:{end_index}]"
-                )
-                api.upload_file(
-                    path_or_fileobj=history_path,
-                    path_in_repo="training_history.json",
-                    repo_id=repo_id,
-                    repo_type="model",
-                    commit_message=f"Update history: batch train {dataset_id} [{start_index}:{end_index}]"
-                )
-                upload_status = "uploaded"
-            except Exception as e:
-                upload_status = f"upload failed: {e}"
-
-        return [{
-            "status": "success",
-            "architecture": "neuroquantum",
-            "dataset_id": dataset_id,
-            "dataset_size": dataset_size,
-            "range": f"{start_index}-{end_index}",
-            "start_index": start_index,
-            "end_index": end_index,
-            "samples_in_range": len(texts),
-            "sequences_trained": len(train_dataset),
-            "epochs": epochs,
-            "final_loss": final_loss,
-            "config": {
-                "vocab_size": self.config["vocab_size"],
-                "embed_dim": self.config["embed_dim"],
-                "num_layers": self.config["num_layers"],
-                "max_seq_len": self.config["max_seq_len"],
-            },
-            "loss_log": loss_callback.logs,
-            "upload": upload_status,
-            "message": f"Trained on {dataset_id}[{start_index}:{end_index}] "
-                       f"({len(texts)} samples, {len(train_dataset)} sequences) "
-                       f"for {epochs} epochs. Final loss: {final_loss}",
-            "next_range": {
-                "start_index": end_index,
-                "end_index": min(end_index + (end_index - start_index), dataset_size),
-                "remaining": max(0, dataset_size - end_index),
-            } if end_index < dataset_size else None,
-        }]
-
-    # ============================================================
-    # Federated Learning (Split Learning) Endpoint
-    # ============================================================
-    #
-    # Flow:
-    #   1. federated_init   — サーバーが現在のモデル重みとラウンドIDを返す
-    #   2. federated_submit — クライアントがローカル学習後の勾配差分を送信
-    #   3. federated_aggregate — 集約（FedAvg）を実行しグローバルモデルを更新
-    #   4. federated_status  — 現在のラウンド状態を確認
-    #
-    # Request examples:
-    #   {"action": "federated_init", "round_id": "round_001", "min_clients": 2}
-    #   {"action": "federated_submit", "round_id": "round_001", "client_id": "client_A",
-    #    "model_delta": {<param_name>: <list>}, "num_samples": 500}
-    #   {"action": "federated_aggregate", "round_id": "round_001"}
-    #   {"action": "federated_status", "round_id": "round_001"}
-    # ============================================================
-
-    # Class-level storage for federated rounds (shared across requests)
-    _federated_rounds: Dict[str, Dict[str, Any]] = {}
-
-    def federated_init(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Initialize a new federated learning round.
-        Returns the current global model weights so clients can start local training.
-        """
-        round_id = data.get("round_id")
-        if not round_id:
-            return [{"error": "round_id is required"}]
-
-        min_clients = int(data.get("min_clients", 2))
-        epochs_per_client = int(data.get("epochs_per_client", 3))
-        lr = float(data.get("lr", 1e-3))
-
-        # Serialize current model state for distribution
-        model_state = {}
-        for name, param in self.model.state_dict().items():
-            model_state[name] = param.cpu().tolist()
-
-        # Register this round
-        EndpointHandler._federated_rounds[round_id] = {
-            "round_id": round_id,
-            "status": "waiting_for_clients",
-            "min_clients": min_clients,
-            "epochs_per_client": epochs_per_client,
-            "lr": lr,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "client_updates": {},
-            "aggregated": False,
-            "global_model_snapshot": copy.deepcopy(self.model.state_dict()),
-        }
-
-        return [{
-            "status": "initialized",
-            "round_id": round_id,
-            "min_clients": min_clients,
-            "epochs_per_client": epochs_per_client,
-            "lr": lr,
-            "model_weights": model_state,
-            "architecture": self.architecture,
-            "config": {
-                "vocab_size": self.config["vocab_size"],
-                "embed_dim": self.config["embed_dim"],
-                "num_layers": self.config["num_layers"],
-                "max_seq_len": self.config["max_seq_len"],
-            },
-            "message": f"Federated round '{round_id}' initialized. Distribute weights to clients."
-        }]
-
-    def federated_submit(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Receive a client's local training result (model delta or full weights).
-        Clients send their updated model parameters after local training.
-        """
-        round_id = data.get("round_id")
-        client_id = data.get("client_id")
-
-        if not round_id or not client_id:
-            return [{"error": "round_id and client_id are required"}]
-
-        if round_id not in EndpointHandler._federated_rounds:
-            return [{"error": f"Round '{round_id}' not found. Call federated_init first."}]
-
-        round_info = EndpointHandler._federated_rounds[round_id]
-
-        if round_info["aggregated"]:
-            return [{"error": f"Round '{round_id}' already aggregated. Start a new round."}]
-
-        model_delta = data.get("model_delta")
-        model_weights = data.get("model_weights")
-        num_samples = int(data.get("num_samples", 1))
-        client_loss = data.get("final_loss")
-
-        if not model_delta and not model_weights:
-            return [{"error": "Either model_delta or model_weights is required"}]
-
-        # Convert submitted data to tensors
-        update_tensors = {}
-        global_snapshot = round_info["global_model_snapshot"]
-
-        if model_delta:
-            # Client sent parameter deltas (difference from global model)
-            for name, values in model_delta.items():
-                if name in global_snapshot:
-                    update_tensors[name] = torch.tensor(values, dtype=global_snapshot[name].dtype)
-        elif model_weights:
-            # Client sent full weights — compute delta from global snapshot
-            for name, values in model_weights.items():
-                if name in global_snapshot:
-                    client_param = torch.tensor(values, dtype=global_snapshot[name].dtype)
-                    update_tensors[name] = client_param - global_snapshot[name].cpu()
-
-        if not update_tensors:
-            return [{"error": "No valid parameter updates found"}]
-
-        round_info["client_updates"][client_id] = {
-            "delta": update_tensors,
-            "num_samples": num_samples,
-            "final_loss": client_loss,
-            "submitted_at": datetime.now(timezone.utc).isoformat(),
-        }
-
-        num_submitted = len(round_info["client_updates"])
-        min_clients = round_info["min_clients"]
-
-        return [{
-            "status": "submitted",
-            "round_id": round_id,
-            "client_id": client_id,
-            "num_samples": num_samples,
-            "final_loss": client_loss,
-            "clients_submitted": num_submitted,
-            "min_clients": min_clients,
-            "ready_to_aggregate": num_submitted >= min_clients,
-            "message": f"Client '{client_id}' update received ({num_submitted}/{min_clients} clients)."
-        }]
-
-    def federated_aggregate(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Aggregate client updates using Federated Averaging (FedAvg).
-        Weighted average of deltas based on each client's num_samples.
-        """
-        round_id = data.get("round_id")
-        if not round_id:
-            return [{"error": "round_id is required"}]
-
-        if round_id not in EndpointHandler._federated_rounds:
-            return [{"error": f"Round '{round_id}' not found"}]
-
-        round_info = EndpointHandler._federated_rounds[round_id]
-
-        if round_info["aggregated"]:
-            return [{"error": f"Round '{round_id}' already aggregated"}]
-
-        client_updates = round_info["client_updates"]
-        if not client_updates:
-            return [{"error": "No client updates to aggregate"}]
-
-        force = data.get("force", False)
-        if len(client_updates) < round_info["min_clients"] and not force:
-            return [{
-                "error": f"Not enough clients: {len(client_updates)}/{round_info['min_clients']}. "
-                         f"Use force=true to aggregate anyway.",
-                "clients_submitted": len(client_updates),
-                "min_clients": round_info["min_clients"]
-            }]
-
-        # FedAvg: weighted average of deltas by number of samples
-        total_samples = sum(u["num_samples"] for u in client_updates.values())
-        global_state = round_info["global_model_snapshot"]
-        aggregated_state = {}
-
-        for name, param in global_state.items():
-            aggregated_delta = torch.zeros_like(param, dtype=torch.float32)
-            has_update = False
-            for client_id, update in client_updates.items():
-                if name in update["delta"]:
-                    weight = update["num_samples"] / total_samples
-                    aggregated_delta += weight * update["delta"][name].float()
-                    has_update = True
-
-            if has_update:
-                aggregated_state[name] = param.float() + aggregated_delta
-                aggregated_state[name] = aggregated_state[name].to(param.dtype)
-            else:
-                aggregated_state[name] = param
-
-        # Apply aggregated weights to the global model
-        self.model.load_state_dict(aggregated_state)
-        self.model.eval()
-
-        round_info["aggregated"] = True
-        round_info["status"] = "completed"
-        round_info["completed_at"] = datetime.now(timezone.utc).isoformat()
-
-        # Save checkpoint
-        ckpt_path = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
-        torch.save({
-            "model_state": self.model.state_dict(),
-            "config": self.config
-        }, ckpt_path)
-
-        # Upload if HF_TOKEN available
-        upload_status = "skipped (no HF_TOKEN)"
-        token = os.environ.get("HF_TOKEN")
-        if token:
-            try:
-                from huggingface_hub import HfApi
-                repo_id = os.environ.get("REPOSITORY_ID", "tapiocaTakeshi/Qubit")
-                api = HfApi(token=token)
-                api.upload_file(
-                    path_or_fileobj=ckpt_path,
-                    path_in_repo="neuroq_checkpoint.pt",
-                    repo_id=repo_id,
-                    repo_type="model",
-                    commit_message=f"Federated learning round {round_id}: aggregated {len(client_updates)} clients"
-                )
-                upload_status = "uploaded"
-            except Exception as e:
-                upload_status = f"upload failed: {e}"
-
-        # Build client summary
-        client_summary = {}
-        for cid, u in client_updates.items():
-            client_summary[cid] = {
-                "num_samples": u["num_samples"],
-                "final_loss": u["final_loss"],
-                "weight": round(u["num_samples"] / total_samples, 4),
-            }
-
-        # Clean up large data from memory
-        for u in client_updates.values():
-            u["delta"] = None
-        round_info.pop("global_model_snapshot", None)
-
-        return [{
-            "status": "aggregated",
-            "round_id": round_id,
-            "num_clients": len(client_updates),
-            "total_samples": total_samples,
-            "clients": client_summary,
-            "upload": upload_status,
-            "message": f"FedAvg aggregation complete. {len(client_updates)} clients, {total_samples} total samples."
-        }]
-
-    def federated_status(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Return the current status of a federated learning round."""
-        round_id = data.get("round_id")
-
-        # If no round_id, return all active rounds
-        if not round_id:
-            rounds_summary = []
-            for rid, info in EndpointHandler._federated_rounds.items():
-                rounds_summary.append({
-                    "round_id": rid,
-                    "status": info["status"],
-                    "clients_submitted": len(info["client_updates"]),
-                    "min_clients": info["min_clients"],
-                    "aggregated": info["aggregated"],
-                    "created_at": info["created_at"],
-                })
-            return [{"active_rounds": rounds_summary, "total_rounds": len(rounds_summary)}]
-
-        if round_id not in EndpointHandler._federated_rounds:
-            return [{"error": f"Round '{round_id}' not found"}]
-
-        info = EndpointHandler._federated_rounds[round_id]
-        client_info = {}
-        for cid, u in info["client_updates"].items():
-            client_info[cid] = {
-                "num_samples": u["num_samples"],
-                "final_loss": u["final_loss"],
-                "submitted_at": u["submitted_at"],
-            }
-
-        return [{
-            "round_id": round_id,
-            "status": info["status"],
-            "min_clients": info["min_clients"],
-            "epochs_per_client": info["epochs_per_client"],
-            "lr": info["lr"],
-            "clients_submitted": len(info["client_updates"]),
-            "clients": client_info,
-            "aggregated": info["aggregated"],
-            "created_at": info["created_at"],
-            "completed_at": info.get("completed_at"),
-        }]
+if __name__ == "__main__":
+    runpod.serverless.start({"handler": handler})
