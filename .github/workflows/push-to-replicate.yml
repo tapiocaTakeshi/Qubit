@@ -33,4 +33,18 @@ jobs:
           token: ${{ secrets.REPLICATE_CLI_AUTH_TOKEN }}
 
       - name: Push to Replicate
-        run: cog push r8.im/${{ env.REPLICATE_MODEL }}
+        run: |
+          for attempt in 1 2 3 4; do
+            echo "Attempt $attempt of 4..."
+            if cog push r8.im/${{ env.REPLICATE_MODEL }}; then
+              echo "Push succeeded on attempt $attempt"
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              sleep_time=$((2 ** attempt * 2))
+              echo "Push failed, retrying in ${sleep_time}s..."
+              sleep "$sleep_time"
+            fi
+          done
+          echo "Push failed after 4 attempts"
+          exit 1
