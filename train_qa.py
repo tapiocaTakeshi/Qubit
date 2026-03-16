@@ -102,7 +102,7 @@ def format_qa_izumi(row):
 
 
 def load_qa_data():
-    """Load and format all QA datasets."""
+    """Load and format all QA datasets (streaming for large datasets)."""
     all_qa = []
 
     for ds_info in QA_DATASETS:
@@ -111,11 +111,18 @@ def load_qa_data():
         print(f"  Loading {ds_id}...")
 
         try:
-            ds = load_dataset(ds_id, split="train", trust_remote_code=True)
-            n = len(ds)
-            count = 0
+            # Use streaming for izumi (9M+ rows) to avoid OOM
+            use_streaming = (ds_id == "izumi-lab/llm-japanese-dataset")
 
-            for row in ds.select(range(n)):
+            if use_streaming:
+                ds = load_dataset(ds_id, split="train", streaming=True)
+            else:
+                ds = load_dataset(ds_id, split="train", trust_remote_code=True)
+
+            count = 0
+            source = ds if use_streaming else ds.select(range(len(ds)))
+
+            for row in source:
                 if fmt == "alpaca":
                     text = format_qa_alpaca(row)
                 elif fmt == "conversations":
@@ -128,6 +135,10 @@ def load_qa_data():
                 if text and len(text) > 10:
                     all_qa.append(text)
                     count += 1
+
+                # Log progress for large datasets
+                if use_streaming and count % 500000 == 0 and count > 0:
+                    print(f"    ... {count} samples loaded so far")
 
             print(f"    -> {count} QA samples")
         except Exception as e:
@@ -159,10 +170,19 @@ def load_qa_data():
     return all_qa
 
 
-def tokenize_texts(texts, tokenizer, max_seq_len):
-    """Tokenize texts into training sequences."""
+def tokenize_texts(texts, tokenizer, max_seq_len, max_sequences=500000):
+    """Tokenize texts into training sequences.
+
+    If total texts exceed memory limits, randomly sample to max_sequences.
+    """
+    # If too many texts, sample to avoid OOM during tokenization
+    if len(texts) > max_sequences * 2:
+        print(f"  Sampling {max_sequences * 2} from {len(texts)} texts to fit in memory...")
+        random.shuffle(texts)
+        texts = texts[:max_sequences * 2]
+
     sequences = []
-    for t in texts:
+    for i, t in enumerate(texts):
         ids = tokenizer.encode(t, add_special=True)
         if len(ids) <= max_seq_len:
             if len(ids) >= 4:
@@ -171,6 +191,15 @@ def tokenize_texts(texts, tokenizer, max_seq_len):
             stride = max(max_seq_len // 2, 1)
             for start in range(0, len(ids) - max_seq_len + 1, stride):
                 sequences.append(ids[start:start + max_seq_len])
+        if (i + 1) % 200000 == 0:
+            print(f"  Tokenized {i+1}/{len(texts)} texts -> {len(sequences)} sequences so far")
+
+    # Cap sequences to avoid OOM during training
+    if len(sequences) > max_sequences:
+        print(f"  Capping {len(sequences)} -> {max_sequences} sequences")
+        random.shuffle(sequences)
+        sequences = sequences[:max_sequences]
+
     return sequences
 
 
