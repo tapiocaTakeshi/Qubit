@@ -1628,6 +1628,26 @@ async def reload_model():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ========================================
+# TTS (Text-to-Speech) via Replicate
+# ========================================
+
+class TTSRequest(BaseModel):
+    text: str
+    voice_id: str = "Ashley"
+
+
+@app.post("/tts")
+async def tts_generate(req: TTSRequest):
+    """Generate speech audio from text using Replicate's Inworld TTS model."""
+    try:
+        from tts_replicate import text_to_speech
+        output = text_to_speech(text=req.text, voice_id=req.voice_id)
+        return {"status": "ok", "output": output}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
