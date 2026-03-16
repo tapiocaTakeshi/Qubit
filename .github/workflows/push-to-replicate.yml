@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 env:
-  REPLICATE_MODEL: tapiocatakeshi/qubit.ai
+  REPLICATE_MODEL: tapiocatakeshi/qubit_ai
 
 jobs:
   push_to_replicate:
