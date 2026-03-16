@@ -350,10 +350,76 @@ def train(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [{"status": "success", "message": f"Trained on {len(texts)} samples for {epochs} epochs."}]
 
 
+def manage(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Handle endpoint management actions via the RunPod API.
+
+    Requires RUNPOD_API_KEY environment variable to be set on the worker.
+
+    Supported sub-actions (data["manage_action"]):
+        list_endpoints  - List all serverless endpoints
+        health          - Get endpoint health (requires endpoint_id)
+        run_async       - Submit async job to another endpoint
+        job_status      - Check job status (requires endpoint_id, job_id)
+        cancel_job      - Cancel a job (requires endpoint_id, job_id)
+        purge_queue     - Purge queued jobs (requires endpoint_id)
+    """
+    from runpod_manager import RunPodManager
+
+    api_key = data.get("api_key") or os.environ.get("RUNPOD_API_KEY")
+    if not api_key:
+        return [{"error": "RUNPOD_API_KEY env var or api_key field is required"}]
+
+    try:
+        mgr = RunPodManager(api_key=api_key)
+    except ValueError as e:
+        return [{"error": str(e)}]
+
+    action = data.get("manage_action", "")
+    endpoint_id = data.get("endpoint_id")
+    job_id = data.get("job_id")
+
+    try:
+        if action == "list_endpoints":
+            return [{"endpoints": mgr.list_endpoints()}]
+
+        if action == "health":
+            if not endpoint_id:
+                return [{"error": "endpoint_id is required"}]
+            return [{"health": mgr.health(endpoint_id)}]
+
+        if action == "run_async":
+            if not endpoint_id:
+                return [{"error": "endpoint_id is required"}]
+            payload = data.get("payload", {})
+            return [mgr.run_async(endpoint_id, payload)]
+
+        if action == "job_status":
+            if not endpoint_id or not job_id:
+                return [{"error": "endpoint_id and job_id are required"}]
+            return [{"status": mgr.get_job_status(endpoint_id, job_id)}]
+
+        if action == "cancel_job":
+            if not endpoint_id or not job_id:
+                return [{"error": "endpoint_id and job_id are required"}]
+            return [{"result": mgr.cancel_job(endpoint_id, job_id)}]
+
+        if action == "purge_queue":
+            if not endpoint_id:
+                return [{"error": "endpoint_id is required"}]
+            return [{"result": mgr.purge_queue(endpoint_id)}]
+
+        return [{"error": f"Unknown manage_action: {action}",
+                 "supported": ["list_endpoints", "health", "run_async",
+                               "job_status", "cancel_job", "purge_queue"]}]
+    except Exception as e:
+        import traceback
+        return [{"error": str(e), "traceback": traceback.format_exc()}]
+
+
 def handler(job):
     """
-    Handle an inference or training request for RunPod serverless.
-    
+    Handle an inference, training, or management request for RunPod serverless.
+
     Job format:
         {
             "input": {
@@ -361,9 +427,22 @@ def handler(job):
                 "parameters": { ... }
             }
         }
+
+    Management format:
+        {
+            "input": {
+                "action": "manage",
+                "manage_action": "list_endpoints",
+                "api_key": "optional_override"
+            }
+        }
     """
     job_input = job.get("input", {})
-    
+
+    # Check if this is a management request
+    if job_input.get("action") == "manage":
+        return manage(job_input)
+
     # Check if this is a training request
     if job_input.get("action") == "train":
         return train(job_input)
