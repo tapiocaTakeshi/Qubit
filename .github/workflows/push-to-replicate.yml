@@ -1,11 +1,17 @@
 name: Push to Replicate
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - "requirements.txt"
+      - "handler.py"
+      - "*.py"
   workflow_dispatch:
-    inputs:
-      model_name:
-        description: 'Enter the model name, like "alice/bunny-detector"'
-        required: true
+
+env:
+  REPLICATE_MODEL: tapiocaTakeshi/qubit.ai
 
 jobs:
   push_to_replicate:
@@ -27,4 +33,4 @@ jobs:
           token: ${{ secrets.REPLICATE_CLI_AUTH_TOKEN }}
 
       - name: Push to Replicate
-        run: cog push r8.im/${{ inputs.model_name }}
+        run: cog push r8.im/${{ env.REPLICATE_MODEL }}
