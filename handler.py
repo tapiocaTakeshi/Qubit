@@ -15,12 +15,11 @@ Reference: https://huggingface.co/docs/inference-endpoints/main/en/engines/toolk
 """
 
 import os
-import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, List, Any
-from datetime import datetime, timezone
+
 
 # ============================================================
 # Import NeuroQuantum architecture from neuroquantum_layered.py
@@ -159,17 +158,8 @@ class CharTokenizer:
 
 
 # ============================================================
-# Default model config (matches app.py)
+# Default model config
 # ============================================================
-
-DEFAULT_CONFIG = {
-    "vocab_size": 200,
-    "embed_dim": 64,
-    "num_heads": 2,
-    "num_layers": 2,
-    "max_seq_len": 32,
-    "entangle_strength": 0.12,
-}
 
 DEFAULT_CONFIG = {
     "vocab_size": 32000,
@@ -180,15 +170,13 @@ DEFAULT_CONFIG = {
     "max_seq_len": 512,
     "entangle_strength": 0.5,
     "dropout": 0.1,
-    "architecture": "neuroquantum",  # "neuroquantum" or "legacy"
+    "architecture": "neuroquantum",
 }
 
 
 # ============================================================
-# RunPod Serverless Handler
+# Utility
 # ============================================================
-
-import runpod
 
 def find_checkpoint(path: str):
     """Search for a checkpoint file in the model directory."""
@@ -209,280 +197,101 @@ def find_checkpoint(path: str):
                 return os.path.join(path, fname)
     return None
 
-# Use global variables for model, tokenizer, and config to persist across requests
-tokenizer = CharTokenizer()
 
-# Determine config - try loading from checkpoint first
-config = dict(DEFAULT_CONFIG)
-config["vocab_size"] = tokenizer.vocab_size
+# ============================================================
+# HuggingFace Inference Endpoints Handler
+# ============================================================
 
-# Look for checkpoint file
-model_path = os.environ.get("MODEL_PATH", ".")
-ckpt_path = find_checkpoint(model_path)
+class EndpointHandler:
+    """
+    Custom handler for HuggingFace Inference Endpoints.
 
-if ckpt_path is not None:
-    checkpoint = torch.load(ckpt_path, map_location="cpu")
+    HF Inference Endpoints will:
+      1. Download the model repo to a local directory
+      2. Instantiate this class with __init__(path=<model_dir>)
+      3. Call __call__(data) for each inference request
+    """
 
-    # Use saved config if available
-    if "config" in checkpoint:
-        saved_config = checkpoint["config"]
-        config.update(saved_config)
-        # Ensure vocab_size matches tokenizer
-        config["vocab_size"] = tokenizer.vocab_size
+    def __init__(self, path: str = ""):
+        """Load the model, tokenizer, and config from the model directory."""
 
-    model = QBNNTransformer(config)
-    model.load_state_dict(checkpoint["model_state"])
-else:
-    # No checkpoint found - initialize with default weights
-    model = QBNNTransformer(config)
+        # Initialize tokenizer
+        self.tokenizer = CharTokenizer()
 
-model.eval()
+        # Build config
+        self.config = dict(DEFAULT_CONFIG)
+        self.config["vocab_size"] = self.tokenizer.vocab_size
 
-def train(data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    from transformers import Trainer, TrainingArguments
-    from datasets import load_dataset
-    import os
-    import traceback
-    from huggingface_hub import HfApi
+        # Look for checkpoint
+        ckpt_path = find_checkpoint(path) if path else None
 
-    dataset_id = data.get("dataset_id")
-    if not dataset_id:
-        return [{"error": "dataset_id is required for training"}]
-        
-    text_column = data.get("text_column", "text")
-    split = data.get("split", "train")
-    max_samples = int(data.get("max_samples", 500))
-    epochs = float(data.get("epochs", 3.0))
-    lr = float(data.get("lr", 1e-3))
-    
-    try:
-        ds = load_dataset(dataset_id, split=split, trust_remote_code=False)
-    except Exception as e:
-        return [{"error": f"Failed to load dataset: {str(e)}", "traceback": traceback.format_exc()}]
-        
-    # Extract texts
-    texts = []
-    for row in ds.select(range(min(max_samples, len(ds)))):
-        col_data = row.get(text_column)
-        if isinstance(col_data, str) and len(col_data.strip()) > 4:
-            texts.append(col_data.strip())
-            
-    if not texts:
-        return [{"error": "No valid text found in dataset"}]
-        
-    # Prepare Dataset
-    class CustomDataset(torch.utils.data.Dataset):
-        def __init__(self, texts, tokenizer, max_seq_len):
-            self.data = []
-            for t in texts:
-                ids = tokenizer.encode(t, max_len=max_seq_len)
-                if len(ids) >= 2:
-                    self.data.append(ids)
+        if ckpt_path is not None:
+            checkpoint = torch.load(ckpt_path, map_location="cpu")
 
-        def __len__(self):
-            return len(self.data)
+            # Use saved config if available
+            if "config" in checkpoint:
+                self.config.update(checkpoint["config"])
+                self.config["vocab_size"] = self.tokenizer.vocab_size
 
-        def __getitem__(self, idx):
-            ids = self.data[idx]
-            return {"input_ids": ids, "labels": ids.copy()}
+            self.model = QBNNTransformer(self.config)
+            self.model.load_state_dict(checkpoint["model_state"])
+        else:
+            # No checkpoint found - initialize with default weights
+            self.model = QBNNTransformer(self.config)
 
-    train_dataset = CustomDataset(texts, tokenizer, config["max_seq_len"])
-    
-    def collate_fn(batch):
-        max_len = max(len(x["input_ids"]) for x in batch)
-        input_ids = []
-        labels = []
-        for x in batch:
-            pad_len = max_len - len(x["input_ids"])
-            ids = x["input_ids"] + [0] * pad_len # 0 is PAD
-            lbl = x["labels"] + [-100] * pad_len
-            input_ids.append(ids)
-            labels.append(lbl)
-        return {
-            "input_ids": torch.tensor(input_ids, dtype=torch.long),
-            "labels": torch.tensor(labels, dtype=torch.long)
-        }
+        self.model.eval()
 
-    training_args = TrainingArguments(
-        output_dir="/tmp/qbnn_training",
-        num_train_epochs=epochs,
-        learning_rate=lr,
-        per_device_train_batch_size=8,
-        save_strategy="no",
-        logging_steps=10,
-        report_to="none"
-    )
-    
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        data_collator=collate_fn
-    )
-    
-    try:
-        trainer.train()
-    except Exception as e:
-        return [{"error": f"Training failed: {e}", "traceback": traceback.format_exc()}]
-        
-    # Save model
-    ckpt_path_out = "qbnn_checkpoint.pt"
-    torch.save({
-        "model_state": model.state_dict(), 
-        "config": config
-    }, ckpt_path_out)
-    
-    # Upload if HF_TOKEN is available
-    token = os.environ.get("HF_TOKEN")
-    if token:
-        try:
-            repo_id = os.environ.get("REPOSITORY_ID", "tapiocaTakeshi/Qubit")
-            HfApi(token=token).upload_file(
-                path_or_fileobj=ckpt_path_out,
-                path_in_repo=ckpt_path_out,
-                repo_id=repo_id,
-                repo_type="model",
-                commit_message="Update model checkpoint via API training"
+    def __call__(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Handle an inference request.
+
+        Args:
+            data: Dictionary with:
+                - "inputs" (str): The input prompt text
+                - "parameters" (dict, optional): Generation parameters
+                    - temperature (float): default 0.8
+                    - max_new_tokens (int): default 30
+                    - top_k (int): default 0
+                    - top_p (float): default 1.0
+                    - repetition_penalty (float): default 1.0
+
+        Returns:
+            List of dicts with "generated_text" key.
+        """
+        # Extract input text
+        inputs = data.get("inputs", data.get("prompt", ""))
+        if isinstance(inputs, list):
+            inputs = inputs[0] if inputs else ""
+        inputs = str(inputs)
+
+        # Extract generation parameters
+        params = data.get("parameters", {})
+        temperature = float(params.get("temperature", 0.8))
+        max_new_tokens = int(params.get("max_new_tokens", 30))
+        top_k = int(params.get("top_k", 0))
+        top_p = float(params.get("top_p", 1.0))
+        repetition_penalty = float(params.get("repetition_penalty", 1.0))
+
+        # Encode input
+        ids = self.tokenizer.encode(inputs, max_len=self.config["max_seq_len"])
+        if not ids:
+            return [{"generated_text": ""}]
+
+        input_tensor = torch.tensor([ids], dtype=torch.long)
+
+        # Generate
+        with torch.no_grad():
+            output = self.model.generate(
+                input_tensor,
+                max_new=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
             )
-        except Exception as e:
-            return [{"status": "success", "message": f"Trained successfully, but upload failed: {e}"}]
-            
-    return [{"status": "success", "message": f"Trained on {len(texts)} samples for {epochs} epochs."}]
 
+        # Decode only the newly generated tokens
+        generated_ids = output[0, len(ids):].tolist()
+        generated_text = self.tokenizer.decode(generated_ids)
 
-def manage(data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Handle endpoint management actions via the RunPod API.
-
-    Requires RUNPOD_API_KEY environment variable to be set on the worker.
-
-    Supported sub-actions (data["manage_action"]):
-        list_endpoints  - List all serverless endpoints
-        health          - Get endpoint health (requires endpoint_id)
-        run_async       - Submit async job to another endpoint
-        job_status      - Check job status (requires endpoint_id, job_id)
-        cancel_job      - Cancel a job (requires endpoint_id, job_id)
-        purge_queue     - Purge queued jobs (requires endpoint_id)
-    """
-    from runpod_manager import RunPodManager
-
-    api_key = data.get("api_key") or os.environ.get("RUNPOD_API_KEY")
-    if not api_key:
-        return [{"error": "RUNPOD_API_KEY env var or api_key field is required"}]
-
-    try:
-        mgr = RunPodManager(api_key=api_key)
-    except ValueError as e:
-        return [{"error": str(e)}]
-
-    action = data.get("manage_action", "")
-    endpoint_id = data.get("endpoint_id")
-    job_id = data.get("job_id")
-
-    try:
-        if action == "list_endpoints":
-            return [{"endpoints": mgr.list_endpoints()}]
-
-        if action == "health":
-            if not endpoint_id:
-                return [{"error": "endpoint_id is required"}]
-            return [{"health": mgr.health(endpoint_id)}]
-
-        if action == "run_async":
-            if not endpoint_id:
-                return [{"error": "endpoint_id is required"}]
-            payload = data.get("payload", {})
-            return [mgr.run_async(endpoint_id, payload)]
-
-        if action == "job_status":
-            if not endpoint_id or not job_id:
-                return [{"error": "endpoint_id and job_id are required"}]
-            return [{"status": mgr.get_job_status(endpoint_id, job_id)}]
-
-        if action == "cancel_job":
-            if not endpoint_id or not job_id:
-                return [{"error": "endpoint_id and job_id are required"}]
-            return [{"result": mgr.cancel_job(endpoint_id, job_id)}]
-
-        if action == "purge_queue":
-            if not endpoint_id:
-                return [{"error": "endpoint_id is required"}]
-            return [{"result": mgr.purge_queue(endpoint_id)}]
-
-        return [{"error": f"Unknown manage_action: {action}",
-                 "supported": ["list_endpoints", "health", "run_async",
-                               "job_status", "cancel_job", "purge_queue"]}]
-    except Exception as e:
-        import traceback
-        return [{"error": str(e), "traceback": traceback.format_exc()}]
-
-
-def handler(job):
-    """
-    Handle an inference, training, or management request for RunPod serverless.
-
-    Job format:
-        {
-            "input": {
-                "inputs": "your prompt text",
-                "parameters": { ... }
-            }
-        }
-
-    Management format:
-        {
-            "input": {
-                "action": "manage",
-                "manage_action": "list_endpoints",
-                "api_key": "optional_override"
-            }
-        }
-    """
-    job_input = job.get("input", {})
-
-    # Check if this is a management request
-    if job_input.get("action") == "manage":
-        return manage(job_input)
-
-    # Check if this is a training request
-    if job_input.get("action") == "train":
-        return train(job_input)
-
-    inputs = job_input.get("inputs", job_input.get("prompt", ""))
-    if isinstance(inputs, list):
-        inputs = inputs[0] if inputs else ""
-    inputs = str(inputs)
-
-    # Extract generation parameters
-    params = job_input.get("parameters", {})
-    temperature = float(params.get("temperature", 0.8))
-    max_new_tokens = int(params.get("max_new_tokens", 30))
-    top_k = int(params.get("top_k", 0))
-    top_p = float(params.get("top_p", 1.0))
-    repetition_penalty = float(params.get("repetition_penalty", 1.0))
-
-    # Encode input
-    ids = tokenizer.encode(inputs, max_len=config["max_seq_len"])
-    if not ids:
-        return [{"generated_text": ""}]
-
-    input_tensor = torch.tensor([ids], dtype=torch.long)
-
-    # Generate
-    with torch.no_grad():
-        output = model.generate(
-            input_tensor,
-            max_new=max_new_tokens,
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-            repetition_penalty=repetition_penalty,
-        )
-
-    # Decode only the newly generated tokens
-    generated_ids = output[0, len(ids):].tolist()
-    generated_text = tokenizer.decode(generated_ids)
-
-    return [{"generated_text": generated_text}]
-
-if __name__ == "__main__":
-    runpod.serverless.start({"handler": handler})
+        return [{"generated_text": generated_text}]
