@@ -1,0 +1,16 @@
+# Configuration for Cog (https://github.com/replicate/cog)
+# Reference: https://cog.run/yaml/
+
+build:
+  gpu: true
+  cuda: "11.8"
+  python_version: "3.10"
+  python_packages:
+    - "torch>=2.0.0"
+    - "numpy>=1.24.0"
+    - "sentencepiece>=0.1.99"
+    - "huggingface-hub>=0.30.0,<1.0"
+    - "datasets>=2.18.0"
+    - "accelerate>=1.1.0"
+
+predict: "predict.py:Predictor"
