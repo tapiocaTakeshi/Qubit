@@ -248,6 +248,21 @@ class EndpointHandler:
             }
         }
 
+    Split training request format:
+        {
+            "action": "split_next",
+            "parameters": {
+                "mode": "qa",          # "qa" or "wikipedia"
+                "num_chunks": 4,
+                "epochs_per_chunk": 6,
+                "lr": 3e-5,
+                "batch_size": 4,
+                "grad_accum_steps": 4,
+                "warmup_steps": 30,
+                "max_samples_per_dataset": 0
+            }
+        }
+
     Response format:
         [{"generated_text": "..."}]
     """
@@ -261,6 +276,13 @@ class EndpointHandler:
         """
         self._init_log = []
         self._init_log.append(f"path={path}")
+        # Split training state
+        self._split_state = {
+            "chunks": [],
+            "current_index": 0,
+            "num_chunks": 0,
+            "mode": "qa",
+        }
         # Look for checkpoint file first to determine architecture
         ckpt_path = self._find_checkpoint(path)
         self._init_log.append(f"ckpt_path={ckpt_path}")
@@ -414,6 +436,14 @@ class EndpointHandler:
             return [{"init_log": self._init_log, "architecture": self.architecture,
                      "config": self.config, "model_params": sum(p.numel() for p in self.model.parameters()),
                      "handler_version": "v3_2026_03_12"}]
+
+        # Support split training actions
+        action = data.get("action") or data.get("parameters", {}).get("action", "")
+        if action == "split_next":
+            split_data = data if data.get("action") else data.get("parameters", {})
+            return self.split_train_next(split_data)
+        if action == "split_reset":
+            return self.split_train_reset()
 
         # Support training via both top-level and parameters.action
         if data.get("action") == "train":
@@ -941,3 +971,318 @@ class EndpointHandler:
             "upload": upload_status,
             "message": f"Trained on {len(train_dataset)} samples for {epochs} epochs. Final loss: {final_loss}"
         }]
+
+    # ============================================================
+    # Split (Chunked) Training
+    # ============================================================
+
+    # QA dataset definitions for split training
+    QA_DATASETS_INFO = [
+        {"id": "kunishou/oasst1-chat-44k-ja", "format": "conversations"},
+        {"id": "fujiki/japanese_alpaca_data", "format": "alpaca"},
+        {"id": "FreedomIntelligence/alpaca-gpt4-japanese", "format": "alpaca"},
+        {"id": "izumi-lab/llm-japanese-dataset", "format": "izumi"},
+    ]
+
+    CRAFTED_QA = [
+        "質問: 日本の首都はどこですか？\n回答: 日本の首都は東京です。",
+        "質問: 水の化学式は何ですか？\n回答: 水の化学式はH2Oです。",
+        "質問: 太陽系で一番大きい惑星は？\n回答: 太陽系で一番大きい惑星は木星です。",
+        "質問: 光の速さはどのくらいですか？\n回答: 光の速さは秒速約30万キロメートル（299,792,458 m/s）です。",
+        "質問: 日本で一番高い山は？\n回答: 日本で一番高い山は富士山で、標高3,776メートルです。",
+        "質問: 1年は何日ですか？\n回答: 1年は通常365日です。うるう年は366日です。",
+        "質問: 地球の衛星は何ですか？\n回答: 地球の衛星は月です。",
+        "質問: 人間の体温は通常何度ですか？\n回答: 人間の体温は通常約36.5度から37度です。",
+    ]
+
+    def _format_qa_alpaca(self, row):
+        inst = row.get("instruction", "")
+        out = row.get("output", "")
+        if inst and out:
+            return f"質問: {inst}\n回答: {out}"
+        return ""
+
+    def _format_qa_conversations(self, row):
+        convs = row.get("conversations", [])
+        parts = []
+        for turn in convs:
+            role = turn.get("from", "")
+            value = turn.get("value", "")
+            if role == "human":
+                parts.append(f"質問: {value}")
+            elif role == "gpt":
+                parts.append(f"回答: {value}")
+        return "\n".join(parts) if parts else ""
+
+    def _format_qa_izumi(self, row):
+        text = row.get("text", "")
+        if text and len(text) > 10:
+            return text
+        return ""
+
+    def _prepare_split_data(self, mode, num_chunks, max_samples=0):
+        """Prepare and split training data into chunks."""
+        from datasets import load_dataset
+        import random
+
+        all_texts = []
+
+        if mode == "qa":
+            for ds_info in self.QA_DATASETS_INFO:
+                ds_id = ds_info["id"]
+                fmt = ds_info["format"]
+                try:
+                    ds = load_dataset(ds_id, split="train")
+                    n = min(max_samples, len(ds)) if max_samples > 0 else len(ds)
+                    for row in ds.select(range(n)):
+                        if fmt == "alpaca":
+                            text = self._format_qa_alpaca(row)
+                        elif fmt == "conversations":
+                            text = self._format_qa_conversations(row)
+                        elif fmt == "izumi":
+                            text = self._format_qa_izumi(row)
+                        else:
+                            continue
+                        if text and len(text) > 10:
+                            all_texts.append(text)
+                except Exception:
+                    pass
+            # Add crafted QA
+            for _ in range(40):
+                all_texts.extend(self.CRAFTED_QA)
+        elif mode == "wikipedia":
+            try:
+                ds = load_dataset("izumi-lab/wikipedia-ja-20230720", split="train", streaming=True)
+                count = 0
+                for row in ds:
+                    text = row.get("text", "").strip()
+                    if text and len(text) > 50:
+                        all_texts.append(text)
+                        count += 1
+                        if max_samples > 0 and count >= max_samples:
+                            break
+            except Exception:
+                pass
+        else:
+            raise ValueError(f"Unknown mode: {mode}. Use 'qa' or 'wikipedia'.")
+
+        random.shuffle(all_texts)
+
+        chunk_size = max(len(all_texts) // num_chunks, 1)
+        chunks = []
+        for i in range(num_chunks):
+            start = i * chunk_size
+            end = start + chunk_size if i < num_chunks - 1 else len(all_texts)
+            chunks.append(all_texts[start:end])
+
+        return chunks
+
+    def _run_split_chunk_training(self, chunk_texts, chunk_index, num_chunks,
+                                   epochs_per_chunk, lr, batch_size,
+                                   grad_accum_steps, warmup_steps):
+        """Train one chunk. Returns loss info."""
+        import math
+        import random
+
+        if not NEUROQUANTUM_AVAILABLE or self.architecture != "neuroquantum":
+            return {"error": "Split training requires neuroquantum architecture"}
+
+        max_seq_len = self.config["max_seq_len"]
+        min_lr_ratio = 0.1
+
+        # Tokenize chunk texts
+        sequences = []
+        for text in chunk_texts:
+            ids = self.tokenizer.encode(text, add_special=True)
+            if len(ids) >= 4:
+                if len(ids) <= max_seq_len:
+                    sequences.append(ids)
+                else:
+                    stride = max(max_seq_len // 2, 1)
+                    for start in range(0, len(ids) - max_seq_len + 1, stride):
+                        sequences.append(ids[start:start + max_seq_len])
+
+        if not sequences:
+            return {"chunk_index": chunk_index, "loss": None, "message": "No sequences"}
+
+        steps_per_epoch = len(sequences) // batch_size
+        total_steps = (steps_per_epoch * epochs_per_chunk) // grad_accum_steps
+        optimizer = torch.optim.AdamW(self.neuroq_model.parameters(), lr=lr, weight_decay=0.01)
+
+        self.neuroq_model.train()
+        global_step = 0
+        best_loss = float('inf')
+        log = []
+
+        for epoch in range(epochs_per_chunk):
+            random.shuffle(sequences)
+            total_loss = 0
+            n_batches = 0
+            optimizer.zero_grad()
+
+            for i in range(0, len(sequences), batch_size):
+                batch_seqs = sequences[i:i + batch_size]
+                if not batch_seqs:
+                    continue
+
+                max_len = min(max(len(s) for s in batch_seqs), max_seq_len)
+                input_ids = []
+                labels = []
+                for s in batch_seqs:
+                    ids = s[:max_len]
+                    pad_len = max_len - len(ids)
+                    input_ids.append(ids + [self.tokenizer.pad_id] * pad_len)
+                    labels.append(ids + [-100] * pad_len)
+
+                device = next(self.neuroq_model.parameters()).device
+                input_ids_t = torch.tensor(input_ids, dtype=torch.long, device=device)
+                labels_t = torch.tensor(labels, dtype=torch.long, device=device)
+
+                logits = self.neuroq_model(input_ids_t)
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels_t[..., 1:].contiguous()
+                loss = F.cross_entropy(
+                    shift_logits.view(-1, self.config["vocab_size"]),
+                    shift_labels.view(-1),
+                    ignore_index=-100
+                )
+                loss = loss / grad_accum_steps
+                loss.backward()
+
+                total_loss += loss.item() * grad_accum_steps
+                n_batches += 1
+
+                if n_batches % grad_accum_steps == 0:
+                    if global_step < warmup_steps:
+                        current_lr = lr * global_step / max(warmup_steps, 1)
+                    else:
+                        progress = (global_step - warmup_steps) / max(total_steps - warmup_steps, 1)
+                        cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+                        current_lr = lr * (min_lr_ratio + (1 - min_lr_ratio) * cosine_decay)
+                    for pg in optimizer.param_groups:
+                        pg['lr'] = current_lr
+                    torch.nn.utils.clip_grad_norm_(self.neuroq_model.parameters(), 1.0)
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    global_step += 1
+
+            if n_batches % grad_accum_steps != 0:
+                torch.nn.utils.clip_grad_norm_(self.neuroq_model.parameters(), 1.0)
+                optimizer.step()
+                optimizer.zero_grad()
+                global_step += 1
+
+            avg_loss = total_loss / max(n_batches, 1)
+            msg = f"Chunk {chunk_index+1} Epoch {epoch+1}/{epochs_per_chunk} | Loss: {avg_loss:.4f}"
+            log.append(msg)
+
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+
+        # Save checkpoint after chunk
+        ckpt_path = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
+        torch.save({
+            "model_state": self.neuroq_model.state_dict(),
+            "config": self.config
+        }, ckpt_path)
+        self.neuroq_model.eval()
+
+        # Upload checkpoint if HF_TOKEN available
+        upload_status = "skipped (no HF_TOKEN)"
+        token = os.environ.get("HF_TOKEN")
+        if token:
+            try:
+                from huggingface_hub import HfApi
+                repo_id = os.environ.get("REPOSITORY_ID", "tapiocaTakeshi/Qubit")
+                api = HfApi(token=token)
+                api.upload_file(
+                    path_or_fileobj=ckpt_path,
+                    path_in_repo="neuroq_checkpoint.pt",
+                    repo_id=repo_id,
+                    repo_type="model",
+                    commit_message=f"Split training chunk {chunk_index+1}/{num_chunks} complete"
+                )
+                upload_status = "uploaded"
+            except Exception as e:
+                upload_status = f"upload failed: {e}"
+
+        return {
+            "chunk_index": chunk_index,
+            "best_loss": best_loss,
+            "sequences": len(sequences),
+            "log": log,
+            "upload": upload_status,
+        }
+
+    def split_train_next(self, data):
+        """Train next chunk of split data."""
+        mode = data.get("mode", "qa")
+        num_chunks = int(data.get("num_chunks", 4))
+        epochs_per_chunk = int(data.get("epochs_per_chunk", 6))
+        lr = float(data.get("lr", 3e-5))
+        batch_size = int(data.get("batch_size", 4))
+        grad_accum_steps = int(data.get("grad_accum_steps", 4))
+        warmup_steps = int(data.get("warmup_steps", 30))
+        max_samples = int(data.get("max_samples_per_dataset", 0))
+
+        # Prepare chunks if needed
+        if (not self._split_state["chunks"]
+                or self._split_state["num_chunks"] != num_chunks
+                or self._split_state["mode"] != mode):
+            try:
+                chunks = self._prepare_split_data(mode, num_chunks, max_samples)
+                self._split_state = {
+                    "chunks": chunks,
+                    "current_index": 0,
+                    "num_chunks": num_chunks,
+                    "mode": mode,
+                }
+            except Exception as e:
+                import traceback
+                return [{"error": f"Failed to prepare data: {e}",
+                         "traceback": traceback.format_exc()}]
+
+        idx = self._split_state["current_index"]
+        if idx >= self._split_state["num_chunks"]:
+            return [{
+                "status": "all_chunks_completed",
+                "chunk_index": idx,
+                "chunks_remaining": 0,
+                "message": "All chunks already trained. Use split_reset to start over.",
+            }]
+
+        chunk_texts = self._split_state["chunks"][idx]
+        try:
+            result = self._run_split_chunk_training(
+                chunk_texts, idx, num_chunks,
+                epochs_per_chunk, lr, batch_size,
+                grad_accum_steps, warmup_steps
+            )
+        except Exception as e:
+            import traceback
+            return [{"error": f"Training error: {e}",
+                     "traceback": traceback.format_exc()}]
+
+        self._split_state["current_index"] = idx + 1
+        remaining = self._split_state["num_chunks"] - self._split_state["current_index"]
+
+        return [{
+            "status": "chunk_completed",
+            "chunk_index": idx,
+            "chunks_remaining": remaining,
+            "best_loss": result.get("best_loss"),
+            "sequences": result.get("sequences"),
+            "log": result.get("log", []),
+            "upload": result.get("upload"),
+            "message": f"Chunk {idx+1}/{num_chunks} done. {remaining} remaining.",
+        }]
+
+    def split_train_reset(self):
+        """Reset split training state."""
+        self._split_state = {
+            "chunks": [],
+            "current_index": 0,
+            "num_chunks": 0,
+            "mode": "qa",
+        }
+        return [{"status": "reset", "message": "Split training state has been reset."}]
