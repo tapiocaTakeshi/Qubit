@@ -23,11 +23,11 @@ ENDPOINT_URL = "https://vvcci2ps4y3wfx7m.us-east4.gcp.endpoints.huggingface.clou
 
 # Training params
 NUM_CHUNKS = 8
-EPOCHS_PER_CHUNK = 3
+EPOCHS_PER_CHUNK = 6
 BATCH_SIZE = 1
 GRAD_ACCUM = 4
-LR = 3e-5
-WARMUP_STEPS = 20
+LR = 5e-5
+WARMUP_STEPS = 30
 
 # Prompts to query the endpoint
 QUERY_PROMPTS = [
@@ -303,7 +303,7 @@ def main():
     params = sum(p.numel() for p in model.parameters())
     print(f"  Model: {params:,} params on {device}")
 
-    tokenizer = NeuroQuantumTokenizer(TOKENIZER_PATH)
+    tokenizer = NeuroQuantumTokenizer(model_file=TOKENIZER_PATH)
     del ckpt
     gc.collect()
 
@@ -311,9 +311,9 @@ def main():
     print("\n[2/4] Generating data from endpoint...")
     endpoint_texts = generate_training_data()
 
-    # Combine with crafted QA (repeat crafted for balance)
+    # Combine with crafted QA (heavy repeat for high-quality signal)
     all_texts = endpoint_texts.copy()
-    crafted_repeats = max(1, len(endpoint_texts) // len(CRAFTED_QA)) if endpoint_texts else 40
+    crafted_repeats = 60  # Repeat crafted QA heavily to dominate training
     for _ in range(crafted_repeats):
         all_texts.extend(CRAFTED_QA)
 

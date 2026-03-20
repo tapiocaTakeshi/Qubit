@@ -268,7 +268,7 @@ def main():
     params = sum(p.numel() for p in model.parameters())
     print(f"  Model: {params:,} params on {device}")
 
-    tokenizer = NeuroQuantumTokenizer(TOKENIZER_PATH)
+    tokenizer = NeuroQuantumTokenizer(model_file=TOKENIZER_PATH)
     del ckpt
     gc.collect()
 
