@@ -78,14 +78,23 @@ QA_DATASETS_INFO = [
 
 def load_qa_data_streaming(max_per_ds=200):
     """Load QA data using streaming to minimize memory."""
+    import signal
     from datasets import load_dataset
     all_texts = []
+
+    class TimeoutError(Exception):
+        pass
+
+    def timeout_handler(signum, frame):
+        raise TimeoutError("Dataset load timed out")
 
     for ds_info in QA_DATASETS_INFO:
         ds_id = ds_info["id"]
         fmt = ds_info["format"]
         try:
             print(f"  Loading {ds_id} (streaming, max={max_per_ds})...")
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(60)  # 60 second timeout per dataset
             ds = load_dataset(ds_id, split="train", streaming=True)
             count = 0
             for row in ds:
@@ -102,8 +111,13 @@ def load_qa_data_streaming(max_per_ds=200):
                     count += 1
                     if count >= max_per_ds:
                         break
+            signal.alarm(0)
             print(f"    -> {count} samples")
+        except TimeoutError:
+            signal.alarm(0)
+            print(f"    -> Timed out, skipping")
         except Exception as e:
+            signal.alarm(0)
             print(f"    -> Failed: {e}")
         gc.collect()
 
@@ -218,7 +232,7 @@ def train_chunk(model, config, tokenizer, chunk_texts, chunk_idx, num_chunks, de
 def save_checkpoint(model, config, chunk_info):
     """Save model checkpoint."""
     ckpt = {
-        "model_state_dict": model.state_dict(),
+        "model_state": model.state_dict(),
         "config": config,
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "chunk_info": chunk_info,
@@ -249,7 +263,7 @@ def main():
         dropout=cfg.get("dropout", 0.1),
     )
     model = NeuroQuantum(model_config)
-    model.load_state_dict(ckpt["model_state_dict"])
+    model.load_state_dict(ckpt.get("model_state_dict") or ckpt["model_state"])
     model.to(device)
     params = sum(p.numel() for p in model.parameters())
     print(f"  Model: {params:,} params on {device}")
