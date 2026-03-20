@@ -1027,6 +1027,152 @@ class NeuroQuantumHead(nn.Module):
 
 
 # ========================================
+# Part 5.5: State-dict migration (old → new architecture)
+# ========================================
+
+def migrate_legacy_state_dict(state_dict: dict, model: "NeuroQuantum") -> dict:
+    """
+    Migrate a legacy checkpoint state_dict to the current NeuroQuantum architecture.
+
+    Legacy key format (old model):
+        embed.weight, pos_embed.weight,
+        layers.{i}.attn.in_proj_weight/bias, layers.{i}.attn.out_proj.weight/bias,
+        layers.{i}.qbnn.J, layers.{i}.qbnn.linear.weight/bias,
+        layers.{i}.qbnn.norm.weight/bias,
+        layers.{i}.norm1.weight/bias, layers.{i}.norm2.weight/bias,
+        head.weight, head.bias
+
+    Current key format (NeuroQuantum):
+        token_embedding.weight, position_embedding.weight,
+        transformer_blocks.{i}.attention.q_proj/k_proj/v_proj/out_proj.*,
+        transformer_blocks.{i}.attention.J_attn, transformer_blocks.{i}.attention.lambda_attn,
+        transformer_blocks.{i}.norm1/norm2.*,
+        transformer_blocks.{i}.ffn_standard/ffn_qbnn_layer1/ffn_qbnn_layer2.*,
+        final_norm.*, output_head.weight
+    """
+    # Quick check: if state_dict already has new-style keys, return as-is
+    if any(k.startswith("transformer_blocks.") for k in state_dict):
+        return state_dict
+
+    # Check for legacy keys
+    if not any(k.startswith("layers.") for k in state_dict):
+        return state_dict
+
+    print("[migrate] Legacy checkpoint detected — converting keys to NeuroQuantum format")
+    new_state = {}
+    model_state = model.state_dict()
+    embed_dim = model.config.embed_dim
+
+    # --- Simple renames ---
+    rename_map = {
+        "embed.weight": "token_embedding.weight",
+        "pos_embed.weight": "position_embedding.weight",
+    }
+    for old_key, new_key in rename_map.items():
+        if old_key in state_dict and new_key in model_state:
+            old_t = state_dict[old_key]
+            new_t = model_state[new_key]
+            if old_t.shape == new_t.shape:
+                new_state[new_key] = old_t
+            else:
+                print(f"[migrate] Shape mismatch for {old_key} {old_t.shape} → {new_key} {new_t.shape}, skipping")
+
+    # --- Per-layer mapping ---
+    num_layers = model.config.num_layers
+    for i in range(num_layers):
+        prefix_old = f"layers.{i}"
+        prefix_new = f"transformer_blocks.{i}"
+
+        # norm1, norm2 (direct rename)
+        for norm_name in ("norm1", "norm2"):
+            for param in ("weight", "bias"):
+                ok = f"{prefix_old}.{norm_name}.{param}"
+                nk = f"{prefix_new}.{norm_name}.{param}"
+                if ok in state_dict and nk in model_state:
+                    if state_dict[ok].shape == model_state[nk].shape:
+                        new_state[nk] = state_dict[ok]
+
+        # Attention: split in_proj_weight/bias into q_proj, k_proj, v_proj
+        in_proj_w = state_dict.get(f"{prefix_old}.attn.in_proj_weight")
+        if in_proj_w is not None and in_proj_w.shape[0] == 3 * embed_dim:
+            q_w, k_w, v_w = in_proj_w.chunk(3, dim=0)
+            new_state[f"{prefix_new}.attention.q_proj.weight"] = q_w
+            new_state[f"{prefix_new}.attention.k_proj.weight"] = k_w
+            new_state[f"{prefix_new}.attention.v_proj.weight"] = v_w
+
+        in_proj_b = state_dict.get(f"{prefix_old}.attn.in_proj_bias")
+        if in_proj_b is not None and in_proj_b.shape[0] == 3 * embed_dim:
+            q_b, k_b, v_b = in_proj_b.chunk(3, dim=0)
+            new_state[f"{prefix_new}.attention.q_proj.bias"] = q_b
+            new_state[f"{prefix_new}.attention.k_proj.bias"] = k_b
+            new_state[f"{prefix_new}.attention.v_proj.bias"] = v_b
+
+        # Attention out_proj
+        for param in ("weight", "bias"):
+            ok = f"{prefix_old}.attn.out_proj.{param}"
+            nk = f"{prefix_new}.attention.out_proj.{param}"
+            if ok in state_dict and nk in model_state:
+                if state_dict[ok].shape == model_state[nk].shape:
+                    new_state[nk] = state_dict[ok]
+
+        # qbnn.J → attention.J_attn (reshape if possible)
+        old_j = state_dict.get(f"{prefix_old}.qbnn.J")
+        j_attn_key = f"{prefix_new}.attention.J_attn"
+        if old_j is not None and j_attn_key in model_state:
+            target_shape = model_state[j_attn_key].shape
+            if old_j.shape == target_shape:
+                new_state[j_attn_key] = old_j
+            elif old_j.numel() == model_state[j_attn_key].numel():
+                new_state[j_attn_key] = old_j.reshape(target_shape)
+                print(f"[migrate] Reshaped {prefix_old}.qbnn.J {old_j.shape} → {target_shape}")
+
+        # qbnn.linear → ffn_qbnn_layer1.W (if shapes match)
+        for param in ("weight", "bias"):
+            ok = f"{prefix_old}.qbnn.linear.{param}"
+            # Try mapping to the QBNN layer's inner linear
+            nk_candidates = [
+                f"{prefix_new}.ffn_qbnn_layer1.W.{param}",
+                f"{prefix_new}.ffn_qbnn_layer1.eqbnn_core.linear.{param}",
+            ]
+            if ok in state_dict:
+                for nk in nk_candidates:
+                    if nk in model_state and state_dict[ok].shape == model_state[nk].shape:
+                        new_state[nk] = state_dict[ok]
+                        break
+
+        # qbnn.norm → ffn_qbnn_layer1.layer_norm (if shapes match)
+        for param in ("weight", "bias"):
+            ok = f"{prefix_old}.qbnn.norm.{param}"
+            nk_candidates = [
+                f"{prefix_new}.ffn_qbnn_layer1.layer_norm.{param}",
+            ]
+            if ok in state_dict:
+                for nk in nk_candidates:
+                    if nk in model_state and state_dict[ok].shape == model_state[nk].shape:
+                        new_state[nk] = state_dict[ok]
+                        break
+
+    # --- Output head ---
+    if "head.weight" in state_dict and "output_head.weight" in model_state:
+        if state_dict["head.weight"].shape == model_state["output_head.weight"].shape:
+            new_state["output_head.weight"] = state_dict["head.weight"]
+    # head.bias is dropped (output_head has bias=False)
+
+    # --- Final norm (not in old model — keep default init) ---
+
+    mapped = len(new_state)
+    total_new = len(model_state)
+    print(f"[migrate] Mapped {mapped}/{total_new} parameters from legacy checkpoint")
+
+    # Fill unmapped keys with current (initialized) values
+    for k, v in model_state.items():
+        if k not in new_state:
+            new_state[k] = v
+
+    return new_state
+
+
+# ========================================
 # Part 6: ニューロQ モデル本体
 # ========================================
 

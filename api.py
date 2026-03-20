@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 
 sys.path.insert(0, os.path.dirname(__file__))
-from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer
+from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, migrate_legacy_state_dict
 
 app = FastAPI(title="NeuroQuantum API", version="1.0.0")
 
@@ -155,7 +155,8 @@ def load_model():
         lambda_entangle=config.get("entangle_strength", 0.5),
     )
     model = NeuroQuantum(config=nq_config).to(device)
-    model.load_state_dict(checkpoint["model_state"])
+    migrated = migrate_legacy_state_dict(checkpoint["model_state"], model)
+    model.load_state_dict(migrated)
     model.eval()
 
     n_params = sum(p.numel() for p in model.parameters())
