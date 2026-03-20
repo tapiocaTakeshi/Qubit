@@ -45,6 +45,138 @@ except ImportError:
 
 
 # ============================================================
+# Legacy QBNN classes (for old checkpoints)
+# ============================================================
+
+class QBNNLayer(nn.Module):
+    def __init__(self, dim, lam=0.12):
+        super().__init__()
+        self.linear = nn.Linear(dim, dim)
+        self.J = nn.Parameter(torch.randn(dim, dim) * 0.01)
+        self.lam = lam
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, x):
+        h = self.linear(x)
+        delta = torch.einsum('bsd,od->bso', torch.tanh(x), self.J) * torch.tanh(h)
+        return self.norm(F.gelu(h + self.lam * delta))
+
+
+class QBNNTransformer(nn.Module):
+    """Legacy small model for backward compatibility with old checkpoints."""
+    def __init__(self, cfg):
+        super().__init__()
+        d = cfg["embed_dim"]
+        self.embed = nn.Embedding(cfg["vocab_size"], d)
+        self.pos_embed = nn.Embedding(cfg["max_seq_len"], d)
+        self.layers = nn.ModuleList([
+            nn.ModuleDict({
+                "attn": nn.MultiheadAttention(d, cfg["num_heads"], batch_first=True),
+                "qbnn": QBNNLayer(d, cfg["entangle_strength"]),
+                "norm1": nn.LayerNorm(d),
+                "norm2": nn.LayerNorm(d),
+            }) for _ in range(cfg["num_layers"])
+        ])
+        self.head = nn.Linear(d, cfg["vocab_size"])
+        self.cfg = cfg
+
+    def forward(self, input_ids=None, labels=None, x=None, **kwargs):
+        if input_ids is None:
+            input_ids = x
+        if input_ids is None and "inputs" in kwargs:
+            input_ids = kwargs["inputs"]
+
+        B, S = input_ids.shape
+        h = self.embed(input_ids) + self.pos_embed(torch.arange(S, device=input_ids.device).unsqueeze(0))
+        for layer in self.layers:
+            a, _ = layer["attn"](h, h, h)
+            h = layer["norm1"](h + a)
+            h = layer["norm2"](h + layer["qbnn"](h))
+        logits = self.head(h)
+
+        if labels is not None:
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            loss = F.cross_entropy(
+                shift_logits.view(-1, self.cfg["vocab_size"]),
+                shift_labels.view(-1),
+                ignore_index=-100
+            )
+            from transformers.modeling_outputs import CausalLMOutput
+            return CausalLMOutput(loss=loss, logits=logits)
+
+        return logits
+
+    def generate(self, tokens, max_new=30, temperature=0.8, top_k=0, top_p=1.0,
+                 repetition_penalty=1.0):
+        self.eval()
+        generated = []
+        with torch.no_grad():
+            for _ in range(max_new):
+                seq = tokens[:, -self.cfg["max_seq_len"]:]
+                logits = self(seq)[:, -1, :] / max(temperature, 1e-5)
+
+                if generated and repetition_penalty > 1.0:
+                    for prev_token in set(generated[-20:]):
+                        logits[0, prev_token] /= repetition_penalty
+
+                if top_k > 0:
+                    topk_vals = torch.topk(logits, min(top_k, logits.size(-1)))[0]
+                    logits[logits < topk_vals[:, -1:]] = float('-inf')
+
+                if top_p < 1.0:
+                    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                    cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                    to_remove = cumulative_probs > top_p
+                    to_remove[:, 1:] = to_remove[:, :-1].clone()
+                    to_remove[:, 0] = False
+                    indices_to_remove = sorted_indices[to_remove]
+                    logits[0, indices_to_remove] = float('-inf')
+
+                nxt = torch.multinomial(F.softmax(logits, dim=-1), 1)
+                tokens = torch.cat([tokens, nxt], dim=1)
+                generated.append(nxt.item())
+                if nxt.item() == 1:  # <EOS>
+                    break
+        return tokens
+
+
+class CharTokenizer:
+    """Legacy character-level tokenizer for old checkpoints."""
+    def __init__(self):
+        chars = list(
+            "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん"
+            "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン"
+            "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+            "、。？！「」（）・ー\n "
+        )
+        self.stoi = {"<PAD>": 0, "<EOS>": 1, "<UNK>": 2}
+        for i, c in enumerate(chars):
+            self.stoi[c] = i + 3
+        self.itos = {v: k for k, v in self.stoi.items()}
+        self.vocab_size = len(self.stoi)
+        self.pad_id = 0
+        self.eos_id = 1
+        self.bos_id = 2  # Use UNK as BOS for legacy
+
+    def encode(self, text, max_len=None, add_special=False):
+        max_len = max_len or 512
+        ids = [self.stoi.get(c, 2) for c in str(text)[:max_len]]
+        if add_special and ids:
+            ids = [self.bos_id] + ids
+        return ids
+
+    def decode(self, ids, skip_special=False):
+        special = {0, 1, 2} if skip_special else {0, 1}
+        return "".join(self.itos.get(i, "?") for i in ids if i not in special)
+
+
+def _is_legacy_checkpoint(state_dict):
+    """Detect if checkpoint uses old QBNNTransformer format."""
+    return "embed.weight" in state_dict and "head.weight" in state_dict
+
+
+# ============================================================
 # Default model config
 # ============================================================
 
@@ -234,37 +366,63 @@ class EndpointHandler:
 
         # Find checkpoint
         self.ckpt_path = find_checkpoint(path) if path else None
+        self.is_legacy = False  # Track if using legacy QBNNTransformer
 
-        if self.ckpt_path and NEUROQUANTUM_AVAILABLE:
+        if self.ckpt_path:
             checkpoint = torch.load(self.ckpt_path, map_location="cpu")
             self.config = checkpoint.get("config", dict(DEFAULT_CONFIG))
+            state_dict = checkpoint.get("model_state", {})
 
-            # Load tokenizer
-            tokenizer_path = os.path.join(path, "neuroq_tokenizer.model")
-            self.tokenizer = NeuroQuantumTokenizer(
-                vocab_size=self.config["vocab_size"],
-                model_file=tokenizer_path if os.path.isfile(tokenizer_path) else None,
-            )
+            if _is_legacy_checkpoint(state_dict):
+                # ── Legacy QBNNTransformer checkpoint ──
+                self.is_legacy = True
+                tokenizer_path = os.path.join(path, "neuroq_tokenizer.model")
+                if os.path.isfile(tokenizer_path) and NEUROQUANTUM_AVAILABLE:
+                    self.tokenizer = NeuroQuantumTokenizer(
+                        vocab_size=self.config["vocab_size"],
+                        model_file=tokenizer_path,
+                    )
+                else:
+                    self.tokenizer = CharTokenizer()
+                    self.config["vocab_size"] = self.tokenizer.vocab_size
 
-            # Build model
-            nq_config = NeuroQuantumConfig(
-                vocab_size=self.config["vocab_size"],
-                embed_dim=self.config["embed_dim"],
-                hidden_dim=self.config.get("hidden_dim", self.config["embed_dim"] * 2),
-                num_heads=self.config["num_heads"],
-                num_layers=self.config["num_layers"],
-                max_seq_len=self.config["max_seq_len"],
-                dropout=self.config.get("dropout", 0.1),
-                lambda_entangle=self.config.get("entangle_strength", 0.5),
-            )
-            self.model = NeuroQuantum(config=nq_config).to(self.device)
-            self.model.load_state_dict(checkpoint["model_state"])
-            self.model.eval()
+                self.model = QBNNTransformer(self.config).to(self.device)
+                self.model.load_state_dict(state_dict)
+                self.model.eval()
 
-            n_params = sum(p.numel() for p in self.model.parameters())
-            print(f"[handler] NeuroQuantum model loaded: {n_params:,} params on {self.device}")
+                n_params = sum(p.numel() for p in self.model.parameters())
+                print(f"[handler] Legacy QBNNTransformer loaded: {n_params:,} params on {self.device}")
+
+            elif NEUROQUANTUM_AVAILABLE:
+                # ── New NeuroQuantum checkpoint ──
+                tokenizer_path = os.path.join(path, "neuroq_tokenizer.model")
+                self.tokenizer = NeuroQuantumTokenizer(
+                    vocab_size=self.config["vocab_size"],
+                    model_file=tokenizer_path if os.path.isfile(tokenizer_path) else None,
+                )
+
+                nq_config = NeuroQuantumConfig(
+                    vocab_size=self.config["vocab_size"],
+                    embed_dim=self.config["embed_dim"],
+                    hidden_dim=self.config.get("hidden_dim", self.config["embed_dim"] * 2),
+                    num_heads=self.config["num_heads"],
+                    num_layers=self.config["num_layers"],
+                    max_seq_len=self.config["max_seq_len"],
+                    dropout=self.config.get("dropout", 0.1),
+                    lambda_entangle=self.config.get("entangle_strength", 0.5),
+                )
+                self.model = NeuroQuantum(config=nq_config).to(self.device)
+                self.model.load_state_dict(state_dict)
+                self.model.eval()
+
+                n_params = sum(p.numel() for p in self.model.parameters())
+                print(f"[handler] NeuroQuantum model loaded: {n_params:,} params on {self.device}")
+            else:
+                raise RuntimeError(
+                    "Checkpoint is NeuroQuantum format but neuroquantum_layered.py not available"
+                )
         else:
-            # Fallback: initialize fresh model
+            # ── No checkpoint: initialize fresh NeuroQuantum ──
             self.config = dict(DEFAULT_CONFIG)
             if NEUROQUANTUM_AVAILABLE:
                 self.tokenizer = NeuroQuantumTokenizer(vocab_size=self.config["vocab_size"])
@@ -339,6 +497,23 @@ class EndpointHandler:
         top_p = float(params.get("top_p", 0.9))
         repetition_penalty = float(params.get("repetition_penalty", 1.3))
 
+        # Legacy model: use its built-in generate method
+        if self.is_legacy:
+            ids = self.tokenizer.encode(inputs, max_len=self.config["max_seq_len"])
+            if not ids:
+                return [{"generated_text": ""}]
+            input_tensor = torch.tensor([ids], dtype=torch.long, device=self.device)
+            with torch.no_grad():
+                output = self.model.generate(
+                    input_tensor, max_new=max_new_tokens,
+                    temperature=temperature, top_k=top_k, top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                )
+            generated_ids = output[0, len(ids):].tolist()
+            generated_text = self.tokenizer.decode(generated_ids, skip_special=True)
+            return [{"generated_text": generated_text}]
+
+        # NeuroQuantum model: token-by-token generation
         tokens = self.tokenizer.encode(inputs, add_special=True)
         if not tokens:
             return [{"generated_text": ""}]
