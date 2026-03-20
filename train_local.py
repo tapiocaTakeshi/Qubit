@@ -63,7 +63,7 @@ def tokenize_texts(texts, tokenizer, max_seq_len):
     """
     sequences = []
     for t in texts:
-        # Encode without special tokens, then wrap each chunk with BOS/EOS
+        # Encode without special tokens, then wrap each chunk with BOS/EOS + BOF/EOF
         content_ids = tokenizer.encode(t, add_special=False)
         # Reserve 2 slots for BOS and EOS
         max_content = max_seq_len - 2
@@ -71,17 +71,20 @@ def tokenize_texts(texts, tokenizer, max_seq_len):
             continue
         if len(content_ids) <= max_content:
             if len(content_ids) >= 2:
-                seq = [tokenizer.bos_id] + content_ids + [tokenizer.eos_id]
+                seq = [tokenizer.bof_id, tokenizer.bos_id] + content_ids + [tokenizer.eos_id, tokenizer.eof_id]
                 sequences.append(seq)
         else:
             stride = max(max_content // 2, 1)
-            for start in range(0, len(content_ids) - max_content + 1, stride):
+            chunks = list(range(0, len(content_ids) - max_content + 1, stride))
+            for idx, start in enumerate(chunks):
                 chunk = content_ids[start:start + max_content]
-                seq = [tokenizer.bos_id] + chunk + [tokenizer.eos_id]
+                prefix = [tokenizer.bof_id, tokenizer.bos_id] if idx == 0 else [tokenizer.bos_id]
+                suffix = [tokenizer.eos_id, tokenizer.eof_id] if idx == len(chunks) - 1 else [tokenizer.eos_id]
+                seq = prefix + chunk + suffix
                 sequences.append(seq)
             # Include the tail if not already covered
             remaining = content_ids[-max_content:]
-            tail_seq = [tokenizer.bos_id] + remaining + [tokenizer.eos_id]
+            tail_seq = [tokenizer.bos_id] + remaining + [tokenizer.eos_id, tokenizer.eof_id]
             if tail_seq != sequences[-1]:
                 sequences.append(tail_seq)
     return sequences
@@ -251,9 +254,9 @@ def main():
                 probs = F.softmax(logits, dim=-1)
                 nxt = torch.multinomial(probs, 1)
                 nxt_id = nxt.item()
-                if nxt_id == tokenizer.eos_id:
+                if nxt_id in (tokenizer.eos_id, tokenizer.eof_id):
                     break
-                if nxt_id == tokenizer.pad_id:
+                if nxt_id in (tokenizer.pad_id, tokenizer.bof_id):
                     continue
                 generated.append(nxt_id)
                 input_tensor = torch.cat([input_tensor, nxt], dim=1)

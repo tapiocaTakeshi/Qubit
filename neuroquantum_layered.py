@@ -1688,13 +1688,19 @@ class NeuroQuantumTokenizer:
         self.unk_token = '<unk>'
         self.bos_token = '<s>'
         self.eos_token = '</s>'
+        self.bof_token = '<bof>'
+        self.eof_token = '<eof>'
 
         # 特殊トークンID（SentencePieceのデフォルト: unk=0, bos=1, eos=2, pad=-1）
-        # NeuroQ統一: pad=0, unk=1, bos=2, eos=3
+        # NeuroQ統一: pad=0, unk=1, bos=2, eos=3, bof=4, eof=5
+        # BOS/EOS: シーケンス（チャンク）の開始/終了
+        # BOF/EOF: ドキュメント（ファイル）の実際の開始/終了
         self.pad_id = 0
         self.unk_id = 1
         self.bos_id = 2
         self.eos_id = 3
+        self.bof_id = 4
+        self.eof_id = 5
 
         # フォールバック用の語彙マッピング
         self.token_to_idx: Dict[str, int] = {}
@@ -1724,7 +1730,7 @@ class NeuroQuantumTokenizer:
 
     def _init_fallback_vocab(self):
         """フォールバック用の語彙を特殊トークンで初期化"""
-        special_tokens = [self.pad_token, self.unk_token, self.bos_token, self.eos_token]
+        special_tokens = [self.pad_token, self.unk_token, self.bos_token, self.eos_token, self.bof_token, self.eof_token]
         self.token_to_idx = {token: i for i, token in enumerate(special_tokens)}
         self.idx_to_token = {i: token for token, i in self.token_to_idx.items()}
         self.actual_vocab_size = len(self.token_to_idx)
@@ -1773,7 +1779,7 @@ class NeuroQuantumTokenizer:
                 unk_piece=self.unk_token,
                 bos_piece=self.bos_token,
                 eos_piece=self.eos_token,
-                user_defined_symbols=['<USER>', '<ASSISTANT>', '<SYSTEM>'],
+                user_defined_symbols=['<USER>', '<ASSISTANT>', '<SYSTEM>', '<bof>', '<eof>'],
                 train_extremely_large_corpus=False,
             )
 
@@ -1810,13 +1816,14 @@ class NeuroQuantumTokenizer:
         self.vocab_size = self.actual_vocab_size
         print(f"   ✅ 語彙サイズ: {self.actual_vocab_size}")
 
-    def encode(self, text: str, add_special: bool = True, verbose: bool = False) -> List[int]:
+    def encode(self, text: str, add_special: bool = True, add_boundary: bool = False, verbose: bool = False) -> List[int]:
         """
         テキストをトークンIDのリストに変換
 
         Args:
             text: 入力テキスト
             add_special: 特殊トークン（BOS/EOS）を追加するか
+            add_boundary: ドキュメント境界トークン（BOF/EOF）を追加するか
             verbose: 詳細ログを出力するか
 
         Returns:
@@ -1841,6 +1848,10 @@ class NeuroQuantumTokenizer:
                 tokens.append(self.token_to_idx.get(ch, self.unk_id))
             if add_special:
                 tokens.append(self.eos_id)
+
+        # ドキュメント境界トークンを追加（BOF/EOF）
+        if add_boundary:
+            tokens = [self.bof_id] + tokens + [self.eof_id]
 
         if verbose:
             logger.debug(f"[Encode] 入力テキスト: '{text[:50]}...'" if len(text) > 50 else f"[Encode] 入力テキスト: '{text}'")
@@ -1868,7 +1879,7 @@ class NeuroQuantumTokenizer:
             # 特殊トークンをフィルタリング
             sp_vocab_size = self.sp.GetPieceSize()
             if skip_special:
-                special_ids = {self.pad_id, self.unk_id, self.bos_id, self.eos_id}
+                special_ids = {self.pad_id, self.unk_id, self.bos_id, self.eos_id, self.bof_id, self.eof_id}
                 filtered_ids = [t for t in token_ids if t not in special_ids and 0 <= t < sp_vocab_size]
             else:
                 filtered_ids = [t for t in token_ids if 0 <= t < sp_vocab_size]
@@ -1876,12 +1887,12 @@ class NeuroQuantumTokenizer:
         else:
             # フォールバック：文字単位
             tokens = []
-            special_ids = {self.pad_id, self.unk_id, self.bos_id, self.eos_id}
+            special_ids = {self.pad_id, self.unk_id, self.bos_id, self.eos_id, self.bof_id, self.eof_id}
             for t in token_ids:
                 if skip_special and t in special_ids:
                     continue
                 token = self.idx_to_token.get(t, self.unk_token)
-                if token not in [self.pad_token, self.unk_token, self.bos_token, self.eos_token]:
+                if token not in [self.pad_token, self.unk_token, self.bos_token, self.eos_token, self.bof_token, self.eof_token]:
                     tokens.append(token)
             result = ''.join(tokens)
 
@@ -2197,7 +2208,9 @@ class NeuroQuantumAI:
             total_tokens += len(content_ids)
             if len(content_ids) <= max_content:
                 if len(content_ids) >= 2:
-                    seq = [self.tokenizer.bos_id] + content_ids + [self.tokenizer.eos_id]
+                    # 単一チャンク: BOF + BOS + content + EOS + EOF
+                    # ただしmax_content制約があるためBOF/EOFはBOS/EOSの外側に付与
+                    seq = [self.tokenizer.bof_id, self.tokenizer.bos_id] + content_ids + [self.tokenizer.eos_id, self.tokenizer.eof_id]
                     # Pad to seq_len + 1 for (input, target) pairs
                     pad_len = (seq_len + 1) - len(seq)
                     if pad_len > 0:
@@ -2209,9 +2222,13 @@ class NeuroQuantumAI:
                     sequences.append((x, y))
             else:
                 stride = max(max_content // 2, 1)
-                for start in range(0, len(content_ids) - max_content + 1, stride):
+                chunks = list(range(0, len(content_ids) - max_content + 1, stride))
+                for idx, start in enumerate(chunks):
                     chunk = content_ids[start:start + max_content]
-                    seq = [self.tokenizer.bos_id] + chunk + [self.tokenizer.eos_id]
+                    # 先頭チャンクにBOF、末尾チャンクにEOFを付与
+                    prefix = [self.tokenizer.bof_id, self.tokenizer.bos_id] if idx == 0 else [self.tokenizer.bos_id]
+                    suffix = [self.tokenizer.eos_id, self.tokenizer.eof_id] if idx == len(chunks) - 1 else [self.tokenizer.eos_id]
+                    seq = prefix + chunk + suffix
                     x = torch.tensor(seq[:seq_len], dtype=torch.long)
                     y = torch.tensor(seq[1:seq_len + 1], dtype=torch.long)
                     sequences.append((x, y))
@@ -2334,6 +2351,8 @@ class NeuroQuantumAI:
         conjunction_ids.discard(self.tokenizer.unk_id)
         conjunction_ids.discard(self.tokenizer.bos_id)
         conjunction_ids.discard(self.tokenizer.eos_id)
+        conjunction_ids.discard(self.tokenizer.bof_id)
+        conjunction_ids.discard(self.tokenizer.eof_id)
 
         self._conjunction_ids_cache = conjunction_ids
         return conjunction_ids
@@ -2569,12 +2588,12 @@ class NeuroQuantumAI:
                 next_token = torch.multinomial(probs, num_samples=1)
                 next_token_id = next_token.item()
                 
-                # EOS検出
-                if next_token_id == self.tokenizer.eos_id:
+                # EOS/EOF検出
+                if next_token_id in (self.tokenizer.eos_id, self.tokenizer.eof_id):
                     break
-                
-                # PADトークンはスキップ
-                if next_token_id == self.tokenizer.pad_id:
+
+                # PAD/BOFトークンはスキップ
+                if next_token_id in (self.tokenizer.pad_id, self.tokenizer.bof_id):
                     continue
                 
                 generated.append(next_token_id)

@@ -86,9 +86,9 @@ class Predictor(BasePredictor):
                 nxt = torch.multinomial(probs, 1)
                 nxt_id = nxt.item()
 
-                if nxt_id == self.tokenizer.eos_id:
+                if nxt_id in (self.tokenizer.eos_id, self.tokenizer.eof_id):
                     break
-                if nxt_id == self.tokenizer.pad_id:
+                if nxt_id in (self.tokenizer.pad_id, self.tokenizer.bof_id):
                     continue
 
                 generated.append(nxt_id)
