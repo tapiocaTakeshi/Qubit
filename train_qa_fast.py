@@ -165,13 +165,19 @@ def main():
     print("\n=== Tokenizing ===")
     sequences = []
     for t in qa_texts:
-        ids = tokenizer.encode(t, add_special=True)
+        ids = tokenizer.encode(t, add_special=True, add_boundary=True)
         if len(ids) <= max_seq_len and len(ids) >= 4:
             sequences.append(ids)
         elif len(ids) > max_seq_len:
             stride = max(max_seq_len // 2, 1)
-            for start in range(0, len(ids) - max_seq_len + 1, stride):
-                sequences.append(ids[start:start + max_seq_len])
+            chunks = list(range(0, len(ids) - max_seq_len + 1, stride))
+            for idx, start in enumerate(chunks):
+                chunk = ids[start:start + max_seq_len]
+                if idx > 0 and chunk[0] == tokenizer.bof_id:
+                    chunk = chunk[1:]
+                if idx < len(chunks) - 1 and chunk[-1] == tokenizer.eof_id:
+                    chunk = chunk[:-1]
+                sequences.append(chunk)
     print(f"Training sequences: {len(sequences)}")
 
     # Training
@@ -283,9 +289,9 @@ def main():
                 probs = F.softmax(logits, dim=-1)
                 nxt = torch.multinomial(probs, 1)
                 nxt_id = nxt.item()
-                if nxt_id == tokenizer.eos_id:
+                if nxt_id in (tokenizer.eos_id, tokenizer.eof_id):
                     break
-                if nxt_id == tokenizer.pad_id:
+                if nxt_id in (tokenizer.pad_id, tokenizer.bof_id):
                     continue
                 generated.append(nxt_id)
                 input_tensor = torch.cat([input_tensor, nxt], dim=1)

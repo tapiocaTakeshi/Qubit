@@ -289,16 +289,21 @@ def tokenize_texts(texts, tokenizer, max_seq_len):
             continue
         if len(content_ids) <= max_content:
             if len(content_ids) >= 2:
-                seq = [tokenizer.bos_id] + content_ids + [tokenizer.eos_id]
+                # 単一チャンク: BOF + BOS + content + EOS + EOF
+                seq = [tokenizer.bof_id, tokenizer.bos_id] + content_ids + [tokenizer.eos_id, tokenizer.eof_id]
                 sequences.append(seq)
         else:
             stride = max(max_content // 2, 1)
-            for start in range(0, len(content_ids) - max_content + 1, stride):
+            chunks = list(range(0, len(content_ids) - max_content + 1, stride))
+            for idx, start in enumerate(chunks):
                 chunk = content_ids[start:start + max_content]
-                seq = [tokenizer.bos_id] + chunk + [tokenizer.eos_id]
+                # 先頭チャンクにBOF、末尾チャンクにEOFを付与
+                prefix = [tokenizer.bof_id, tokenizer.bos_id] if idx == 0 else [tokenizer.bos_id]
+                suffix = [tokenizer.eos_id, tokenizer.eof_id] if idx == len(chunks) - 1 else [tokenizer.eos_id]
+                seq = prefix + chunk + suffix
                 sequences.append(seq)
             remaining = content_ids[-max_content:]
-            tail_seq = [tokenizer.bos_id] + remaining + [tokenizer.eos_id]
+            tail_seq = [tokenizer.bos_id] + remaining + [tokenizer.eos_id, tokenizer.eof_id]
             if tail_seq != sequences[-1]:
                 sequences.append(tail_seq)
     return sequences
@@ -708,9 +713,9 @@ def main():
                 probs = F.softmax(logits, dim=-1)
                 nxt = torch.multinomial(probs, 1)
                 nxt_id = nxt.item()
-                if nxt_id == tokenizer.eos_id:
+                if nxt_id in (tokenizer.eos_id, tokenizer.eof_id):
                     break
-                if nxt_id == tokenizer.pad_id:
+                if nxt_id in (tokenizer.pad_id, tokenizer.bof_id):
                     continue
                 generated.append(nxt_id)
                 input_tensor = torch.cat([input_tensor, nxt], dim=1)
