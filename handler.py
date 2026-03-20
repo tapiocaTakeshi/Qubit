@@ -6,6 +6,10 @@ Supports both inference and training via the "action" field:
   - action: "inference" (default) — text generation
   - action: "train"               — fine-tuning on HF datasets
   - action: "train_qa"            — QA-format fine-tuning
+  - action: "train_split"         — split dataset training (chunked)
+  - action: "train_split_next"    — train next chunk only (timeout-safe)
+  - action: "split_status"        — check split training progress
+  - action: "split_reset"         — reset split training state
   - action: "status"              — check training status
 
 Reference: https://huggingface.co/docs/inference-endpoints/main/en/engines/toolkit#create-a-custom-inference-handler
@@ -13,8 +17,10 @@ Reference: https://huggingface.co/docs/inference-endpoints/main/en/engines/toolk
 
 import os
 import sys
+import json
 import math
 import random
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -212,6 +218,10 @@ class EndpointHandler:
       - action: "inference" (default) — text generation
       - action: "train"               — general dataset training
       - action: "train_qa"            — QA-format training
+      - action: "train_split"         — split dataset training (chunked)
+      - action: "train_split_next"    — train next chunk only (timeout-safe)
+      - action: "split_status"        — check split training progress
+      - action: "split_reset"         — reset split training state
       - action: "status"              — check training status
     """
 
@@ -220,6 +230,7 @@ class EndpointHandler:
         self.model_path = path
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.training_status = {"running": False, "log": [], "message": "idle"}
+        self.split_state_path = os.path.join(path or ".", "split_training_state.json")
 
         # Find checkpoint
         self.ckpt_path = find_checkpoint(path) if path else None
@@ -279,7 +290,7 @@ class EndpointHandler:
 
         Args:
             data: Dictionary with:
-                - "action" (str): "inference" | "train" | "train_qa" | "status"
+                - "action" (str): "inference" | "train" | "train_qa" | "train_split" | "train_split_next" | "split_status" | "split_reset" | "status"
                 - For inference:
                     - "inputs" (str): The input prompt text
                     - "parameters" (dict): Generation parameters
@@ -297,6 +308,14 @@ class EndpointHandler:
             return self._handle_train(data)
         elif action == "train_qa":
             return self._handle_train_qa(data)
+        elif action == "train_split":
+            return self._handle_train_split(data)
+        elif action == "train_split_next":
+            return self._handle_train_split_next(data)
+        elif action == "split_status":
+            return self._handle_split_status()
+        elif action == "split_reset":
+            return self._handle_split_reset()
         elif action == "status":
             return self._handle_status()
         else:
@@ -686,6 +705,588 @@ class EndpointHandler:
 
         torch.save(checkpoint, self.ckpt_path)
         self.training_status["log"].append(f"Checkpoint saved: {self.ckpt_path}")
+
+    # --------------------------------------------------------
+    # Split training helpers
+    # --------------------------------------------------------
+
+    def _load_split_state(self):
+        if os.path.exists(self.split_state_path):
+            with open(self.split_state_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return None
+
+    def _save_split_state(self, state):
+        with open(self.split_state_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+
+    def _load_all_qa_texts(self, max_samples):
+        """Load all QA texts from default datasets."""
+        from datasets import load_dataset
+        all_qa = []
+        for ds_info in QA_DATASETS_INFO:
+            ds_id = ds_info["id"]
+            fmt = ds_info["format"]
+            ms = min(1000, max_samples) if fmt == "izumi" else max_samples
+            try:
+                self.training_status["message"] = f"Loading {ds_id}..."
+                ds = load_dataset(ds_id, split="train", trust_remote_code=True)
+                n = min(ms, len(ds))
+                count = 0
+                for row in ds.select(range(n)):
+                    if fmt == "alpaca":
+                        text = format_qa_alpaca(row)
+                    elif fmt == "conversations":
+                        text = format_qa_conversations(row)
+                    elif fmt == "izumi":
+                        text = format_qa_izumi(row)
+                    else:
+                        continue
+                    if text and len(text) > 10:
+                        all_qa.append(text)
+                        count += 1
+                self.training_status["log"].append(f"Loaded {ds_id}: {count} QA samples")
+            except Exception as e:
+                self.training_status["log"].append(f"Error loading {ds_id}: {e}")
+        return all_qa
+
+    def _load_all_general_texts(self, max_samples):
+        """Load all general texts from default datasets."""
+        from datasets import load_dataset
+        all_texts = []
+        for ds_info in DEFAULT_DATASETS:
+            ds_id = ds_info["id"]
+            col = ds_info["col"]
+            try:
+                self.training_status["message"] = f"Loading {ds_id}..."
+                ds = load_dataset(ds_id, split="train", trust_remote_code=True)
+                texts = extract_texts(ds, col, max_samples)
+                all_texts.extend(texts)
+                self.training_status["log"].append(f"Loaded {ds_id}: {len(texts)} texts")
+            except Exception as e:
+                self.training_status["log"].append(f"Error loading {ds_id}: {e}")
+        return all_texts
+
+    def _load_custom_datasets(self, dataset_ids, max_samples, mode):
+        """Load custom datasets by ID with auto-format detection."""
+        from datasets import load_dataset
+        all_texts = []
+        for ds_id in dataset_ids:
+            try:
+                self.training_status["message"] = f"Loading {ds_id}..."
+                try:
+                    ds = load_dataset(ds_id, split="train", trust_remote_code=True)
+                    is_streaming = False
+                except Exception:
+                    ds = load_dataset(ds_id, split="train", streaming=True, trust_remote_code=True)
+                    is_streaming = True
+
+                count = 0
+                iterator = ds if is_streaming else ds.select(range(min(max_samples, len(ds))))
+                for row in iterator:
+                    if count >= max_samples:
+                        break
+                    text = None
+                    if mode == "qa":
+                        q = (row.get("question") or row.get("instruction") or row.get("input") or "")
+                        q = q.strip() if isinstance(q, str) else ""
+                        a = (row.get("answer") or row.get("output") or row.get("response") or "")
+                        a = a.strip() if isinstance(a, str) else ""
+                        if q and a and len(q) > 2 and len(a) > 2:
+                            text = f"質問: {q}\n回答: {a}"
+                        elif not q and a and len(a) > 10:
+                            text = f"回答: {a}"
+                        if not text:
+                            convs = row.get("conversations", [])
+                            if isinstance(convs, list) and len(convs) >= 2:
+                                text = format_qa_conversations(row)
+                        if not text and row.get("instruction"):
+                            text = format_qa_alpaca(row)
+                    else:
+                        for col in ["text", "content", "output", "sentence", "document"]:
+                            val = row.get(col)
+                            if isinstance(val, str) and len(val.strip()) > 10:
+                                text = val.strip()
+                                break
+                        if not text:
+                            convs = row.get("conversations", [])
+                            if isinstance(convs, list) and convs:
+                                parts = []
+                                for turn in convs:
+                                    if isinstance(turn, dict):
+                                        parts.append(turn.get("value", turn.get("content", "")))
+                                    elif isinstance(turn, str):
+                                        parts.append(turn)
+                                combined = "\n".join(parts)
+                                if len(combined.strip()) > 10:
+                                    text = combined.strip()
+                    if text and len(text) > 10:
+                        all_texts.append(text)
+                        count += 1
+                self.training_status["log"].append(f"Loaded {ds_id}: {count} texts")
+            except Exception as e:
+                self.training_status["log"].append(f"Error loading {ds_id}: {e}")
+        return all_texts
+
+    @staticmethod
+    def _split_into_chunks(data, num_chunks, samples_per_batch=None):
+        """Split data into chunks.
+
+        Examples:
+          [0,10000] with samples_per_batch=1000
+            → chunk0=[0,999], chunk1=[1000,1999], ..., chunk9=[9000,9999]
+        """
+        random.shuffle(data)
+        if samples_per_batch is not None and samples_per_batch > 0:
+            chunk_size = samples_per_batch
+        else:
+            chunk_size = math.ceil(len(data) / num_chunks)
+        chunks = []
+        for i in range(0, len(data), chunk_size):
+            chunk = data[i:i + chunk_size]
+            if chunk:
+                chunks.append(chunk)
+        return chunks
+
+    def _run_chunk_training(self, sequences, epochs_per_chunk, lr, batch_size,
+                            grad_accum_steps, warmup_steps, max_seq_len,
+                            chunk_idx, total_chunks, max_minutes=None):
+        """Train on a single chunk with optional timeout."""
+        steps_per_epoch = len(sequences) // batch_size
+        total_steps = (steps_per_epoch * epochs_per_chunk) // grad_accum_steps
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=0.01)
+        min_lr_ratio = 0.1
+
+        self.model.train()
+        global_step = 0
+        best_loss = float('inf')
+        timed_out = False
+        chunk_start_time = time.time()
+        timeout_seconds = max_minutes * 60 if max_minutes else None
+
+        for epoch in range(epochs_per_chunk):
+            random.shuffle(sequences)
+            total_loss = 0
+            n_batches = 0
+            optimizer.zero_grad()
+            self.training_status["message"] = (
+                f"Chunk {chunk_idx+1}/{total_chunks} | "
+                f"Epoch {epoch+1}/{epochs_per_chunk}..."
+            )
+
+            for i in range(0, len(sequences), batch_size):
+                if timeout_seconds and (time.time() - chunk_start_time) >= timeout_seconds:
+                    elapsed = (time.time() - chunk_start_time) / 60
+                    msg = f"TIMEOUT: Chunk {chunk_idx+1} stopped after {elapsed:.1f} min"
+                    self.training_status["log"].append(msg)
+                    self.training_status["message"] = msg
+                    timed_out = True
+                    break
+
+                batch_seqs = sequences[i:i + batch_size]
+                if not batch_seqs:
+                    continue
+
+                max_len = min(max(len(s) for s in batch_seqs), max_seq_len)
+                input_ids = []
+                labels = []
+                for s in batch_seqs:
+                    ids = s[:max_len]
+                    pad_len = max_len - len(ids)
+                    input_ids.append(ids + [self.tokenizer.pad_id] * pad_len)
+                    labels.append(ids + [-100] * pad_len)
+
+                input_ids_t = torch.tensor(input_ids, dtype=torch.long, device=self.device)
+                labels_t = torch.tensor(labels, dtype=torch.long, device=self.device)
+
+                logits = self.model(input_ids_t)
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels_t[..., 1:].contiguous()
+                loss = F.cross_entropy(
+                    shift_logits.view(-1, self.config["vocab_size"]),
+                    shift_labels.view(-1),
+                    ignore_index=-100,
+                )
+                loss = loss / grad_accum_steps
+                loss.backward()
+
+                total_loss += loss.item() * grad_accum_steps
+                n_batches += 1
+
+                if n_batches % grad_accum_steps == 0:
+                    if global_step < warmup_steps:
+                        cur_lr = lr * global_step / max(warmup_steps, 1)
+                    else:
+                        progress = (global_step - warmup_steps) / max(total_steps - warmup_steps, 1)
+                        cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+                        cur_lr = lr * (min_lr_ratio + (1 - min_lr_ratio) * cosine_decay)
+                    for pg in optimizer.param_groups:
+                        pg['lr'] = cur_lr
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    global_step += 1
+
+            if timed_out:
+                if n_batches % grad_accum_steps != 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    optimizer.step()
+                    optimizer.zero_grad()
+                if n_batches > 0:
+                    avg_loss = total_loss / n_batches
+                    if avg_loss < best_loss:
+                        best_loss = avg_loss
+                break
+
+            if n_batches % grad_accum_steps != 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                optimizer.step()
+                optimizer.zero_grad()
+                global_step += 1
+
+            avg_loss = total_loss / max(n_batches, 1)
+            msg = (f"Chunk {chunk_idx+1}/{total_chunks} | "
+                   f"Epoch {epoch+1}/{epochs_per_chunk} | Loss: {avg_loss:.4f}")
+            self.training_status["log"].append(msg)
+            self.training_status["message"] = msg
+
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+
+        self.model.eval()
+        return best_loss, timed_out
+
+    # --------------------------------------------------------
+    # Split training (all chunks)
+    # --------------------------------------------------------
+
+    def _handle_train_split(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Run split dataset training: divides data into chunks and trains sequentially.
+
+        Example: 10000 samples with samples_per_batch=1000
+          → [0,999], [1000,1999], ..., [9000,9999] の10チャンクで順次学習
+        """
+        if self.training_status["running"]:
+            return [{"status": "error", "message": "Training already in progress"}]
+
+        params = data.get("parameters", {})
+        mode = str(params.get("mode", "qa"))
+        num_chunks = int(params.get("num_chunks", 4))
+        samples_per_batch = params.get("samples_per_batch", None)
+        if samples_per_batch is not None:
+            samples_per_batch = int(samples_per_batch)
+        chunk_index = params.get("chunk_index", None)
+        if chunk_index is not None:
+            chunk_index = int(chunk_index)
+        start_sample = params.get("start_sample", None)
+        if start_sample is not None:
+            start_sample = int(start_sample)
+        end_sample = params.get("end_sample", None)
+        if end_sample is not None:
+            end_sample = int(end_sample)
+        max_minutes_per_chunk = params.get("max_minutes_per_chunk", None)
+        if max_minutes_per_chunk is not None:
+            max_minutes_per_chunk = float(max_minutes_per_chunk)
+        epochs_per_chunk = int(params.get("epochs_per_chunk", 5))
+        lr = float(params.get("lr", 3e-5))
+        batch_size = int(params.get("batch_size", 4))
+        grad_accum_steps = int(params.get("grad_accum_steps", 4))
+        warmup_steps = int(params.get("warmup_steps", 20))
+        max_samples = int(params.get("max_samples_per_dataset", 2000))
+        crafted_repeat = int(params.get("crafted_repeat", 20))
+        dataset_ids = params.get("dataset_ids", None)
+        resume = bool(params.get("resume", False))
+
+        self.training_status = {"running": True, "log": [], "message": "Loading datasets for split training..."}
+
+        try:
+            # Load data
+            if dataset_ids:
+                all_texts = self._load_custom_datasets(dataset_ids, max_samples, mode)
+                if mode == "qa" and crafted_repeat > 0:
+                    for _ in range(crafted_repeat):
+                        all_texts.extend(CRAFTED_QA)
+                    self.training_status["log"].append(
+                        f"Added {len(CRAFTED_QA) * crafted_repeat} crafted QA samples"
+                    )
+                ds_names = dataset_ids
+            elif mode == "qa":
+                all_texts = self._load_all_qa_texts(max_samples)
+                for _ in range(crafted_repeat):
+                    all_texts.extend(CRAFTED_QA)
+                self.training_status["log"].append(
+                    f"Added {len(CRAFTED_QA) * crafted_repeat} crafted QA samples"
+                )
+                ds_names = [d["id"] for d in QA_DATASETS_INFO]
+            else:
+                all_texts = self._load_all_general_texts(max_samples)
+                ds_names = [d["id"] for d in DEFAULT_DATASETS]
+
+            self.training_status["log"].append(f"Total texts: {len(all_texts)}")
+
+            if not all_texts:
+                self.training_status["running"] = False
+                self.training_status["message"] = "No texts loaded"
+                return [{"status": "error", "message": "No texts loaded",
+                         "log": self.training_status["log"]}]
+
+            # Apply sample range filter
+            if start_sample is not None or end_sample is not None:
+                s = max(0, min(start_sample or 0, len(all_texts)))
+                e = max(s, min(end_sample or len(all_texts), len(all_texts)))
+                self.training_status["log"].append(f"Sample range: [{s}, {e}) = {e - s} samples")
+                all_texts = all_texts[s:e]
+                if not all_texts:
+                    self.training_status["running"] = False
+                    return [{"status": "error", "message": "No texts in specified range"}]
+
+            # Split into chunks
+            chunks = self._split_into_chunks(all_texts, num_chunks, samples_per_batch)
+            actual_num_chunks = len(chunks)
+            for i, chunk in enumerate(chunks):
+                self.training_status["log"].append(f"Chunk {i}: {len(chunk)} texts")
+
+            # Determine which chunks to train
+            if chunk_index is not None:
+                if chunk_index >= actual_num_chunks:
+                    self.training_status["running"] = False
+                    return [{"status": "error",
+                             "message": f"chunk_index {chunk_index} >= {actual_num_chunks}"}]
+                chunk_indices = [chunk_index]
+            elif resume:
+                state = self._load_split_state()
+                if state and state.get("mode") == mode:
+                    start_idx = state.get("last_completed_chunk", -1) + 1
+                    if start_idx >= actual_num_chunks:
+                        self.training_status["running"] = False
+                        return [{"status": "completed",
+                                 "message": "All chunks already completed!"}]
+                    chunk_indices = list(range(start_idx, actual_num_chunks))
+                else:
+                    chunk_indices = list(range(actual_num_chunks))
+            else:
+                chunk_indices = list(range(actual_num_chunks))
+
+            max_seq_len = self.config["max_seq_len"]
+
+            # Train each chunk
+            for cidx in chunk_indices:
+                chunk_texts = chunks[cidx]
+                self.training_status["message"] = f"Chunk {cidx+1}/{actual_num_chunks}: Tokenizing..."
+
+                sequences = tokenize_texts(chunk_texts, self.tokenizer, max_seq_len)
+                if not sequences:
+                    self.training_status["log"].append(f"Chunk {cidx}: No sequences, skipping")
+                    continue
+
+                self.training_status["log"].append(f"Chunk {cidx}: {len(sequences)} sequences")
+
+                best_loss, timed_out = self._run_chunk_training(
+                    sequences, epochs_per_chunk, lr, batch_size,
+                    grad_accum_steps, warmup_steps, max_seq_len,
+                    cidx, actual_num_chunks, max_minutes_per_chunk,
+                )
+
+                # Save checkpoint after each chunk
+                self._save_checkpoint(datasets=ds_names)
+                self.training_status["log"].append(
+                    f"Chunk {cidx+1}/{actual_num_chunks} complete, best loss: {best_loss:.4f}"
+                )
+
+                # Save split state
+                self._save_split_state({
+                    "mode": mode,
+                    "num_chunks": actual_num_chunks,
+                    "last_completed_chunk": cidx,
+                    "best_loss": best_loss,
+                    "timed_out": timed_out,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+
+                if timed_out:
+                    self.training_status["log"].append(
+                        "Remaining chunks can be trained with resume=true or train_split_next"
+                    )
+                    break
+
+            self.training_status["message"] = (
+                f"Split training complete! {len(chunk_indices)} chunks trained"
+            )
+            self.training_status["running"] = False
+
+            return [{"status": "success", "message": self.training_status["message"],
+                     "chunks_total": actual_num_chunks,
+                     "chunks_trained": len(chunk_indices),
+                     "log": self.training_status["log"]}]
+
+        except Exception as e:
+            import traceback
+            self.training_status["running"] = False
+            self.training_status["message"] = f"Error: {e}"
+            self.training_status["log"].append(traceback.format_exc())
+            self.model.eval()
+            return [{"status": "error", "message": str(e),
+                     "log": self.training_status["log"]}]
+
+    # --------------------------------------------------------
+    # Split training (next chunk only — timeout-safe)
+    # --------------------------------------------------------
+
+    def _handle_train_split_next(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Train only the next unfinished chunk. Call repeatedly to train all chunks
+        without hitting API timeouts."""
+        if self.training_status["running"]:
+            return [{"status": "error", "message": "Training already in progress"}]
+
+        params = data.get("parameters", {})
+        mode = str(params.get("mode", "qa"))
+        num_chunks = int(params.get("num_chunks", 4))
+        samples_per_batch = params.get("samples_per_batch", None)
+        if samples_per_batch is not None:
+            samples_per_batch = int(samples_per_batch)
+        epochs_per_chunk = int(params.get("epochs_per_chunk", 3))
+        lr = float(params.get("lr", 3e-5))
+        batch_size = int(params.get("batch_size", 4))
+        grad_accum_steps = int(params.get("grad_accum_steps", 4))
+        warmup_steps = int(params.get("warmup_steps", 20))
+        max_samples = int(params.get("max_samples_per_dataset", 2000))
+        crafted_repeat = int(params.get("crafted_repeat", 20))
+        dataset_ids = params.get("dataset_ids", None)
+
+        self.training_status = {"running": True, "log": [], "message": "Loading datasets for batch training..."}
+
+        try:
+            # Determine next chunk from saved state
+            state = self._load_split_state()
+            if state and state.get("mode") == mode:
+                next_chunk = state.get("last_completed_chunk", -1) + 1
+            else:
+                next_chunk = 0
+
+            # Load data
+            if dataset_ids:
+                all_texts = self._load_custom_datasets(dataset_ids, max_samples, mode)
+                if mode == "qa" and crafted_repeat > 0:
+                    for _ in range(crafted_repeat):
+                        all_texts.extend(CRAFTED_QA)
+                ds_names = dataset_ids
+            elif mode == "qa":
+                all_texts = self._load_all_qa_texts(max_samples)
+                for _ in range(crafted_repeat):
+                    all_texts.extend(CRAFTED_QA)
+                ds_names = [d["id"] for d in QA_DATASETS_INFO]
+            else:
+                all_texts = self._load_all_general_texts(max_samples)
+                ds_names = [d["id"] for d in DEFAULT_DATASETS]
+
+            if not all_texts:
+                self.training_status["running"] = False
+                return [{"status": "error", "message": "No texts loaded",
+                         "log": self.training_status["log"]}]
+
+            # Split into chunks
+            chunks = self._split_into_chunks(all_texts, num_chunks, samples_per_batch)
+            actual_num_chunks = len(chunks)
+
+            if next_chunk >= actual_num_chunks:
+                self.training_status["running"] = False
+                return [{"status": "completed",
+                         "message": "All chunks already completed. Use split_reset to retrain.",
+                         "chunks_total": actual_num_chunks,
+                         "chunks_completed": actual_num_chunks}]
+
+            # Train this one chunk
+            chunk_texts = chunks[next_chunk]
+            self.training_status["log"].append(
+                f"Training batch {next_chunk+1}/{actual_num_chunks} ({len(chunk_texts)} texts)"
+            )
+
+            max_seq_len = self.config["max_seq_len"]
+            sequences = tokenize_texts(chunk_texts, self.tokenizer, max_seq_len)
+
+            if not sequences:
+                self._save_split_state({
+                    "mode": mode,
+                    "num_chunks": actual_num_chunks,
+                    "last_completed_chunk": next_chunk,
+                    "best_loss": None,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                self.training_status["running"] = False
+                return [{"status": "skipped", "chunk_index": next_chunk,
+                         "chunks_total": actual_num_chunks,
+                         "chunks_remaining": actual_num_chunks - next_chunk - 1}]
+
+            self.training_status["log"].append(f"Batch {next_chunk}: {len(sequences)} sequences")
+
+            best_loss, timed_out = self._run_chunk_training(
+                sequences, epochs_per_chunk, lr, batch_size,
+                grad_accum_steps, warmup_steps, max_seq_len,
+                next_chunk, actual_num_chunks,
+            )
+
+            # Save checkpoint and state
+            self._save_checkpoint(datasets=ds_names)
+
+            self._save_split_state({
+                "mode": mode,
+                "num_chunks": actual_num_chunks,
+                "last_completed_chunk": next_chunk,
+                "best_loss": best_loss,
+                "timed_out": timed_out,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+
+            remaining = actual_num_chunks - next_chunk - 1
+            self.training_status["message"] = (
+                f"Batch {next_chunk+1}/{actual_num_chunks} complete! "
+                f"Loss: {best_loss:.4f}, remaining: {remaining}"
+            )
+            self.training_status["running"] = False
+
+            return [{"status": "success",
+                     "message": self.training_status["message"],
+                     "chunk_index": next_chunk,
+                     "chunks_total": actual_num_chunks,
+                     "chunks_remaining": remaining,
+                     "best_loss": best_loss,
+                     "log": self.training_status["log"]}]
+
+        except Exception as e:
+            import traceback
+            self.training_status["running"] = False
+            self.training_status["message"] = f"Error: {e}"
+            self.training_status["log"].append(traceback.format_exc())
+            self.model.eval()
+            return [{"status": "error", "message": str(e),
+                     "log": self.training_status["log"]}]
+
+    # --------------------------------------------------------
+    # Split status / reset
+    # --------------------------------------------------------
+
+    def _handle_split_status(self) -> List[Dict[str, Any]]:
+        """Return split training progress."""
+        state = self._load_split_state()
+        if state:
+            return [{
+                "status": "ok",
+                "mode": state.get("mode"),
+                "num_chunks": state.get("num_chunks"),
+                "last_completed_chunk": state.get("last_completed_chunk"),
+                "chunks_remaining": state.get("num_chunks", 0) - state.get("last_completed_chunk", -1) - 1,
+                "best_loss": state.get("best_loss"),
+                "timed_out": state.get("timed_out", False),
+                "timestamp": state.get("timestamp"),
+            }]
+        return [{"status": "no_state", "message": "No split training state found"}]
+
+    def _handle_split_reset(self) -> List[Dict[str, Any]]:
+        """Reset split training state to start over."""
+        if os.path.exists(self.split_state_path):
+            os.remove(self.split_state_path)
+            return [{"status": "ok", "message": "Split training state reset"}]
+        return [{"status": "ok", "message": "No state to reset"}]
 
     # --------------------------------------------------------
     # Status
