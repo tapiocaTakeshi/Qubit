@@ -245,7 +245,7 @@ def main():
         num_heads=cfg["num_heads"],
         num_layers=cfg["num_layers"],
         max_seq_len=cfg["max_seq_len"],
-        entangle_strength=cfg.get("entangle_strength", 0.5),
+        lambda_entangle=cfg.get("entangle_strength", cfg.get("lambda_entangle", 0.5)),
         dropout=cfg.get("dropout", 0.1),
     )
     model = NeuroQuantum(model_config)
