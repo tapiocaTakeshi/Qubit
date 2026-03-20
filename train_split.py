@@ -48,7 +48,7 @@ import math
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
-from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer
+from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, migrate_legacy_state_dict
 
 CKPT_PATH = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
 SPLIT_STATE_PATH = os.path.join(os.path.dirname(__file__), "split_training_state.json")
@@ -536,7 +536,8 @@ def main():
         lambda_entangle=config.get("entangle_strength", 0.5),
     )
     model = NeuroQuantum(config=nq_config).to(device)
-    model.load_state_dict(checkpoint["model_state"])
+    migrated = migrate_legacy_state_dict(checkpoint["model_state"], model)
+    model.load_state_dict(migrated)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model loaded: {n_params:,} parameters")
 

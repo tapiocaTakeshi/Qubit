@@ -13,7 +13,7 @@ import json
 import random
 
 sys.path.insert(0, os.path.dirname(__file__))
-from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, get_gpu_adaptive_config
+from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, get_gpu_adaptive_config, migrate_legacy_state_dict
 
 CKPT_PATH = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
 MAX_SAMPLES = 5000
@@ -51,7 +51,8 @@ def main():
         lambda_entangle=config.get("entangle_strength", 0.5),
     )
     model = NeuroQuantum(config=nq_config).to(device)
-    model.load_state_dict(checkpoint["model_state"])
+    migrated = migrate_legacy_state_dict(checkpoint["model_state"], model)
+    model.load_state_dict(migrated)
     print(f"Model loaded: {sum(p.numel() for p in model.parameters()):,} parameters")
 
     # Load cc100-ja

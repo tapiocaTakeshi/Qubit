@@ -38,6 +38,7 @@ try:
         NeuroQuantum,
         NeuroQuantumConfig,
         NeuroQuantumTokenizer,
+        migrate_legacy_state_dict,
     )
     NEUROQUANTUM_AVAILABLE = True
 except ImportError:
@@ -258,7 +259,8 @@ class EndpointHandler:
                 lambda_entangle=self.config.get("entangle_strength", 0.5),
             )
             self.model = NeuroQuantum(config=nq_config).to(self.device)
-            self.model.load_state_dict(checkpoint["model_state"])
+            migrated = migrate_legacy_state_dict(checkpoint["model_state"], self.model)
+            self.model.load_state_dict(migrated)
             self.model.eval()
 
             n_params = sum(p.numel() for p in self.model.parameters())

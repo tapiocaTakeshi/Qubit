@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from cog import BasePredictor, Input
 
-from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer
+from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, migrate_legacy_state_dict
 
 CKPT_PATH = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
 TOKENIZER_PATH = os.path.join(os.path.dirname(__file__), "neuroq_tokenizer.model")
@@ -38,7 +38,8 @@ class Predictor(BasePredictor):
         )
 
         self.model = NeuroQuantum(nq_config)
-        self.model.load_state_dict(checkpoint["model_state"])
+        migrated = migrate_legacy_state_dict(checkpoint["model_state"], self.model)
+        self.model.load_state_dict(migrated)
         self.model.to(self.device)
         self.model.eval()
 
