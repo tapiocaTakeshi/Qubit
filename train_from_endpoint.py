@@ -22,9 +22,9 @@ TOKENIZER_PATH = os.path.join(os.path.dirname(__file__), "neuroq_tokenizer.model
 ENDPOINT_URL = "https://vvcci2ps4y3wfx7m.us-east4.gcp.endpoints.huggingface.cloud"
 
 # Training params
-NUM_CHUNKS = 4
-EPOCHS_PER_CHUNK = 4
-BATCH_SIZE = 2
+NUM_CHUNKS = 8
+EPOCHS_PER_CHUNK = 3
+BATCH_SIZE = 1
 GRAD_ACCUM = 4
 LR = 3e-5
 WARMUP_STEPS = 20
