@@ -283,6 +283,11 @@ class EndpointHandler:
             "num_chunks": 0,
             "mode": "qa",
         }
+
+        # Device selection with CUDA health check
+        self.device = self._select_device()
+        self._init_log.append(f"device={self.device}")
+
         # Look for checkpoint file first to determine architecture
         ckpt_path = self._find_checkpoint(path)
         self._init_log.append(f"ckpt_path={ckpt_path}")
@@ -304,14 +309,54 @@ class EndpointHandler:
         self._init_log.append(f"is_legacy={is_legacy}, NEUROQUANTUM_AVAILABLE={NEUROQUANTUM_AVAILABLE}")
         self._init_log.append(f"saved_config={saved_config}")
 
-        if is_legacy or not NEUROQUANTUM_AVAILABLE:
-            # Legacy mode: use old CharTokenizer + QBNNTransformer
+        if NEUROQUANTUM_AVAILABLE:
+            if is_legacy:
+                # Legacy checkpoint detected — initialize fresh NeuroQuantum model
+                # (ignore old small weights, start fresh with proper dimensions)
+                self._init_log.append("legacy_checkpoint_detected=upgrading_to_neuroquantum")
+                self._init_neuroquantum(path, checkpoint=None, saved_config=None)
+                self._init_log.append("mode=neuroquantum (fresh, legacy checkpoint ignored)")
+            else:
+                # New mode: use NeuroQuantum + SentencePiece
+                self._init_neuroquantum(path, checkpoint, saved_config)
+                self._init_log.append("mode=neuroquantum")
+        else:
+            # Fallback: Legacy mode when NeuroQuantum not available
             self._init_legacy(checkpoint, saved_config)
             self._init_log.append("mode=legacy")
-        else:
-            # New mode: use NeuroQuantum + SentencePiece
-            self._init_neuroquantum(path, checkpoint, saved_config)
-            self._init_log.append("mode=neuroquantum")
+
+    def _select_device(self):
+        """Select device with CUDA health check and CPU fallback."""
+        if torch.cuda.is_available():
+            try:
+                # Quick CUDA health check
+                test = torch.tensor([1.0], device="cuda")
+                _ = test + test
+                del test
+                return "cuda"
+            except RuntimeError:
+                pass
+        return "cpu"
+
+    def _reset_cuda(self):
+        """Attempt to recover from CUDA errors by resetting and falling back to CPU."""
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            test = torch.tensor([1.0], device="cuda")
+            _ = test + test
+            del test
+            self.device = "cuda"
+            return True
+        except Exception:
+            self.device = "cpu"
+            # Move model to CPU
+            if hasattr(self, 'neuroq_model') and self.neuroq_model is not None:
+                self.neuroq_model = self.neuroq_model.cpu()
+                self.model = self.neuroq_model
+            elif hasattr(self, 'model') and self.model is not None:
+                self.model = self.model.cpu()
+            return False
 
     def _init_legacy(self, checkpoint, saved_config):
         """Initialize with legacy architecture for old checkpoints."""
@@ -380,6 +425,8 @@ class EndpointHandler:
         else:
             self._init_log.append(f"no checkpoint to load: checkpoint={checkpoint is not None}, has_model_state={'model_state' in checkpoint if checkpoint else False}")
 
+        # Move to selected device
+        self.neuroq_model = self.neuroq_model.to(self.device)
         self.neuroq_model.eval()
         # For backward-compatible interface
         self.model = self.neuroq_model
@@ -464,6 +511,10 @@ class EndpointHandler:
         if action == "debug":
             return self._handle_debug()
 
+        # Reinit: reset CUDA state and reinitialize model
+        if action == "reinit":
+            return self._handle_reinit()
+
         # Split training
         if action == "split_next":
             split_data = data if data.get("action") else params
@@ -545,13 +596,14 @@ class EndpointHandler:
         return [{
             "status": "ok",
             "architecture": self.architecture,
+            "device": self.device,
             "model_params": n_params,
             "config": {k: v for k, v in self.config.items() if k != "architecture"},
             "checkpoint": ckpt_info,
             "training_history_count": len(training_history),
             "last_training": training_history[-1] if training_history else None,
             "split_training": split_state,
-            "handler_version": "v5_2026_03_21",
+            "handler_version": "v6_2026_03_21",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }]
 
@@ -562,7 +614,24 @@ class EndpointHandler:
             "architecture": self.architecture,
             "config": self.config,
             "model_params": sum(p.numel() for p in self.model.parameters()),
-            "handler_version": "v5_2026_03_21",
+            "handler_version": "v6_2026_03_21",
+        }]
+
+    def _handle_reinit(self) -> List[Dict[str, Any]]:
+        """Reset CUDA state and reinitialize model fresh."""
+        from datetime import datetime, timezone
+        old_device = self.device
+        cuda_recovered = self._reset_cuda()
+        self.device = self._select_device()
+        return [{
+            "status": "reinit_complete",
+            "old_device": old_device,
+            "new_device": self.device,
+            "cuda_recovered": cuda_recovered,
+            "architecture": self.architecture,
+            "model_params": sum(p.numel() for p in self.model.parameters()),
+            "config": self.config,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }]
 
     def _generate_neuroquantum(self, text, temperature, max_new_tokens,
@@ -572,7 +641,11 @@ class EndpointHandler:
         if not tokens:
             return [{"generated_text": ""}]
 
-        device = next(self.neuroq_model.parameters()).device
+        # Clamp token IDs to valid range
+        vocab_size = self.config["vocab_size"]
+        tokens = [min(max(tid, 0), vocab_size - 1) for tid in tokens]
+
+        device = self.device
         input_tensor = torch.tensor([tokens], dtype=torch.long, device=device)
         generated = list(tokens)
 
@@ -756,11 +829,14 @@ class EndpointHandler:
 
         try:
             max_seq_len = self.config["max_seq_len"]
+            vocab_size = self.config["vocab_size"]
 
-            # Tokenize
+            # Tokenize with vocab bounds check
             sequences = []
             for t in texts:
                 ids = self.tokenizer.encode(t, add_special=True)
+                # Clamp token IDs to valid range to prevent CUDA assert
+                ids = [min(max(tid, 0), vocab_size - 1) for tid in ids]
                 if len(ids) <= max_seq_len:
                     if len(ids) >= 4:
                         sequences.append(ids)
@@ -772,8 +848,8 @@ class EndpointHandler:
             if not sequences:
                 return [{"error": "No valid sequences after tokenization"}]
 
-            # Train
-            device = next(self.neuroq_model.parameters()).device
+            # Train (use self.device with fallback)
+            device = self.device
             steps_per_epoch = len(sequences) // batch_size
             total_steps = (steps_per_epoch * epochs) // grad_accum
             optimizer = torch.optim.AdamW(self.neuroq_model.parameters(), lr=lr, weight_decay=0.01)
@@ -876,6 +952,14 @@ class EndpointHandler:
 
             return [{"generated_text": f"Training complete: {len(texts)} texts, {len(sequences)} sequences, {epochs} epochs, final_loss={epoch_losses[-1]}", "status": "success", "epoch_losses": epoch_losses, "sequences": len(sequences), "upload": upload_status}]
 
+        except RuntimeError as e:
+            if "CUDA" in str(e):
+                # CUDA error — attempt recovery by falling back to CPU
+                self._reset_cuda()
+                self._init_log.append(f"CUDA error during training, fell back to {self.device}")
+            self.neuroq_model.eval()
+            return [{"error": f"Training failed: {e}", "traceback": traceback.format_exc(),
+                     "device": self.device, "hint": "CUDA error detected, device switched to CPU. Retry training."}]
         except Exception as e:
             self.neuroq_model.eval()
             return [{"error": f"Training failed: {e}", "traceback": traceback.format_exc()}]
