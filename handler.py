@@ -5,12 +5,19 @@ neuroQ - NeuroQuantum Transformer
 Supports both inference and training via the "action" field:
   - action: "inference" (default) — text generation
   - action: "train"               — fine-tuning on HF datasets
-  - action: "train_qa"            — QA-format fine-tuning
+  - action: "train_qa"            — QA pairs training (qa_pairs format)
+  - action: "train_qa_dataset"    — QA-format fine-tuning on HF datasets
   - action: "train_split"         — split dataset training (chunked)
   - action: "train_split_next"    — train next chunk only (timeout-safe)
   - action: "split_status"        — check split training progress
   - action: "split_reset"         — reset split training state
-  - action: "status"              — check training status
+  - action: "status"              — model status & training info
+
+Action resolution priority:
+  1. data["action"]
+  2. parameters["action"]
+  3. inputs の __xxx__ 形式 (e.g. "__train__")
+  4. デフォルト "inference"
 
 Reference: https://huggingface.co/docs/inference-endpoints/main/en/engines/toolkit#create-a-custom-inference-handler
 """
@@ -221,12 +228,13 @@ class EndpointHandler:
     Supports:
       - action: "inference" (default) — text generation
       - action: "train"               — general dataset training
-      - action: "train_qa"            — QA-format training
+      - action: "train_qa"            — QA pairs training (qa_pairs format)
+      - action: "train_qa_dataset"    — QA-format training on HF datasets
       - action: "train_split"         — split dataset training (chunked)
       - action: "train_split_next"    — train next chunk only (timeout-safe)
       - action: "split_status"        — check split training progress
       - action: "split_reset"         — reset split training state
-      - action: "status"              — check training status
+      - action: "status"              — model status & training info
     """
 
     def __init__(self, path: str = ""):
@@ -289,40 +297,66 @@ class EndpointHandler:
             else:
                 raise RuntimeError("neuroquantum_layered.py not available")
 
+    def _resolve_action(self, data: Dict[str, Any]) -> str:
+        """Resolve action with priority: data["action"] > parameters["action"] > inputs __xxx__ > "inference"."""
+        # 1. Top-level action field
+        action = data.get("action")
+        if action:
+            return action
+
+        # 2. parameters.action
+        params = data.get("parameters", {})
+        action = params.get("action") if isinstance(params, dict) else None
+        if action:
+            return action
+
+        # 3. inputs の __xxx__ 形式 (e.g. "__train__", "__status__")
+        inputs = data.get("inputs", "")
+        if isinstance(inputs, str):
+            stripped = inputs.strip()
+            if stripped.startswith("__") and stripped.endswith("__") and len(stripped) > 4:
+                return stripped[2:-2]
+
+        # 4. デフォルト
+        return "inference"
+
     def __call__(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Route request based on "action" field.
 
-        Args:
-            data: Dictionary with:
-                - "action" (str): "inference" | "train" | "train_qa" | "train_split" | "train_split_next" | "split_status" | "split_reset" | "status"
-                - For inference:
-                    - "inputs" (str): The input prompt text
-                    - "parameters" (dict): Generation parameters
-                - For train:
-                    - "parameters" (dict): Training hyperparameters
-                - For train_qa:
-                    - "parameters" (dict): QA training hyperparameters
+        Action resolution priority:
+            1. data["action"]
+            2. parameters["action"]
+            3. inputs の __xxx__ 形式 (e.g. "__train__")
+            4. デフォルト "inference"
+
+        Supported actions:
+            inference, train, train_qa, train_split, train_split_next,
+            split_status, split_reset, status
 
         Returns:
             List of dicts with results.
         """
-        action = data.get("action", "inference")
+        action = self._resolve_action(data)
 
-        if action == "train":
-            return self._handle_train(data)
-        elif action == "train_qa":
-            return self._handle_train_qa(data)
-        elif action == "train_split":
-            return self._handle_train_split(data)
-        elif action == "train_split_next":
-            return self._handle_train_split_next(data)
-        elif action == "split_status":
-            return self._handle_split_status()
-        elif action == "split_reset":
-            return self._handle_split_reset()
-        elif action == "status":
-            return self._handle_status()
+        # Action routing table
+        _routes = {
+            "train":            self._handle_train,
+            "train_qa":         self._train_qa,
+            "train_qa_dataset": self._handle_train_qa,
+            "train_split":      self._handle_train_split,
+            "train_split_next": self._handle_train_split_next,
+        }
+        _routes_no_data = {
+            "split_status": self._handle_split_status,
+            "split_reset":  self._handle_split_reset,
+            "status":       self._handle_status,
+        }
+
+        if action in _routes:
+            return _routes[action](data)
+        elif action in _routes_no_data:
+            return _routes_no_data[action]()
         else:
             return self._handle_inference(data)
 
@@ -593,6 +627,87 @@ class EndpointHandler:
             self.model.eval()
             return [{"status": "error", "message": str(e),
                      "log": self.training_status["log"]}]
+
+    # --------------------------------------------------------
+    # Training (QA pairs — lightweight API)
+    # --------------------------------------------------------
+
+    def _train_qa(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Train on user-supplied QA pairs.
+
+        Expects parameters.qa_pairs: [{"question": "...", "answer": "..."}, ...]
+        Optional parameters.repeat (default 3): duplicate data for better learning on small sets.
+        """
+        if self.training_status["running"]:
+            return [{"status": "error", "message": "Training already in progress"}]
+
+        params = data.get("parameters", {})
+        qa_pairs = params.get("qa_pairs", [])
+        if not qa_pairs:
+            return [{"status": "error", "message": "parameters.qa_pairs is required (list of {question, answer})"}]
+
+        repeat = int(params.get("repeat", 3))
+        epochs = int(params.get("epochs", 20))
+        lr = float(params.get("lr", 3e-5))
+        batch_size = int(params.get("batch_size", 4))
+        grad_accum_steps = int(params.get("grad_accum_steps", 4))
+        warmup_steps = int(params.get("warmup_steps", 10))
+
+        self.training_status = {"running": True, "log": [], "message": "Preparing QA pairs..."}
+
+        try:
+            # Format QA pairs into training texts
+            texts = []
+            for pair in qa_pairs:
+                q = pair.get("question", "").strip()
+                a = pair.get("answer", "").strip()
+                if q and a:
+                    texts.append(f"質問: {q}\n回答: {a}")
+
+            if not texts:
+                self.training_status["running"] = False
+                return [{"status": "error", "message": "No valid QA pairs found"}]
+
+            # Repeat for better learning on small datasets
+            texts = texts * repeat
+            self.training_status["log"].append(
+                f"QA pairs: {len(qa_pairs)} original x {repeat} repeat = {len(texts)} texts"
+            )
+
+            self._train_from_texts(
+                texts, epochs=epochs, lr=lr, batch_size=batch_size,
+                grad_accum_steps=grad_accum_steps, warmup_steps=warmup_steps,
+            )
+
+            self._save_checkpoint(
+                datasets=["user_qa_pairs"],
+                extra_meta={"qa_training": True, "qa_pairs_count": len(qa_pairs)},
+            )
+
+            return [{"status": "success", "message": self.training_status["message"],
+                     "log": self.training_status["log"]}]
+
+        except Exception as e:
+            import traceback
+            self.training_status["running"] = False
+            self.training_status["message"] = f"Error: {e}"
+            self.training_status["log"].append(traceback.format_exc())
+            self.model.eval()
+            return [{"status": "error", "message": str(e),
+                     "log": self.training_status["log"]}]
+
+    def _train_from_texts(self, texts, epochs=20, lr=3e-5, batch_size=4,
+                          grad_accum_steps=4, warmup_steps=10):
+        """Tokenize texts and run the shared training loop."""
+        self.training_status["message"] = "Tokenizing..."
+        max_seq_len = self.config["max_seq_len"]
+        sequences = tokenize_texts(texts, self.tokenizer, max_seq_len)
+        self.training_status["log"].append(f"Training sequences: {len(sequences)}")
+
+        self._run_training_loop(
+            sequences, epochs, lr, batch_size, grad_accum_steps,
+            warmup_steps, max_seq_len,
+        )
 
     # --------------------------------------------------------
     # Training loop (shared)
@@ -1298,9 +1413,49 @@ class EndpointHandler:
     # --------------------------------------------------------
 
     def _handle_status(self) -> List[Dict[str, Any]]:
-        """Return current training status."""
+        """Return comprehensive model status information."""
+        n_params = sum(p.numel() for p in self.model.parameters())
+
+        # Checkpoint info
+        ckpt_info = None
+        training_history_count = 0
+        training_history_latest = None
+        if self.ckpt_path and os.path.isfile(self.ckpt_path):
+            ckpt_stat = os.stat(self.ckpt_path)
+            ckpt_info = {
+                "path": self.ckpt_path,
+                "size_mb": round(ckpt_stat.st_size / (1024 * 1024), 2),
+                "modified": datetime.fromtimestamp(
+                    ckpt_stat.st_mtime, tz=timezone.utc
+                ).isoformat(),
+            }
+            try:
+                ckpt = torch.load(self.ckpt_path, map_location="cpu")
+                trained_at = ckpt.get("trained_at")
+                if trained_at:
+                    ckpt_info["trained_at"] = trained_at
+                training_log = ckpt.get("training_log", [])
+                training_history_count = len(training_log)
+                if training_log:
+                    training_history_latest = training_log[-1]
+            except Exception:
+                pass
+
+        # Split training state
+        split_state = self._load_split_state()
+
         return [{
             "status": "running" if self.training_status["running"] else "idle",
             "message": self.training_status["message"],
             "log": self.training_status["log"],
+            "architecture": self.config.get("architecture", "neuroquantum"),
+            "model_params": n_params,
+            "config": self.config,
+            "checkpoint": ckpt_info,
+            "training_history": {
+                "count": training_history_count,
+                "latest": training_history_latest,
+            },
+            "split_training": split_state,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }]
