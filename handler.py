@@ -431,28 +431,37 @@ class EndpointHandler:
         Returns:
             List of dicts with 'generated_text' or training status.
         """
+        # Resolve action from multiple possible locations:
+        # 1. data["action"] (direct)
+        # 2. data["parameters"]["action"]
+        # 3. data["inputs"] as special command string (e.g. "__debug__", "__train__")
+        params = data.get("parameters", {})
+        action = data.get("action") or params.get("action", "")
+        inputs_raw = data.get("inputs", "")
+        if isinstance(inputs_raw, str) and inputs_raw.startswith("__") and inputs_raw.endswith("__"):
+            action = action or inputs_raw.strip("_")
+
         # Debug: return init log
-        if data.get("action") == "debug" or data.get("inputs") == "__debug__":
+        if action == "debug":
             return [{"init_log": self._init_log, "architecture": self.architecture,
                      "config": self.config, "model_params": sum(p.numel() for p in self.model.parameters()),
-                     "handler_version": "v3_2026_03_12"}]
+                     "handler_version": "v4_2026_03_21"}]
 
         # Support split training actions
-        action = data.get("action") or data.get("parameters", {}).get("action", "")
         if action == "split_next":
-            split_data = data if data.get("action") else data.get("parameters", {})
+            split_data = data if data.get("action") else params
             return self.split_train_next(split_data)
         if action == "split_reset":
             return self.split_train_reset()
 
-        # Support training via both top-level and parameters.action
-        if data.get("action") == "train":
-            return self.train(data)
-        params = data.get("parameters", {})
-        if params.get("action") == "train":
-            # Merge parameters into top-level for train()
-            train_data = dict(params)
+        # Support training via action or inputs-based training data
+        if action == "train":
+            train_data = params if params.get("action") == "train" else data
             return self.train(train_data)
+
+        # Support direct text training: send training texts via inputs
+        if action == "train_texts":
+            return self._train_from_texts(data)
 
         inputs = data.get("inputs", data)
         if isinstance(inputs, list):
@@ -557,6 +566,170 @@ class EndpointHandler:
         generated_text = self.tokenizer.decode(generated_ids)
 
         return [{"generated_text": generated_text}]
+
+    def _train_from_texts(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Train directly from text data sent in the request body.
+        No need to load from HF datasets - client sends the texts directly.
+
+        Request format:
+            {
+                "inputs": "__train_texts__",
+                "parameters": {
+                    "action": "train_texts",
+                    "texts": ["text1", "text2", ...],
+                    "epochs": 4,
+                    "lr": 3e-5,
+                    "batch_size": 4,
+                    "grad_accum_steps": 4
+                }
+            }
+        """
+        import traceback
+        import math
+        import random
+        import gc
+        from datetime import datetime, timezone
+
+        params = data.get("parameters", {})
+        texts = params.get("texts", [])
+        if not texts:
+            return [{"error": "No texts provided. Send texts in parameters.texts"}]
+
+        epochs = int(params.get("epochs", 4))
+        lr = float(params.get("lr", 3e-5))
+        batch_size = int(params.get("batch_size", 4))
+        grad_accum = int(params.get("grad_accum_steps", 4))
+        warmup_steps = int(params.get("warmup_steps", 30))
+
+        if not NEUROQUANTUM_AVAILABLE or self.architecture != "neuroquantum":
+            return [{"error": "NeuroQuantum architecture required for text training"}]
+
+        try:
+            max_seq_len = self.config["max_seq_len"]
+
+            # Tokenize
+            sequences = []
+            for t in texts:
+                ids = self.tokenizer.encode(t, add_special=True)
+                if len(ids) <= max_seq_len:
+                    if len(ids) >= 4:
+                        sequences.append(ids)
+                else:
+                    stride = max(max_seq_len // 2, 1)
+                    for start in range(0, len(ids) - max_seq_len + 1, stride):
+                        sequences.append(ids[start:start + max_seq_len])
+
+            if not sequences:
+                return [{"error": "No valid sequences after tokenization"}]
+
+            # Train
+            device = next(self.neuroq_model.parameters()).device
+            steps_per_epoch = len(sequences) // batch_size
+            total_steps = (steps_per_epoch * epochs) // grad_accum
+            optimizer = torch.optim.AdamW(self.neuroq_model.parameters(), lr=lr, weight_decay=0.01)
+
+            self.neuroq_model.train()
+            global_step = 0
+            epoch_losses = []
+
+            for epoch in range(epochs):
+                random.shuffle(sequences)
+                total_loss = 0
+                n_batches = 0
+                optimizer.zero_grad()
+
+                for i in range(0, len(sequences), batch_size):
+                    batch_seqs = sequences[i:i + batch_size]
+                    if not batch_seqs:
+                        continue
+
+                    max_len = min(max(len(s) for s in batch_seqs), max_seq_len)
+                    input_ids = []
+                    labels = []
+                    for s in batch_seqs:
+                        ids = s[:max_len]
+                        pad_len = max_len - len(ids)
+                        input_ids.append(ids + [self.tokenizer.pad_id] * pad_len)
+                        labels.append(ids + [-100] * pad_len)
+
+                    input_ids_t = torch.tensor(input_ids, dtype=torch.long, device=device)
+                    labels_t = torch.tensor(labels, dtype=torch.long, device=device)
+
+                    logits = self.neuroq_model(input_ids_t)
+                    shift_logits = logits[..., :-1, :].contiguous()
+                    shift_labels = labels_t[..., 1:].contiguous()
+                    loss = F.cross_entropy(
+                        shift_logits.view(-1, self.config["vocab_size"]),
+                        shift_labels.view(-1),
+                        ignore_index=-100
+                    )
+                    loss = loss / grad_accum
+                    loss.backward()
+
+                    total_loss += loss.item() * grad_accum
+                    n_batches += 1
+
+                    if n_batches % grad_accum == 0:
+                        # Learning rate schedule
+                        if global_step < warmup_steps:
+                            cur_lr = lr * global_step / max(warmup_steps, 1)
+                        else:
+                            progress = (global_step - warmup_steps) / max(total_steps - warmup_steps, 1)
+                            cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+                            cur_lr = lr * (0.1 + 0.9 * cosine_decay)
+                        for pg in optimizer.param_groups:
+                            pg['lr'] = cur_lr
+                        torch.nn.utils.clip_grad_norm_(self.neuroq_model.parameters(), 1.0)
+                        optimizer.step()
+                        optimizer.zero_grad()
+                        global_step += 1
+
+                if n_batches % grad_accum != 0:
+                    torch.nn.utils.clip_grad_norm_(self.neuroq_model.parameters(), 1.0)
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    global_step += 1
+
+                avg_loss = total_loss / max(n_batches, 1)
+                epoch_losses.append(round(avg_loss, 4))
+
+            self.neuroq_model.eval()
+            del optimizer
+            gc.collect()
+
+            # Save checkpoint
+            ckpt_path = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
+            torch.save({
+                "model_state": self.neuroq_model.state_dict(),
+                "config": self.config,
+                "trained_at": datetime.now(timezone.utc).isoformat(),
+            }, ckpt_path)
+
+            # Upload if HF_TOKEN available
+            upload_status = "skipped"
+            token = os.environ.get("HF_TOKEN")
+            if token:
+                try:
+                    from huggingface_hub import HfApi
+                    repo_id = os.environ.get("REPOSITORY_ID", "tapiocaTakeshi/Qubit")
+                    api = HfApi(token=token)
+                    api.upload_file(
+                        path_or_fileobj=ckpt_path,
+                        path_in_repo="neuroq_checkpoint.pt",
+                        repo_id=repo_id,
+                        repo_type="model",
+                        commit_message=f"Update checkpoint after train_texts ({len(texts)} texts)"
+                    )
+                    upload_status = "uploaded"
+                except Exception as e:
+                    upload_status = f"failed: {e}"
+
+            return [{"generated_text": f"Training complete: {len(texts)} texts, {len(sequences)} sequences, {epochs} epochs, final_loss={epoch_losses[-1]}", "status": "success", "epoch_losses": epoch_losses, "sequences": len(sequences), "upload": upload_status}]
+
+        except Exception as e:
+            self.neuroq_model.eval()
+            return [{"error": f"Training failed: {e}", "traceback": traceback.format_exc()}]
 
     def train(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         from transformers import Trainer, TrainingArguments, TrainerCallback
