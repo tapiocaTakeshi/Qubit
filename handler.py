@@ -422,47 +422,69 @@ class EndpointHandler:
 
     def __call__(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Handle an inference or training request.
+        Handle inference, training, or status requests.
 
-        Args:
-            data: Request body with 'inputs' key and optional 'parameters'.
-                  Alternatively, for training: {"action": "train", "dataset_id": "...", ...}
+        Action routing:
+            "inference" (default) — テキスト生成（従来通り）
+            "train"              — 一般データセットによる学習
+            "train_qa"           — QA形式データでの学習
+            "train_texts"        — テキストデータを直接送信して学習
+            "status"             — 学習状況・モデル情報の確認
+            "debug"              — 初期化ログ等の詳細情報
+            "split_next"         — 分割学習の次チャンク実行
+            "split_reset"        — 分割学習状態のリセット
 
-        Returns:
-            List of dicts with 'generated_text' or training status.
+        Request format:
+            {
+                "inputs": "<prompt or __action__>",
+                "parameters": {
+                    "action": "<action>",
+                    ...action-specific params...
+                }
+            }
         """
-        # Resolve action from multiple possible locations:
-        # 1. data["action"] (direct)
-        # 2. data["parameters"]["action"]
-        # 3. data["inputs"] as special command string (e.g. "__debug__", "__train__")
+        # ── Resolve action ──────────────────────────────────────
+        # Priority: data["action"] > parameters["action"] > inputs command string
         params = data.get("parameters", {})
         action = data.get("action") or params.get("action", "")
         inputs_raw = data.get("inputs", "")
-        if isinstance(inputs_raw, str) and inputs_raw.startswith("__") and inputs_raw.endswith("__"):
-            action = action or inputs_raw.strip("_")
+        if not action and isinstance(inputs_raw, str) and inputs_raw.startswith("__") and inputs_raw.endswith("__"):
+            action = inputs_raw.strip("_")
 
-        # Debug: return init log
+        # Default to inference when no action specified
+        if not action:
+            action = "inference"
+
+        # ── Action routing ──────────────────────────────────────
+        # Status: return model info, training state, health
+        if action == "status":
+            return self._handle_status()
+
+        # Debug: return detailed init log
         if action == "debug":
-            return [{"init_log": self._init_log, "architecture": self.architecture,
-                     "config": self.config, "model_params": sum(p.numel() for p in self.model.parameters()),
-                     "handler_version": "v4_2026_03_21"}]
+            return self._handle_debug()
 
-        # Support split training actions
+        # Split training
         if action == "split_next":
             split_data = data if data.get("action") else params
             return self.split_train_next(split_data)
         if action == "split_reset":
             return self.split_train_reset()
 
-        # Support training via action or inputs-based training data
+        # Training: general dataset
         if action == "train":
             train_data = params if params.get("action") == "train" else data
             return self.train(train_data)
 
-        # Support direct text training: send training texts via inputs
+        # Training: QA format data
+        if action == "train_qa":
+            return self._train_qa(data)
+
+        # Training: direct text data
         if action == "train_texts":
             return self._train_from_texts(data)
 
+        # ── Inference (default) ─────────────────────────────────
         inputs = data.get("inputs", data)
         if isinstance(inputs, list):
             inputs = inputs[0] if inputs else ""
@@ -481,6 +503,67 @@ class EndpointHandler:
             return self._generate_legacy(
                 inputs, temperature, max_new_tokens, top_k, top_p, repetition_penalty
             )
+
+    # ── Status & Debug handlers ─────────────────────────────
+
+    def _handle_status(self) -> List[Dict[str, Any]]:
+        """Return model status, training state, and health info."""
+        import json
+        from datetime import datetime, timezone
+
+        n_params = sum(p.numel() for p in self.model.parameters())
+
+        # Load training history if available
+        history_path = os.path.join(os.path.dirname(__file__), "training_history.json")
+        training_history = []
+        if os.path.exists(history_path):
+            try:
+                with open(history_path, "r") as f:
+                    training_history = json.load(f)
+            except Exception:
+                pass
+
+        # Check checkpoint info
+        ckpt_path = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
+        ckpt_info = {}
+        if os.path.exists(ckpt_path):
+            ckpt_info["size_mb"] = round(os.path.getsize(ckpt_path) / (1024 * 1024), 1)
+            try:
+                ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+                ckpt_info["trained_at"] = ckpt.get("trained_at", "unknown")
+                ckpt_info["datasets"] = ckpt.get("datasets", [])
+            except Exception:
+                pass
+
+        # Split training state
+        split_state = {
+            "current_index": self._split_state.get("current_index", 0),
+            "num_chunks": self._split_state.get("num_chunks", 0),
+            "mode": self._split_state.get("mode", "idle"),
+        }
+
+        return [{
+            "status": "ok",
+            "architecture": self.architecture,
+            "model_params": n_params,
+            "config": {k: v for k, v in self.config.items() if k != "architecture"},
+            "checkpoint": ckpt_info,
+            "training_history_count": len(training_history),
+            "last_training": training_history[-1] if training_history else None,
+            "split_training": split_state,
+            "handler_version": "v5_2026_03_21",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }]
+
+    def _handle_debug(self) -> List[Dict[str, Any]]:
+        """Return detailed debug/init information."""
+        return [{
+            "init_log": self._init_log,
+            "architecture": self.architecture,
+            "config": self.config,
+            "model_params": sum(p.numel() for p in self.model.parameters()),
+            "handler_version": "v5_2026_03_21",
+        }]
 
     def _generate_neuroquantum(self, text, temperature, max_new_tokens,
                                 top_k, top_p, repetition_penalty):
@@ -566,6 +649,72 @@ class EndpointHandler:
         generated_text = self.tokenizer.decode(generated_ids)
 
         return [{"generated_text": generated_text}]
+
+    # ── Training handlers ───────────────────────────────────
+
+    def _train_qa(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Train with QA-format data. Accepts question-answer pairs and
+        formats them for optimal learning.
+
+        Request format:
+            {
+                "inputs": "__train_qa__",
+                "parameters": {
+                    "action": "train_qa",
+                    "qa_pairs": [
+                        {"question": "日本の首都は？", "answer": "東京です。"},
+                        ...
+                    ],
+                    // OR plain texts in QA format:
+                    "texts": ["質問: ...\n回答: ...", ...],
+                    "epochs": 6,
+                    "lr": 3e-5,
+                    "batch_size": 4,
+                    "grad_accum_steps": 4,
+                    "repeat": 3
+                }
+            }
+        """
+        params = data.get("parameters", {})
+        qa_pairs = params.get("qa_pairs", [])
+        texts = params.get("texts", [])
+        repeat = int(params.get("repeat", 3))
+
+        # Convert qa_pairs to formatted texts
+        formatted_texts = list(texts)  # Start with any raw texts
+        for qa in qa_pairs:
+            q = qa.get("question", qa.get("q", ""))
+            a = qa.get("answer", qa.get("a", ""))
+            if q and a:
+                formatted_texts.append(f"質問: {q}\n回答: {a}")
+
+        if not formatted_texts:
+            return [{"error": "No QA data provided. Send qa_pairs or texts in parameters."}]
+
+        # Repeat QA data for better learning (QA pairs are typically small)
+        expanded_texts = formatted_texts * repeat
+
+        # Delegate to _train_from_texts with the expanded data
+        train_data = {
+            "parameters": {
+                "texts": expanded_texts,
+                "epochs": params.get("epochs", 6),
+                "lr": params.get("lr", 3e-5),
+                "batch_size": params.get("batch_size", 4),
+                "grad_accum_steps": params.get("grad_accum_steps", 4),
+                "warmup_steps": params.get("warmup_steps", 30),
+            }
+        }
+        result = self._train_from_texts(train_data)
+
+        # Enrich response with QA-specific info
+        if result and isinstance(result, list) and result[0].get("status") == "success":
+            result[0]["qa_pairs_count"] = len(formatted_texts)
+            result[0]["repeat"] = repeat
+            result[0]["total_texts"] = len(expanded_texts)
+
+        return result
 
     def _train_from_texts(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
