@@ -74,6 +74,12 @@ def run_handler(event):
     if "parameters" in job_input:
         data["parameters"] = job_input["parameters"]
 
+    # Pass through inference parameters that may be at top level
+    for key in ("temperature", "max_new_tokens", "top_k", "top_p",
+                "repetition_penalty"):
+        if key in job_input:
+            data.setdefault("parameters", {})[key] = job_input[key]
+
     # Pass through any extra fields (for training payloads)
     for key in ("qa_pairs", "dataset_ids", "epochs", "lr", "batch_size",
                 "mode", "num_chunks", "resume"):

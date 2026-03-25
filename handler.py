@@ -376,7 +376,7 @@ class EndpointHandler:
         inputs = data.get("inputs", data.get("prompt", ""))
         if isinstance(inputs, list):
             inputs = inputs[0] if inputs else ""
-        inputs = f"<bos>{str(inputs)}<eos>"
+        inputs = str(inputs)
 
         params = data.get("parameters", {})
         temperature = float(params.get("temperature", 0.7))
