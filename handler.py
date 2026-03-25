@@ -378,7 +378,7 @@ class EndpointHandler:
         top_p = float(params.get("top_p", 0.9))
         repetition_penalty = float(params.get("repetition_penalty", 1.3))
 
-        tokens = self.tokenizer.encode(inputs, add_special=True)
+        tokens = self.tokenizer.encode(inputs, add_special=True, add_boundary=True)
         if not tokens:
             return [{"generated_text": ""}]
 
