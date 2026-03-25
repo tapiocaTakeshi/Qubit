@@ -26,4 +26,4 @@ ENV PYTHONUNBUFFERED=1
 ENV MODEL_DIR=/app
 
 # RunPodのサーバーレスハンドラーを起動
-CMD ["python", "-u", "runpod_handler.py"]
+CMD ["python", "-u", "handler.py"]

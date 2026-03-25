@@ -1,5 +1,5 @@
 """
-Custom Handler for HuggingFace Inference Endpoints
+Custom Handler for HuggingFace Inference Endpoints & RunPod Serverless
 neuroQ - NeuroQuantum Transformer
 
 Supports both inference and training via the "action" field:
@@ -19,7 +19,14 @@ Action resolution priority:
   3. inputs の __xxx__ 形式 (e.g. "__train__")
   4. デフォルト "inference"
 
-Reference: https://huggingface.co/docs/inference-endpoints/main/en/engines/toolkit#create-a-custom-inference-handler
+RunPod Serverless:
+  このファイルを直接実行すると RunPod サーバーレスハンドラーとして起動します。
+    python handler.py
+  RunPod の入力形式:
+    {"input": {"prompt": "...", "action": "...", "parameters": {...}}}
+
+HuggingFace Inference Endpoints:
+  Reference: https://huggingface.co/docs/inference-endpoints/main/en/engines/toolkit#create-a-custom-inference-handler
 """
 
 import os
@@ -1459,3 +1466,78 @@ class EndpointHandler:
             "split_training": split_state,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }]
+
+
+# ============================================================
+# RunPod Serverless Entry Point
+# ============================================================
+
+def _runpod_handler(event):
+    """
+    RunPod serverless handler function.
+
+    Translates RunPod input format into EndpointHandler format and returns
+    the result. Called by runpod.serverless.start() when this file is
+    executed directly.
+
+    Expected input format:
+        {
+            "input": {
+                "prompt": "こんにちは",
+                "action": "inference",       # optional
+                "parameters": {              # optional
+                    "temperature": 0.7,
+                    "max_new_tokens": 100,
+                    "top_k": 40,
+                    "top_p": 0.9,
+                    "repetition_penalty": 1.3
+                }
+            }
+        }
+
+    Supported actions:
+        inference (default), train, train_qa, train_qa_dataset,
+        train_split, train_split_next, split_status, split_reset, status
+    """
+    job_input = event.get("input", {})
+
+    # Translate RunPod input to EndpointHandler format
+    data = {}
+
+    # Action
+    if "action" in job_input:
+        data["action"] = job_input["action"]
+
+    # Inputs (prompt text)
+    if "prompt" in job_input:
+        data["inputs"] = job_input["prompt"]
+    elif "inputs" in job_input:
+        data["inputs"] = job_input["inputs"]
+
+    # Parameters
+    if "parameters" in job_input:
+        data["parameters"] = job_input["parameters"]
+
+    # Pass through extra fields (for training payloads)
+    for key in ("qa_pairs", "dataset_ids", "epochs", "lr", "batch_size",
+                "mode", "num_chunks", "resume"):
+        if key in job_input:
+            data.setdefault("parameters", {})[key] = job_input[key]
+
+    # Call the EndpointHandler
+    result = _global_handler(data)
+
+    # RunPod expects a dict or list, not wrapped in extra list
+    if isinstance(result, list) and len(result) == 1:
+        return result[0]
+    return result
+
+
+if __name__ == "__main__":
+    import runpod
+
+    MODEL_DIR = os.environ.get("MODEL_DIR", "/app")
+    _global_handler = EndpointHandler(path=MODEL_DIR)
+    print(f"[handler] RunPod serverless mode — model loaded from {MODEL_DIR}")
+
+    runpod.serverless.start({"handler": _runpod_handler})
