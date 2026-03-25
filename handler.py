@@ -619,17 +619,72 @@ class EndpointHandler:
 
     def _handle_reinit(self) -> List[Dict[str, Any]]:
         """Reset CUDA state and reinitialize model fresh."""
+        import gc
         from datetime import datetime, timezone
         old_device = self.device
-        cuda_recovered = self._reset_cuda()
-        self.device = self._select_device()
+
+        # Force cleanup of existing model to free GPU memory
+        if hasattr(self, 'neuroq_model') and self.neuroq_model is not None:
+            self.neuroq_model.cpu()
+            del self.neuroq_model
+            self.neuroq_model = None
+        if hasattr(self, 'model') and self.model is not None:
+            self.model.cpu()
+            del self.model
+            self.model = None
+        gc.collect()
+
+        # Reset CUDA
+        cuda_recovered = False
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            torch.cuda.synchronize()
+            # Test CUDA
+            test = torch.tensor([1.0], device="cuda")
+            _ = test + test
+            del test
+            torch.cuda.empty_cache()
+            self.device = "cuda"
+            cuda_recovered = True
+        except Exception:
+            self.device = "cpu"
+
+        # Rebuild model from checkpoint
+        model_dir = os.environ.get("MODEL_DIR", "/repository")
+        checkpoint_path = self._find_checkpoint(model_dir)
+        if checkpoint_path and os.path.isfile(checkpoint_path):
+            try:
+                ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+                saved_config = ckpt.get("config", {})
+                if saved_config:
+                    self.config.update(saved_config)
+                nq_config = NeuroQuantumConfig(
+                    vocab_size=self.config["vocab_size"],
+                    embed_dim=self.config["embed_dim"],
+                    hidden_dim=self.config.get("hidden_dim", self.config["embed_dim"] * 2),
+                    num_heads=self.config["num_heads"],
+                    num_layers=self.config["num_layers"],
+                    max_seq_len=self.config["max_seq_len"],
+                    dropout=self.config.get("dropout", 0.1),
+                    lambda_entangle=self.config.get("entangle_strength", 0.5),
+                )
+                self.neuroq_model = NeuroQuantum(config=nq_config)
+                if "model_state_dict" in ckpt:
+                    self.neuroq_model.load_state_dict(ckpt["model_state_dict"], strict=False)
+                self.neuroq_model.to(self.device)
+                self.neuroq_model.eval()
+                self.model = self.neuroq_model
+            except Exception as e:
+                return [{"status": "reinit_failed", "error": str(e)}]
+
         return [{
             "status": "reinit_complete",
             "old_device": old_device,
             "new_device": self.device,
             "cuda_recovered": cuda_recovered,
             "architecture": self.architecture,
-            "model_params": sum(p.numel() for p in self.model.parameters()),
+            "model_params": sum(p.numel() for p in self.model.parameters()) if self.model else 0,
             "config": self.config,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }]
@@ -1059,10 +1114,13 @@ class EndpointHandler:
 
         # Tokenize texts into sequences
         class SeqDataset(torch.utils.data.Dataset):
-            def __init__(self, texts, tokenizer, max_seq_len):
+            def __init__(self, texts, tokenizer, max_seq_len, vocab_size=None):
                 self.data = []
                 for t in texts:
                     ids = tokenizer.encode(t, add_special=True)
+                    # Clamp token IDs to valid range to prevent CUDA assert
+                    if vocab_size is not None:
+                        ids = [min(max(tid, 0), vocab_size - 1) for tid in ids]
                     # Truncate or create sliding windows for long texts
                     if len(ids) <= max_seq_len:
                         if len(ids) >= 4:
@@ -1081,7 +1139,7 @@ class EndpointHandler:
                 ids = self.data[idx]
                 return {"input_ids": ids, "labels": ids.copy()}
 
-        train_dataset = SeqDataset(texts, self.tokenizer, max_seq_len)
+        train_dataset = SeqDataset(texts, self.tokenizer, max_seq_len, vocab_size=self.config["vocab_size"])
 
         def collate_fn(batch):
             max_len = min(max(len(x["input_ids"]) for x in batch), max_seq_len)
