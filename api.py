@@ -173,7 +173,7 @@ def generate_text(prompt: str, max_new_tokens: int = 100, temperature: float = 0
     """Generate text from prompt."""
     global model, tokenizer, config, device
 
-    prompt = f"<s>{prompt}</s>"
+    prompt = f"<bos>{prompt}<eos>"
     tokens = tokenizer.encode(prompt, add_special=True)
     input_tensor = torch.tensor([tokens], dtype=torch.long, device=device)
     generated = list(tokens)
