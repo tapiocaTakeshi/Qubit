@@ -53,6 +53,7 @@ class Predictor(BasePredictor):
         repetition_penalty: float = Input(description="Repetition penalty", default=1.3, ge=1.0, le=3.0),
     ) -> str:
         """Generate text from a prompt."""
+        prompt = f"<s>{prompt}</s>"
         tokens = self.tokenizer.encode(prompt, add_special=True)
         input_tensor = torch.tensor([tokens], dtype=torch.long, device=self.device)
         generated = list(tokens)
