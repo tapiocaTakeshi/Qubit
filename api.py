@@ -98,6 +98,27 @@ class TrainSplitRequest(BaseModel):
     resume: bool = False
 
 
+class RunPodTrainRequest(BaseModel):
+    """RunPod経由でHuggingFaceデータセットの学習を実行するリクエスト。"""
+    action: str = "train"  # train, train_qa_dataset, train_split, train_split_next
+    dataset_ids: Optional[List[str]] = None
+    dataset_id: Optional[str] = None
+    mode: str = "qa"  # for split training: "qa" or "general"
+    epochs: int = 10
+    lr: float = 1e-4
+    batch_size: int = 4
+    grad_accum_steps: int = 8
+    warmup_steps: int = 100
+    max_samples_per_dataset: int = 5000
+    num_chunks: int = 4
+    samples_per_batch: Optional[int] = None
+    epochs_per_chunk: int = 5
+    crafted_repeat: int = 20
+    max_minutes_per_chunk: Optional[float] = None
+    runpod_endpoint_id: Optional[str] = None  # override env var
+    timeout: int = 3600
+
+
 class TrainSplitNextRequest(BaseModel):
     """1チャンクだけ学習するリクエスト。APIタイムアウト防止用。"""
     mode: str = "qa"
@@ -1631,6 +1652,143 @@ async def reload_model():
         return {"status": "reloaded", "message": "Model reloaded from checkpoint"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========================================
+# RunPod HuggingFace Dataset Training
+# ========================================
+
+@app.post("/train/runpod")
+async def train_runpod(req: RunPodTrainRequest, background_tasks: BackgroundTasks):
+    """RunPod経由でHuggingFaceデータセットの学習を実行。
+
+    RunPodサーバーレスエンドポイントにトレーニングジョブを送信し、
+    HuggingFaceデータセットを使用してモデルを学習させます。
+
+    対応アクション:
+      - train:             一般的なHFデータセット学習
+      - train_qa_dataset:  QA形式HFデータセット学習
+      - train_split:       分割データセット学習（全チャンク）
+      - train_split_next:  次のチャンクのみ学習
+    """
+    import runpod as rp
+
+    endpoint_id = req.runpod_endpoint_id or os.environ.get("RUNPOD_ENDPOINT_ID")
+    api_key = os.environ.get("RUNPOD_API_KEY")
+
+    if not endpoint_id:
+        raise HTTPException(
+            status_code=400,
+            detail="RunPod endpoint ID required. Set RUNPOD_ENDPOINT_ID env var or pass runpod_endpoint_id.",
+        )
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="RUNPOD_API_KEY environment variable not set.",
+        )
+
+    rp.api_key = api_key
+
+    # Build payload for RunPod handler
+    payload = {
+        "action": req.action,
+        "parameters": {
+            "epochs": req.epochs,
+            "lr": req.lr,
+            "batch_size": req.batch_size,
+            "grad_accum_steps": req.grad_accum_steps,
+            "warmup_steps": req.warmup_steps,
+            "max_samples_per_dataset": req.max_samples_per_dataset,
+        },
+    }
+
+    if req.dataset_ids:
+        payload["parameters"]["dataset_ids"] = req.dataset_ids
+    if req.dataset_id:
+        payload["parameters"]["dataset_id"] = req.dataset_id
+
+    # Split training parameters
+    if req.action in ("train_split", "train_split_next"):
+        payload["parameters"].update({
+            "mode": req.mode,
+            "num_chunks": req.num_chunks,
+            "epochs_per_chunk": req.epochs_per_chunk,
+            "crafted_repeat": req.crafted_repeat,
+        })
+        if req.samples_per_batch:
+            payload["parameters"]["samples_per_batch"] = req.samples_per_batch
+        if req.max_minutes_per_chunk:
+            payload["parameters"]["max_minutes_per_chunk"] = req.max_minutes_per_chunk
+
+    # Submit async job to RunPod
+    try:
+        endpoint = rp.Endpoint(endpoint_id)
+        run_request = endpoint.run(payload)
+        job_id = run_request.job_id
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to submit RunPod job: {e}")
+
+    return {
+        "status": "submitted",
+        "job_id": job_id,
+        "endpoint_id": endpoint_id,
+        "action": req.action,
+        "message": f"Training job submitted to RunPod. Use GET /train/runpod/status/{job_id} to check progress.",
+    }
+
+
+@app.get("/train/runpod/status/{job_id}")
+async def train_runpod_status(job_id: str, endpoint_id: Optional[str] = None):
+    """RunPodトレーニングジョブのステータスを確認。"""
+    import runpod as rp
+
+    eid = endpoint_id or os.environ.get("RUNPOD_ENDPOINT_ID")
+    api_key = os.environ.get("RUNPOD_API_KEY")
+
+    if not eid or not api_key:
+        raise HTTPException(status_code=400, detail="RUNPOD_ENDPOINT_ID and RUNPOD_API_KEY required.")
+
+    rp.api_key = api_key
+
+    try:
+        endpoint = rp.Endpoint(eid)
+        status = endpoint.status(job_id)
+        result = {"job_id": job_id, "status": status}
+
+        if status == "COMPLETED":
+            output = endpoint.output(job_id)
+            result["output"] = output
+        elif status == "FAILED":
+            try:
+                output = endpoint.output(job_id)
+                result["output"] = output
+            except Exception:
+                pass
+
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to check RunPod job status: {e}")
+
+
+@app.post("/train/runpod/cancel/{job_id}")
+async def train_runpod_cancel(job_id: str, endpoint_id: Optional[str] = None):
+    """RunPodトレーニングジョブをキャンセル。"""
+    import runpod as rp
+
+    eid = endpoint_id or os.environ.get("RUNPOD_ENDPOINT_ID")
+    api_key = os.environ.get("RUNPOD_API_KEY")
+
+    if not eid or not api_key:
+        raise HTTPException(status_code=400, detail="RUNPOD_ENDPOINT_ID and RUNPOD_API_KEY required.")
+
+    rp.api_key = api_key
+
+    try:
+        endpoint = rp.Endpoint(eid)
+        endpoint.cancel(job_id)
+        return {"job_id": job_id, "status": "cancelled"}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to cancel RunPod job: {e}")
 
 
 # ========================================
