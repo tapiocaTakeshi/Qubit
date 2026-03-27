@@ -53,8 +53,12 @@ class Predictor(BasePredictor):
         repetition_penalty: float = Input(description="Repetition penalty", default=1.3, ge=1.0, le=3.0),
     ) -> str:
         """Generate text from a prompt."""
-        prompt = f"<bos>{prompt}<eos>"
-        tokens = self.tokenizer.encode(prompt, add_special=True)
+        raw_prompt = prompt.strip()
+        if not raw_prompt.startswith("質問:") and not raw_prompt.startswith("回答:"):
+            raw_prompt = f"質問: {raw_prompt}\n回答:"
+        # Match training format: [BOF, BOS] + content (no EOS so model generates)
+        content_ids = self.tokenizer.encode(raw_prompt, add_special=False)
+        tokens = [self.tokenizer.bof_id, self.tokenizer.bos_id] + content_ids
         input_tensor = torch.tensor([tokens], dtype=torch.long, device=self.device)
         generated = list(tokens)
         max_seq_len = self.config["max_seq_len"]
