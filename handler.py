@@ -376,7 +376,10 @@ class EndpointHandler:
         inputs = data.get("inputs", data.get("prompt", ""))
         if isinstance(inputs, list):
             inputs = inputs[0] if inputs else ""
-        inputs = f"<bos>{str(inputs)}<eos>"
+        raw_input = str(inputs).strip()
+        # Format as QA prompt matching training data format
+        if not raw_input.startswith("質問:") and not raw_input.startswith("回答:"):
+            raw_input = f"質問: {raw_input}\n回答:"
 
         params = data.get("parameters", {})
         temperature = float(params.get("temperature", 0.7))
@@ -385,7 +388,10 @@ class EndpointHandler:
         top_p = float(params.get("top_p", 0.9))
         repetition_penalty = float(params.get("repetition_penalty", 1.3))
 
-        tokens = self.tokenizer.encode(inputs, add_special=True)
+        # Match training format: [BOF, BOS] + content + [EOS, EOF]
+        # For inference, use [BOF, BOS] + content (no EOS, so model generates)
+        content_ids = self.tokenizer.encode(raw_input, add_special=False)
+        tokens = [self.tokenizer.bof_id, self.tokenizer.bos_id] + content_ids
         if not tokens:
             return [{"generated_text": ""}]
 
