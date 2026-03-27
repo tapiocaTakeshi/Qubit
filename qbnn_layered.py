@@ -555,8 +555,8 @@ class SimpleTokenizer:
     def __init__(self, max_vocab_size=5000, use_char=False):
         self.max_vocab_size = max_vocab_size
         self.use_char = use_char  # 文字単位トークナイズ
-        self.word2idx = {'<PAD>': 0, '<UNK>': 1, '<BOS>': 2, '<EOS>': 3}
-        self.idx2word = {0: '<PAD>', 1: '<UNK>', 2: '<BOS>', 3: '<EOS>'}
+        self.word2idx = {'<PAD>': 0, '<UNK>': 1, '<s>': 2, '</s>': 3}
+        self.idx2word = {0: '<PAD>', 1: '<UNK>', 2: '<s>', 3: '</s>'}
         self.vocab_size = 4
         self.is_japanese = False
     
@@ -765,7 +765,7 @@ class EQBNNGenerativeAI:
         # プロンプトをトークン化
         tokens = self.tokenizer.encode(prompt)
         if len(tokens) == 0:
-            tokens = [2]  # <BOS>
+            tokens = [2]  # <s>
         
         tokens = torch.tensor(tokens, dtype=torch.long).to(self.device)
         
