@@ -392,7 +392,7 @@ class EndpointHandler:
         # For inference, use [BOF, BOS] + content (no EOS, so model generates)
         content_ids = self.tokenizer.encode(raw_input, add_special=False)
         tokens = [self.tokenizer.bof_id, self.tokenizer.bos_id] + content_ids
-        if not tokens:
+        if len(content_ids) == 0:
             return [{"generated_text": ""}]
 
         input_tensor = torch.tensor([tokens], dtype=torch.long, device=self.device)
@@ -422,7 +422,10 @@ class EndpointHandler:
                 if repetition_penalty > 1.0 and len(generated) > 1:
                     for prev in set(generated[-50:]):
                         if prev < logits.size(-1):
-                            logits[0, prev] /= repetition_penalty
+                            if logits[0, prev] > 0:
+                                logits[0, prev] /= repetition_penalty
+                            else:
+                                logits[0, prev] *= repetition_penalty
 
                 probs = F.softmax(logits, dim=-1)
                 nxt = torch.multinomial(probs, 1)
@@ -431,6 +434,8 @@ class EndpointHandler:
                 if nxt_id in (self.tokenizer.eos_id, self.tokenizer.eof_id):
                     break
                 if nxt_id in (self.tokenizer.pad_id, self.tokenizer.bof_id):
+                    # Still update input_tensor to avoid regenerating the same token
+                    input_tensor = torch.cat([input_tensor, nxt], dim=1)
                     continue
 
                 generated.append(nxt_id)
