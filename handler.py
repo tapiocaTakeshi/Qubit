@@ -1250,11 +1250,33 @@ class EndpointHandler:
             self.training_status["message"] = (
                 f"Split training complete! {len(chunk_indices)} chunks trained"
             )
+
+            # Run inference test on the same worker after training
+            inference_results = {}
+            test_prompts = [
+                "日本の首都はどこですか？",
+                "量子コンピュータとは何ですか？",
+                "Pythonでリストをソートする方法を教えてください。",
+            ]
+            try:
+                self.model.eval()
+                for tp in test_prompts:
+                    result = self._handle_inference({"inputs": tp, "parameters": {
+                        "max_new_tokens": 200, "temperature": 0.7,
+                        "top_k": 40, "top_p": 0.9, "repetition_penalty": 1.3
+                    }})
+                    text = result[0].get("generated_text", "") if result else ""
+                    inference_results[tp] = text
+                    self.training_status["log"].append(f"Inference test: Q={tp} A={text[:100]}")
+            except Exception as e:
+                self.training_status["log"].append(f"Inference test error: {e}")
+
             self.training_status["running"] = False
 
             return [{"status": "success", "message": self.training_status["message"],
                      "chunks_total": actual_num_chunks,
                      "chunks_trained": len(chunk_indices),
+                     "inference_test": inference_results,
                      "log": self.training_status["log"]}]
 
         except Exception as e:
