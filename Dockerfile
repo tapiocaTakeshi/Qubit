@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # アプリケーションのコードをコンテナ内にコピー
 COPY neuroquantum_layered.py .
 COPY handler.py .
+COPY dataset_utils.py .
 COPY runpod_handler.py .
 COPY runpod_manager.py .
 COPY predict.py .
