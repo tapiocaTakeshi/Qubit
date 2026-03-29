@@ -154,7 +154,7 @@ def main():
     for ds_info in DATASETS:
         print(f"  Loading {ds_info['id']}...")
         try:
-            ds = load_dataset(ds_info["id"], split="train", trust_remote_code=True)
+            ds = load_dataset(ds_info["id"], split="train")
             texts = extract_texts(ds, ds_info["col"], ds_info["max_samples"])
             print(f"    -> {len(texts)} texts extracted")
             all_texts.extend(texts)

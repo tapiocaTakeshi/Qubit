@@ -868,7 +868,7 @@ class EndpointHandler:
             ms = min(1000, max_samples) if fmt == "izumi" else max_samples
             try:
                 self.training_status["message"] = f"Loading {ds_id}..."
-                ds = load_dataset(ds_id, split="train", trust_remote_code=True)
+                ds = load_dataset(ds_id, split="train")
                 n = min(ms, len(ds))
                 count = 0
                 for row in ds.select(range(n)):
@@ -897,7 +897,7 @@ class EndpointHandler:
             col = ds_info["col"]
             try:
                 self.training_status["message"] = f"Loading {ds_id}..."
-                ds = load_dataset(ds_id, split="train", trust_remote_code=True)
+                ds = load_dataset(ds_id, split="train")
                 texts = extract_texts(ds, col, max_samples)
                 all_texts.extend(texts)
                 self.training_status["log"].append(f"Loaded {ds_id}: {len(texts)} texts")
@@ -913,10 +913,10 @@ class EndpointHandler:
             try:
                 self.training_status["message"] = f"Loading {ds_id}..."
                 try:
-                    ds = load_dataset(ds_id, split="train", trust_remote_code=True)
+                    ds = load_dataset(ds_id, split="train")
                     is_streaming = False
                 except Exception:
-                    ds = load_dataset(ds_id, split="train", streaming=True, trust_remote_code=True)
+                    ds = load_dataset(ds_id, split="train", streaming=True)
                     is_streaming = True
 
                 count = 0

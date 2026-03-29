@@ -114,7 +114,7 @@ def load_qa_data():
         print(f"  Loading {ds_id}...")
 
         try:
-            ds = load_dataset(ds_id, split="train", trust_remote_code=True)
+            ds = load_dataset(ds_id, split="train")
             n = min(max_samples, len(ds))
             count = 0
 
