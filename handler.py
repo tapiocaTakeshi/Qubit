@@ -399,9 +399,12 @@ class EndpointHandler:
         generated = list(tokens)
         max_seq_len = self.config["max_seq_len"]
 
+        # Debug: track first generated token IDs
+        debug_tokens = []
+
         self.model.eval()
         with torch.no_grad():
-            for _ in range(max_new_tokens):
+            for step in range(max_new_tokens):
                 seq = input_tensor[:, -max_seq_len:]
                 logits = self.model(seq)[:, -1, :] / max(temperature, 1e-5)
 
@@ -431,6 +434,19 @@ class EndpointHandler:
                 nxt = torch.multinomial(probs, 1)
                 nxt_id = nxt.item()
 
+                # Debug: record first 10 generated tokens
+                if step < 10:
+                    top5 = torch.topk(probs, 5)
+                    top5_ids = top5.indices[0].tolist()
+                    top5_probs = top5.values[0].tolist()
+                    debug_tokens.append({
+                        "step": step, "generated_id": nxt_id,
+                        "top5_ids": top5_ids,
+                        "top5_probs": [round(p, 4) for p in top5_probs],
+                        "is_eos": nxt_id == self.tokenizer.eos_id,
+                        "is_eof": nxt_id == self.tokenizer.eof_id,
+                    })
+
                 if nxt_id in (self.tokenizer.eos_id, self.tokenizer.eof_id):
                     break
                 if nxt_id in (self.tokenizer.pad_id, self.tokenizer.bof_id):
@@ -442,7 +458,21 @@ class EndpointHandler:
                 input_tensor = torch.cat([input_tensor, nxt], dim=1)
 
         generated_text = self.tokenizer.decode(generated[len(tokens):], skip_special=True)
-        return [{"generated_text": generated_text}]
+        return [{"generated_text": generated_text,
+                 "debug": {
+                     "input_len": len(tokens),
+                     "content_ids_len": len(content_ids),
+                     "first_5_content_ids": content_ids[:5],
+                     "last_5_content_ids": content_ids[-5:],
+                     "bof_id": self.tokenizer.bof_id,
+                     "bos_id": self.tokenizer.bos_id,
+                     "eos_id": self.tokenizer.eos_id,
+                     "eof_id": self.tokenizer.eof_id,
+                     "vocab_size": self.config.get("vocab_size"),
+                     "has_sp": self.tokenizer.sp is not None,
+                     "generated_token_count": len(generated) - len(tokens),
+                     "debug_tokens": debug_tokens,
+                 }}]
 
     # --------------------------------------------------------
     # Training (general)
@@ -1265,11 +1295,16 @@ class EndpointHandler:
                         "max_new_tokens": 200, "temperature": 0.7,
                         "top_k": 40, "top_p": 0.9, "repetition_penalty": 1.3
                     }})
-                    text = result[0].get("generated_text", "") if result else ""
-                    inference_results[tp] = text
-                    self.training_status["log"].append(f"Inference test: Q={tp} A={text[:100]}")
+                    r = result[0] if result else {}
+                    text = r.get("generated_text", "")
+                    debug = r.get("debug", {})
+                    inference_results[tp] = {"text": text, "debug": debug}
+                    self.training_status["log"].append(
+                        f"Inference: Q={tp} A={text[:80]} debug_tokens={debug.get('debug_tokens', [])[:3]}"
+                    )
             except Exception as e:
-                self.training_status["log"].append(f"Inference test error: {e}")
+                import traceback
+                self.training_status["log"].append(f"Inference test error: {traceback.format_exc()}")
 
             self.training_status["running"] = False
 
