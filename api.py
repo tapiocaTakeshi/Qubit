@@ -897,7 +897,7 @@ def _load_all_qa_texts(max_samples):
         ms = min(1000, max_samples) if fmt == "izumi" else max_samples
         try:
             training_status["message"] = f"Loading {ds_id}..."
-            ds = _load_ds(ds_id, split="train", trust_remote_code=True)
+            ds = _load_ds(ds_id, split="train")
             n = min(ms, len(ds))
             count = 0
             for row in ds.select(range(n)):
@@ -927,7 +927,7 @@ def _load_all_general_texts(max_samples):
         col = ds_info["col"]
         try:
             training_status["message"] = f"Loading {ds_id}..."
-            ds = _load_ds(ds_id, split="train", trust_remote_code=True)
+            ds = _load_ds(ds_id, split="train")
             texts = extract_texts(ds, col, max_samples)
             all_texts.extend(texts)
             training_status["log"].append(f"Loaded {ds_id}: {len(texts)} texts")
@@ -945,10 +945,10 @@ def _load_custom_datasets(dataset_ids, max_samples, mode):
             training_status["message"] = f"Loading {ds_id}..."
             # まずstreaming=Trueで試す（大規模データセット対応）
             try:
-                ds = _load_ds(ds_id, split="train", trust_remote_code=True)
+                ds = _load_ds(ds_id, split="train")
                 is_streaming = False
             except Exception:
-                ds = _load_ds(ds_id, split="train", streaming=True, trust_remote_code=True)
+                ds = _load_ds(ds_id, split="train", streaming=True)
                 is_streaming = True
 
             count = 0

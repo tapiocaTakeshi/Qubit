@@ -2778,7 +2778,7 @@ def load_huggingface_data(max_samples: int = 500) -> List[str]:
     # 1. OpenAssistant/oasst1 - 高品質な対話データ
     try:
         print("   📚 OpenAssistant/oasst1 を読み込み中...")
-        dataset = load_dataset("OpenAssistant/oasst1", split="train", trust_remote_code=True)
+        dataset = load_dataset("OpenAssistant/oasst1", split="train")
         
         # 対話ツリーから質問-回答ペアを抽出
         messages_by_parent = {}
@@ -2836,7 +2836,7 @@ def load_huggingface_data(max_samples: int = 500) -> List[str]:
     # 2. kunishou/databricks-dolly-15k-ja - 日本語データ
     try:
         print("   📚 databricks-dolly-15k-ja を読み込み中...")
-        dataset = load_dataset("kunishou/databricks-dolly-15k-ja", split="train", trust_remote_code=True)
+        dataset = load_dataset("kunishou/databricks-dolly-15k-ja", split="train")
         
         count = 0
         for item in dataset:
@@ -2859,7 +2859,7 @@ def load_huggingface_data(max_samples: int = 500) -> List[str]:
     # 3. databricks/databricks-dolly-15k - 英語データ
     try:
         print("   📚 databricks-dolly-15k を読み込み中...")
-        dataset = load_dataset("databricks/databricks-dolly-15k", split="train", trust_remote_code=True)
+        dataset = load_dataset("databricks/databricks-dolly-15k", split="train")
         
         count = 0
         for item in dataset:

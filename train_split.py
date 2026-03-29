@@ -151,7 +151,7 @@ def load_all_qa_texts(max_samples_per_dataset):
             max_samples = min(1000, max_samples)
         print(f"  Loading {ds_id}...")
         try:
-            ds = load_dataset(ds_id, split="train", trust_remote_code=True)
+            ds = load_dataset(ds_id, split="train")
             n = min(max_samples, len(ds))
             count = 0
             for row in ds.select(range(n)):
@@ -180,7 +180,7 @@ def load_all_general_texts(max_samples_per_dataset):
         col = ds_info["col"]
         print(f"  Loading {ds_id}...")
         try:
-            ds = load_dataset(ds_id, split="train", trust_remote_code=True)
+            ds = load_dataset(ds_id, split="train")
             texts = extract_texts_general(ds, col, max_samples_per_dataset)
             print(f"    -> {len(texts)} texts")
             all_texts.extend(texts)
@@ -197,10 +197,10 @@ def load_custom_datasets(dataset_ids, max_samples, mode):
         try:
             # まず通常ロードを試す、失敗したらstreaming
             try:
-                ds = load_dataset(ds_id, split="train", trust_remote_code=True)
+                ds = load_dataset(ds_id, split="train")
                 is_streaming = False
             except Exception:
-                ds = load_dataset(ds_id, split="train", streaming=True, trust_remote_code=True)
+                ds = load_dataset(ds_id, split="train", streaming=True)
                 is_streaming = True
 
             count = 0
