@@ -10,7 +10,7 @@ build:
     - "numpy>=1.24.0,<2"
     - "sentencepiece>=0.1.99,<0.3"
     - "huggingface-hub>=0.30.0,<1.0"
-    - "datasets>=2.18.0,<4"
+    - "datasets>=2.18.0,<3"
     - "accelerate>=1.1.0,<2"
 
 predict: "predict.py:Predictor"

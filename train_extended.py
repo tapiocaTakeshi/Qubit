@@ -12,7 +12,7 @@ import os
 import sys
 import torch
 import torch.nn.functional as F
-from datasets import load_dataset
+from dataset_utils import safe_load_dataset
 from datetime import datetime, timezone
 import json
 import random
@@ -149,7 +149,7 @@ def main():
     for ds_info in DATASETS:
         print(f"  Loading {ds_info['id']}...")
         try:
-            ds = load_dataset(ds_info["id"], split="train")
+            ds = safe_load_dataset(ds_info["id"], split="train")
             texts = extract_texts(ds, ds_info["col"], ds_info["max_samples"])
             print(f"    -> {len(texts)} texts")
             all_texts.extend(texts)
@@ -159,7 +159,7 @@ def main():
     # Load CC100-ja
     print(f"  Loading range3/cc100-ja (streaming, {CC100_SAMPLES} samples)...")
     try:
-        ds_cc = load_dataset("range3/cc100-ja", split="train", streaming=True)
+        ds_cc = safe_load_dataset("range3/cc100-ja", split="train", streaming=True)
         cc_texts = []
         for i, row in enumerate(ds_cc):
             if i >= CC100_SAMPLES:
