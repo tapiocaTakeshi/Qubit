@@ -7,7 +7,7 @@ import os
 import sys
 import torch
 import torch.nn.functional as F
-from datasets import load_dataset
+from dataset_utils import safe_load_dataset
 from datetime import datetime, timezone
 import json
 import random
@@ -91,7 +91,7 @@ def main():
     # Dataset 1: japanese_alpaca_data (alpaca format)
     print("  Loading fujiki/japanese_alpaca_data...")
     try:
-        ds = load_dataset("fujiki/japanese_alpaca_data", split="train")
+        ds = safe_load_dataset("fujiki/japanese_alpaca_data", split="train")
         n = min(MAX_SAMPLES, len(ds))
         count = 0
         for row in ds.select(range(n)):
@@ -106,7 +106,7 @@ def main():
     # Dataset 2: alpaca-gpt4-japanese (conversations)
     print("  Loading FreedomIntelligence/alpaca-gpt4-japanese...")
     try:
-        ds = load_dataset("FreedomIntelligence/alpaca-gpt4-japanese", split="train")
+        ds = safe_load_dataset("FreedomIntelligence/alpaca-gpt4-japanese", split="train")
         n = min(MAX_SAMPLES, len(ds))
         count = 0
         for row in ds.select(range(n)):
@@ -121,7 +121,7 @@ def main():
     # Dataset 3: oasst1 (conversations)
     print("  Loading kunishou/oasst1-chat-44k-ja...")
     try:
-        ds = load_dataset("kunishou/oasst1-chat-44k-ja", split="train")
+        ds = safe_load_dataset("kunishou/oasst1-chat-44k-ja", split="train")
         n = min(MAX_SAMPLES, len(ds))
         count = 0
         for row in ds.select(range(n)):

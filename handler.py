@@ -453,7 +453,7 @@ class EndpointHandler:
         if self.training_status["running"]:
             return [{"status": "error", "message": "Training already in progress"}]
 
-        from datasets import load_dataset
+        from dataset_utils import safe_load_dataset
 
         params = data.get("parameters", {})
         epochs = int(params.get("epochs", 10))
@@ -475,7 +475,7 @@ class EndpointHandler:
             for ds_info in datasets_to_use:
                 try:
                     self.training_status["message"] = f"Loading {ds_info['id']}..."
-                    ds = load_dataset(ds_info["id"], split="train")
+                    ds = safe_load_dataset(ds_info["id"], split="train")
                     texts = extract_texts(ds, ds_info["col"], max_samples)
                     all_texts.extend(texts)
                     self.training_status["log"].append(f"Loaded {ds_info['id']}: {len(texts)} texts")
@@ -485,7 +485,7 @@ class EndpointHandler:
             # Also load cc100-ja
             try:
                 self.training_status["message"] = "Loading cc100-ja..."
-                ds_cc = load_dataset("range3/cc100-ja", split="train", streaming=True)
+                ds_cc = safe_load_dataset("range3/cc100-ja", split="train", streaming=True)
                 cc_texts = []
                 for i, row in enumerate(ds_cc):
                     if i >= max_samples:
@@ -542,7 +542,7 @@ class EndpointHandler:
         if self.training_status["running"]:
             return [{"status": "error", "message": "Training already in progress"}]
 
-        from datasets import load_dataset
+        from dataset_utils import safe_load_dataset
 
         params = data.get("parameters", {})
         epochs = int(params.get("epochs", 20))
@@ -563,7 +563,7 @@ class EndpointHandler:
                 # Custom single dataset
                 try:
                     self.training_status["message"] = f"Loading {dataset_id}..."
-                    ds = load_dataset(dataset_id, split="train", streaming=True)
+                    ds = safe_load_dataset(dataset_id, split="train", streaming=True)
                     count = 0
                     for row in ds:
                         if count >= max_samples:
@@ -584,7 +584,7 @@ class EndpointHandler:
                     ms = min(1000, max_samples) if fmt == "izumi" else max_samples
                     try:
                         self.training_status["message"] = f"Loading {ds_id}..."
-                        ds = load_dataset(ds_id, split="train")
+                        ds = safe_load_dataset(ds_id, split="train")
                         n = min(ms, len(ds))
                         count = 0
                         for row in ds.select(range(n)):
@@ -860,7 +860,7 @@ class EndpointHandler:
 
     def _load_all_qa_texts(self, max_samples):
         """Load all QA texts from default datasets."""
-        from datasets import load_dataset
+        from dataset_utils import safe_load_dataset
         all_qa = []
         for ds_info in QA_DATASETS_INFO:
             ds_id = ds_info["id"]
@@ -868,7 +868,7 @@ class EndpointHandler:
             ms = min(1000, max_samples) if fmt == "izumi" else max_samples
             try:
                 self.training_status["message"] = f"Loading {ds_id}..."
-                ds = load_dataset(ds_id, split="train")
+                ds = safe_load_dataset(ds_id, split="train")
                 n = min(ms, len(ds))
                 count = 0
                 for row in ds.select(range(n)):
@@ -890,14 +890,14 @@ class EndpointHandler:
 
     def _load_all_general_texts(self, max_samples):
         """Load all general texts from default datasets."""
-        from datasets import load_dataset
+        from dataset_utils import safe_load_dataset
         all_texts = []
         for ds_info in DEFAULT_DATASETS:
             ds_id = ds_info["id"]
             col = ds_info["col"]
             try:
                 self.training_status["message"] = f"Loading {ds_id}..."
-                ds = load_dataset(ds_id, split="train")
+                ds = safe_load_dataset(ds_id, split="train")
                 texts = extract_texts(ds, col, max_samples)
                 all_texts.extend(texts)
                 self.training_status["log"].append(f"Loaded {ds_id}: {len(texts)} texts")
@@ -907,16 +907,16 @@ class EndpointHandler:
 
     def _load_custom_datasets(self, dataset_ids, max_samples, mode):
         """Load custom datasets by ID with auto-format detection."""
-        from datasets import load_dataset
+        from dataset_utils import safe_load_dataset
         all_texts = []
         for ds_id in dataset_ids:
             try:
                 self.training_status["message"] = f"Loading {ds_id}..."
                 try:
-                    ds = load_dataset(ds_id, split="train")
+                    ds = safe_load_dataset(ds_id, split="train")
                     is_streaming = False
                 except Exception:
-                    ds = load_dataset(ds_id, split="train", streaming=True)
+                    ds = safe_load_dataset(ds_id, split="train", streaming=True)
                     is_streaming = True
 
                 count = 0

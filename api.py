@@ -324,7 +324,7 @@ DEFAULT_DATASETS = [
 def run_training(req: TrainRequest):
     """Run training in background thread."""
     global model, tokenizer, config, device, training_status
-    from datasets import load_dataset
+    from dataset_utils import safe_load_dataset
 
     training_status = {"running": True, "log": [], "message": "Loading datasets..."}
 
@@ -338,7 +338,7 @@ def run_training(req: TrainRequest):
         for ds_info in datasets_to_use:
             try:
                 training_status["message"] = f"Loading {ds_info['id']}..."
-                ds = load_dataset(ds_info["id"], split="train")
+                ds = safe_load_dataset(ds_info["id"], split="train")
                 texts = extract_texts(ds, ds_info["col"], req.max_samples_per_dataset)
                 all_texts.extend(texts)
                 training_status["log"].append(f"Loaded {ds_info['id']}: {len(texts)} texts")
@@ -348,7 +348,7 @@ def run_training(req: TrainRequest):
         # Also load cc100-ja
         try:
             training_status["message"] = "Loading cc100-ja..."
-            ds_cc = load_dataset("range3/cc100-ja", split="train", streaming=True)
+            ds_cc = safe_load_dataset("range3/cc100-ja", split="train", streaming=True)
             cc_texts = []
             for i, row in enumerate(ds_cc):
                 if i >= req.max_samples_per_dataset:
@@ -542,7 +542,7 @@ def format_qa_izumi(row):
 def run_qa_training(req: TrainQARequest):
     """Run QA-format training in background thread."""
     global model, tokenizer, config, device, training_status
-    from datasets import load_dataset
+    from dataset_utils import safe_load_dataset
 
     training_status = {"running": True, "log": [], "message": "Loading QA datasets..."}
     min_lr_ratio = 0.1
@@ -555,7 +555,7 @@ def run_qa_training(req: TrainQARequest):
             ds_id = req.dataset_id
             try:
                 training_status["message"] = f"Loading {ds_id}..."
-                ds = load_dataset(ds_id, split="train", streaming=True)
+                ds = safe_load_dataset(ds_id, split="train", streaming=True)
                 count = 0
                 for row in ds:
                     if count >= req.max_samples_per_dataset:
@@ -579,7 +579,7 @@ def run_qa_training(req: TrainQARequest):
                     max_samples = min(1000, max_samples)
                 try:
                     training_status["message"] = f"Loading {ds_id}..."
-                    ds = load_dataset(ds_id, split="train")
+                    ds = safe_load_dataset(ds_id, split="train")
                     n = min(max_samples, len(ds))
                     count = 0
                     for row in ds.select(range(n)):
@@ -889,7 +889,7 @@ GENERAL_DATASETS_INFO = [
 
 def _load_all_qa_texts(max_samples):
     """Load all QA texts from all datasets."""
-    from datasets import load_dataset as _load_ds
+    from dataset_utils import safe_load_dataset as _load_ds
     all_qa = []
     for ds_info in QA_DATASETS_INFO:
         ds_id = ds_info["id"]
@@ -920,7 +920,7 @@ def _load_all_qa_texts(max_samples):
 
 def _load_all_general_texts(max_samples):
     """Load all general texts from all datasets."""
-    from datasets import load_dataset as _load_ds
+    from dataset_utils import safe_load_dataset as _load_ds
     all_texts = []
     for ds_info in GENERAL_DATASETS_INFO:
         ds_id = ds_info["id"]
@@ -938,7 +938,7 @@ def _load_all_general_texts(max_samples):
 
 def _load_custom_datasets(dataset_ids, max_samples, mode):
     """Load custom datasets by ID. Auto-detects format."""
-    from datasets import load_dataset as _load_ds
+    from dataset_utils import safe_load_dataset as _load_ds
     all_texts = []
     for ds_id in dataset_ids:
         try:
@@ -1045,7 +1045,7 @@ def _load_split_state():
 def run_split_training(req: TrainSplitRequest):
     """Run split dataset training in background thread."""
     global model, tokenizer, config, device, training_status
-    from datasets import load_dataset as _load_ds
+    from dataset_utils import safe_load_dataset as _load_ds
 
     training_status = {"running": True, "log": [], "message": "Loading datasets for split training..."}
     min_lr_ratio = 0.1
@@ -1274,7 +1274,7 @@ def run_split_next_training(req: TrainSplitNextRequest):
     """1チャンクだけ学習する。APIタイムアウト防止のため、1回の呼び出しで1バッチだけ処理。
     次のチャンクは再度APIを呼び出すことで学習する。"""
     global model, tokenizer, config, device, training_status
-    from datasets import load_dataset as _load_ds
+    from dataset_utils import safe_load_dataset as _load_ds
 
     training_status = {"running": True, "log": [], "message": "Loading datasets for batch training..."}
     min_lr_ratio = 0.1

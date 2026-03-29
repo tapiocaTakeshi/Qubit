@@ -7,7 +7,7 @@ import os
 import sys
 import torch
 import torch.nn.functional as F
-from datasets import load_dataset
+from dataset_utils import safe_load_dataset
 from datetime import datetime, timezone
 import json
 import random
@@ -57,7 +57,7 @@ def main():
 
     # Load cc100-ja
     print("\n=== Loading range3/cc100-ja ===")
-    ds = load_dataset("range3/cc100-ja", split="train", streaming=True)
+    ds = safe_load_dataset("range3/cc100-ja", split="train", streaming=True)
     texts = []
     for i, row in enumerate(ds):
         if i >= MAX_SAMPLES:

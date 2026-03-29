@@ -7,7 +7,7 @@ import os
 import sys
 import torch
 import torch.nn.functional as F
-from datasets import load_dataset
+from dataset_utils import safe_load_dataset
 from datetime import datetime, timezone
 import json
 import random
@@ -116,7 +116,7 @@ def load_qa_data():
         print(f"  Loading {ds_id}...")
 
         try:
-            ds = load_dataset(ds_id, split="train")
+            ds = safe_load_dataset(ds_id, split="train")
             n = min(max_samples, len(ds))
             count = 0
 

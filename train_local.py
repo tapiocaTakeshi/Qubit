@@ -7,7 +7,7 @@ import os
 import sys
 import torch
 import torch.nn.functional as F
-from datasets import load_dataset
+from dataset_utils import safe_load_dataset
 from datetime import datetime, timezone
 import json
 
@@ -154,7 +154,7 @@ def main():
     for ds_info in DATASETS:
         print(f"  Loading {ds_info['id']}...")
         try:
-            ds = load_dataset(ds_info["id"], split="train")
+            ds = safe_load_dataset(ds_info["id"], split="train")
             texts = extract_texts(ds, ds_info["col"], ds_info["max_samples"])
             print(f"    -> {len(texts)} texts extracted")
             all_texts.extend(texts)
