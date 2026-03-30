@@ -287,7 +287,24 @@ class EndpointHandler:
             # Fallback: initialize fresh model
             self.config = dict(DEFAULT_CONFIG)
             if NEUROQUANTUM_AVAILABLE:
-                self.tokenizer = NeuroQuantumTokenizer(vocab_size=self.config["vocab_size"])
+                # Try to find tokenizer model file
+                tokenizer_path = None
+                for candidate in [
+                    os.path.join(path or ".", "neuroq_tokenizer.model"),
+                    os.path.join(path or ".", "neuroq_tokenizer_8k.model"),
+                    "/app/neuroq_tokenizer.model",
+                    "/app/neuroq_tokenizer_8k.model",
+                    os.path.join(os.path.dirname(__file__), "neuroq_tokenizer.model"),
+                    os.path.join(os.path.dirname(__file__), "neuroq_tokenizer_8k.model"),
+                ]:
+                    if os.path.isfile(candidate):
+                        tokenizer_path = candidate
+                        break
+                self.tokenizer = NeuroQuantumTokenizer(
+                    vocab_size=self.config["vocab_size"],
+                    model_file=tokenizer_path,
+                )
+                print(f"[handler] Tokenizer: sp={self.tokenizer.sp is not None} path={tokenizer_path}")
                 nq_config = NeuroQuantumConfig(
                     vocab_size=self.config["vocab_size"],
                     embed_dim=self.config["embed_dim"],
