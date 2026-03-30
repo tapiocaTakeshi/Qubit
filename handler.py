@@ -265,6 +265,12 @@ class EndpointHandler:
                 model_file=tokenizer_path if os.path.isfile(tokenizer_path) else None,
             )
 
+            # Sync vocab_size: tokenizer's actual size takes priority
+            tok_vocab = self.tokenizer.actual_vocab_size or self.tokenizer.vocab_size
+            if tok_vocab and tok_vocab != self.config["vocab_size"]:
+                print(f"[handler] vocab_size mismatch: config={self.config['vocab_size']}, tokenizer={tok_vocab}. Resizing to {tok_vocab}.")
+                self.config["vocab_size"] = tok_vocab
+
             # Build model
             nq_config = NeuroQuantumConfig(
                 vocab_size=self.config["vocab_size"],
@@ -278,6 +284,24 @@ class EndpointHandler:
             )
             self.model = NeuroQuantum(config=nq_config).to(self.device)
             migrated = migrate_legacy_state_dict(checkpoint["model_state"], self.model)
+
+            # Handle vocab_size mismatch: partially load weights for resized layers
+            model_state = self.model.state_dict()
+            resized_keys = []
+            for key in list(migrated.keys()):
+                if key in model_state and migrated[key].shape != model_state[key].shape:
+                    old_shape = migrated[key].shape
+                    new_shape = model_state[key].shape
+                    # Copy overlapping portion
+                    new_tensor = model_state[key].clone()
+                    slices = tuple(slice(0, min(o, n)) for o, n in zip(old_shape, new_shape))
+                    src_slices = tuple(slice(0, min(o, n)) for o, n in zip(old_shape, new_shape))
+                    new_tensor[slices] = migrated[key][src_slices]
+                    migrated[key] = new_tensor
+                    resized_keys.append(f"{key}: {list(old_shape)}->{list(new_shape)}")
+            if resized_keys:
+                print(f"[handler] Resized layers: {', '.join(resized_keys)}")
+
             self.model.load_state_dict(migrated)
             self.model.eval()
 
