@@ -2,6 +2,8 @@
 Hugging Face datasets ローディングユーティリティ。
 datasets v3.x で trust_remote_code が廃止されたことへの互換レイヤー。
 """
+import os
+import shutil
 import logging
 import warnings
 from contextlib import contextmanager
@@ -90,3 +92,39 @@ def safe_load_dataset(dataset_id, split="train", streaming=False, **kwargs):
         f"datasets v3.x では非対応です。"
         f"対処法: pip install 'datasets>=2.18.0,<3'"
     )
+
+
+# ============================================================
+# Network Volume sync utility
+# ============================================================
+NETWORK_VOLUME_PATH = os.environ.get("NETWORK_VOLUME_PATH", "/runpod-volume")
+
+
+def sync_checkpoint_to_network_volume(ckpt_path, tokenizer_path=None):
+    """チェックポイントをネットワークボリュームにコピーして永続化する。
+
+    Args:
+        ckpt_path: 保存済みチェックポイントのパス
+        tokenizer_path: トークナイザーモデルのパス（任意）
+
+    Returns:
+        ネットワークボリューム上のチェックポイントパス、またはNone
+    """
+    if not os.path.isdir(NETWORK_VOLUME_PATH):
+        return None
+
+    nv_ckpt_path = os.path.join(NETWORK_VOLUME_PATH, os.path.basename(ckpt_path))
+    try:
+        shutil.copy2(ckpt_path, nv_ckpt_path)
+        print(f"  Checkpoint synced to network volume: {nv_ckpt_path}")
+
+        # Also sync tokenizer if provided
+        if tokenizer_path and os.path.isfile(tokenizer_path):
+            nv_tok_path = os.path.join(NETWORK_VOLUME_PATH, os.path.basename(tokenizer_path))
+            shutil.copy2(tokenizer_path, nv_tok_path)
+            print(f"  Tokenizer synced to network volume: {nv_tok_path}")
+
+        return nv_ckpt_path
+    except Exception as e:
+        print(f"  Warning: failed to sync to network volume: {e}")
+        return None
