@@ -10,6 +10,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
+# Train SentencePiece tokenizer during build (avoids Git LFS issues)
+COPY train_tokenizer.py .
+RUN python train_tokenizer.py 8000 /app 20000
+
 # アプリケーションのコードをコンテナ内にコピー
 COPY neuroquantum_layered.py .
 COPY handler.py .
@@ -17,9 +21,6 @@ COPY dataset_utils.py .
 COPY runpod_handler.py .
 COPY runpod_manager.py .
 COPY predict.py .
-COPY neuroq_tokenizer.model .
-COPY neuroq_tokenizer.vocab .
-COPY neuroq_tokenizer_8k.model .
 COPY training_history.json .
 
 # 環境変数

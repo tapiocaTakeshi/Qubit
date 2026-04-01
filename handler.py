@@ -64,7 +64,7 @@ except ImportError:
 # ============================================================
 
 DEFAULT_CONFIG = {
-    "vocab_size": 32000,
+    "vocab_size": 8000,
     "embed_dim": 512,
     "hidden_dim": 1024,
     "num_heads": 8,
