@@ -1005,17 +1005,32 @@ class EndpointHandler:
         return all_texts
 
     def _load_custom_datasets(self, dataset_ids, max_samples, mode):
-        """Load custom datasets by ID with auto-format detection."""
+        """Load custom datasets by ID with auto-format detection.
+
+        dataset_ids can be:
+          - "owner/dataset" — loads default config
+          - "owner/dataset:config" — loads specific config (e.g. "openai/gsm8k:main")
+        """
         from dataset_utils import safe_load_dataset
         all_texts = []
-        for ds_id in dataset_ids:
+        for ds_spec in dataset_ids:
             try:
+                # Parse "owner/dataset:config" format
+                if ":" in ds_spec and not ds_spec.startswith("http"):
+                    ds_id, ds_config = ds_spec.rsplit(":", 1)
+                else:
+                    ds_id, ds_config = ds_spec, None
+
                 self.training_status["message"] = f"Loading {ds_id}..."
+                load_kwargs = {"split": "train"}
+                if ds_config:
+                    load_kwargs["name"] = ds_config
                 try:
-                    ds = safe_load_dataset(ds_id, split="train")
+                    ds = safe_load_dataset(ds_id, **load_kwargs)
                     is_streaming = False
                 except Exception:
-                    ds = safe_load_dataset(ds_id, split="train", streaming=True)
+                    load_kwargs["streaming"] = True
+                    ds = safe_load_dataset(ds_id, **load_kwargs)
                     is_streaming = True
 
                 count = 0
