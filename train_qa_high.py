@@ -8,7 +8,7 @@ import os
 import sys
 import torch
 import torch.nn.functional as F
-from dataset_utils import safe_load_dataset
+from dataset_utils import safe_load_dataset, sync_checkpoint_to_network_volume
 from datetime import datetime, timezone
 import json
 import random
@@ -411,6 +411,7 @@ def save_checkpoint(model, config, training_log, original_ckpt):
     torch.save(new_checkpoint, CKPT_PATH)
     size_mb = os.path.getsize(CKPT_PATH) / 1024 / 1024
     print(f"  Saved: {CKPT_PATH} ({size_mb:.1f} MB)")
+    sync_checkpoint_to_network_volume(CKPT_PATH)
 
 
 if __name__ == "__main__":

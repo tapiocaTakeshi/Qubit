@@ -26,6 +26,7 @@ COPY training_history.json .
 # 環境変数
 ENV PYTHONUNBUFFERED=1
 ENV MODEL_DIR=/app
+ENV NETWORK_VOLUME_PATH=/runpod-volume
 
 # RunPodのサーバーレスハンドラーを起動
 CMD ["python", "-u", "handler.py"]

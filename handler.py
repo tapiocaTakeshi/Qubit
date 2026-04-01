@@ -35,6 +35,7 @@ import json
 import math
 import random
 import time
+import shutil
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -138,24 +139,36 @@ CRAFTED_QA = [
 
 
 # ============================================================
+# Network Volume path (RunPod network volume for persistent storage)
+# ============================================================
+NETWORK_VOLUME_PATH = os.environ.get("NETWORK_VOLUME_PATH", "/runpod-volume")
+
+
+# ============================================================
 # Utility functions
 # ============================================================
 
 def find_checkpoint(path: str):
-    """Search for a checkpoint file in the model directory."""
-    candidates = [
-        os.path.join(path, "qbnn_checkpoint.pt"),
-        os.path.join(path, "neuroq_checkpoint.pt"),
-        os.path.join(path, "checkpoint.pt"),
-        os.path.join(path, "model.pt"),
-    ]
-    for candidate in candidates:
-        if os.path.isfile(candidate):
-            return candidate
-    if os.path.isdir(path):
-        for fname in os.listdir(path):
-            if fname.endswith(".pt"):
-                return os.path.join(path, fname)
+    """Search for a checkpoint file in the model directory and network volume."""
+    # Search in both local path and network volume
+    search_dirs = [path]
+    if os.path.isdir(NETWORK_VOLUME_PATH):
+        search_dirs.append(NETWORK_VOLUME_PATH)
+
+    for search_dir in search_dirs:
+        candidates = [
+            os.path.join(search_dir, "qbnn_checkpoint.pt"),
+            os.path.join(search_dir, "neuroq_checkpoint.pt"),
+            os.path.join(search_dir, "checkpoint.pt"),
+            os.path.join(search_dir, "model.pt"),
+        ]
+        for candidate in candidates:
+            if os.path.isfile(candidate):
+                return candidate
+        if os.path.isdir(search_dir):
+            for fname in os.listdir(search_dir):
+                if fname.endswith(".pt"):
+                    return os.path.join(search_dir, fname)
     return None
 
 
@@ -286,8 +299,12 @@ class EndpointHandler:
             checkpoint = torch.load(self.ckpt_path, map_location="cpu")
             self.config = checkpoint.get("config", dict(DEFAULT_CONFIG))
 
-            # Load tokenizer
+            # Load tokenizer (check local path first, then network volume)
             tokenizer_path = os.path.join(path, "neuroq_tokenizer.model")
+            if not os.path.isfile(tokenizer_path) and os.path.isdir(NETWORK_VOLUME_PATH):
+                nv_tok = os.path.join(NETWORK_VOLUME_PATH, "neuroq_tokenizer.model")
+                if os.path.isfile(nv_tok):
+                    tokenizer_path = nv_tok
             self.tokenizer = NeuroQuantumTokenizer(
                 vocab_size=self.config["vocab_size"],
                 model_file=tokenizer_path if os.path.isfile(tokenizer_path) else None,
@@ -942,6 +959,19 @@ class EndpointHandler:
 
         torch.save(checkpoint, self.ckpt_path)
         self.training_status["log"].append(f"Checkpoint saved: {self.ckpt_path}")
+
+        # Also save to network volume for persistence across pod restarts
+        if os.path.isdir(NETWORK_VOLUME_PATH):
+            nv_ckpt_path = os.path.join(NETWORK_VOLUME_PATH, os.path.basename(self.ckpt_path))
+            try:
+                shutil.copy2(self.ckpt_path, nv_ckpt_path)
+                # Also copy tokenizer model to network volume if it exists
+                tokenizer_src = os.path.join(self.model_path or ".", "neuroq_tokenizer.model")
+                if os.path.isfile(tokenizer_src):
+                    shutil.copy2(tokenizer_src, os.path.join(NETWORK_VOLUME_PATH, "neuroq_tokenizer.model"))
+                self.training_status["log"].append(f"Checkpoint synced to network volume: {nv_ckpt_path}")
+            except Exception as e:
+                self.training_status["log"].append(f"Warning: failed to sync to network volume: {e}")
 
     # --------------------------------------------------------
     # Split training helpers

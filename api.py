@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 sys.path.insert(0, os.path.dirname(__file__))
 from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, migrate_legacy_state_dict
+from dataset_utils import sync_checkpoint_to_network_volume
 
 app = FastAPI(title="NeuroQuantum API", version="1.0.0")
 
@@ -453,6 +454,9 @@ def run_training(req: TrainRequest):
         }
         torch.save(new_checkpoint, CKPT_PATH)
         training_status["log"].append(f"Checkpoint saved: {CKPT_PATH}")
+        nv_path = sync_checkpoint_to_network_volume(CKPT_PATH)
+        if nv_path:
+            training_status["log"].append(f"Checkpoint synced to network volume: {nv_path}")
         training_status["message"] = "Training complete!"
         training_status["running"] = False
 
@@ -729,6 +733,7 @@ def save_qa_checkpoint(mdl, cfg, status, epoch_num, extra_datasets=None):
     }
     torch.save(new_checkpoint, CKPT_PATH)
     status["log"].append(f"Checkpoint saved at epoch {epoch_num}")
+    sync_checkpoint_to_network_volume(CKPT_PATH)
 
 
 # ========================================

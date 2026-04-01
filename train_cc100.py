@@ -7,7 +7,7 @@ import os
 import sys
 import torch
 import torch.nn.functional as F
-from dataset_utils import safe_load_dataset
+from dataset_utils import safe_load_dataset, sync_checkpoint_to_network_volume
 from datetime import datetime, timezone
 import json
 import random
@@ -160,6 +160,7 @@ def main():
     }
     torch.save(new_checkpoint, CKPT_PATH)
     print(f"Saved: {CKPT_PATH} ({os.path.getsize(CKPT_PATH) / 1024 / 1024:.1f} MB)")
+    sync_checkpoint_to_network_volume(CKPT_PATH)
 
     # Inference test
     print("\n=== Inference test ===")
