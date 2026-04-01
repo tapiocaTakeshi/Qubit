@@ -1285,6 +1285,15 @@ class EndpointHandler:
 
                 sequences = tokenize_texts(chunk_texts, self.tokenizer, max_seq_len)
                 if not sequences:
+                    # Debug: why no sequences?
+                    sample_text = chunk_texts[0] if chunk_texts else ""
+                    sample_ids = self.tokenizer.encode(sample_text[:100], add_special=False)
+                    self.training_status["log"].append(
+                        f"Chunk {cidx}: No sequences! sp={self.tokenizer.sp is not None} "
+                        f"max_seq_len={max_seq_len} sample_len={len(sample_text)} "
+                        f"sample_ids_len={len(sample_ids)} sample_ids={sample_ids[:10]} "
+                        f"vocab_size={self.config.get('vocab_size')}"
+                    )
                     self.training_status["log"].append(f"Chunk {cidx}: No sequences, skipping")
                     continue
 
