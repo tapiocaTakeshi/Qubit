@@ -29,8 +29,40 @@ tokenizer = None
 config = None
 device = None
 training_status = {"running": False, "log": [], "message": "idle"}
-CKPT_PATH = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
-TOKENIZER_PATH = os.path.join(os.path.dirname(__file__), "neuroq_tokenizer.model")
+NETWORK_VOLUME_PATH = os.environ.get("NETWORK_VOLUME_PATH", "/runpod-volume")
+LOCAL_CKPT_PATH = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
+LOCAL_TOKENIZER_PATH = os.path.join(os.path.dirname(__file__), "neuroq_tokenizer.model")
+
+
+def _resolve_checkpoint_path():
+    """Resolve checkpoint path, prioritizing RunPod network volume."""
+    if os.path.isdir(NETWORK_VOLUME_PATH):
+        for name in ("qbnn_checkpoint.pt", "neuroq_checkpoint.pt", "checkpoint.pt", "model.pt"):
+            nv_path = os.path.join(NETWORK_VOLUME_PATH, name)
+            if os.path.isfile(nv_path):
+                print(f"[api] Using network volume checkpoint: {nv_path}")
+                return nv_path
+        # Check for any .pt file
+        for fname in os.listdir(NETWORK_VOLUME_PATH):
+            if fname.endswith(".pt"):
+                nv_path = os.path.join(NETWORK_VOLUME_PATH, fname)
+                print(f"[api] Using network volume checkpoint: {nv_path}")
+                return nv_path
+    return LOCAL_CKPT_PATH
+
+
+def _resolve_tokenizer_path():
+    """Resolve tokenizer path, prioritizing RunPod network volume."""
+    if os.path.isdir(NETWORK_VOLUME_PATH):
+        nv_tok = os.path.join(NETWORK_VOLUME_PATH, "neuroq_tokenizer.model")
+        if os.path.isfile(nv_tok):
+            print(f"[api] Using network volume tokenizer: {nv_tok}")
+            return nv_tok
+    return LOCAL_TOKENIZER_PATH
+
+
+CKPT_PATH = _resolve_checkpoint_path()
+TOKENIZER_PATH = _resolve_tokenizer_path()
 
 
 # ========================================
@@ -1652,10 +1684,13 @@ async def train_status():
 
 @app.post("/reload")
 async def reload_model():
-    """Reload model from latest checkpoint."""
+    """Reload model from latest checkpoint (re-checks network volume)."""
+    global CKPT_PATH, TOKENIZER_PATH
     try:
+        CKPT_PATH = _resolve_checkpoint_path()
+        TOKENIZER_PATH = _resolve_tokenizer_path()
         load_model()
-        return {"status": "reloaded", "message": "Model reloaded from checkpoint"}
+        return {"status": "reloaded", "message": f"Model reloaded from {CKPT_PATH}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

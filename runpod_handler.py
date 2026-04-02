@@ -23,9 +23,15 @@ from handler import EndpointHandler
 # Global model instance (loaded once at cold start)
 # ------------------------------------------------------------------
 
+NETWORK_VOLUME_PATH = os.environ.get("NETWORK_VOLUME_PATH", "/runpod-volume")
 MODEL_DIR = os.environ.get("MODEL_DIR", "/app")
+
+# Prefer network volume for persistent checkpoints across pod restarts
+if os.path.isdir(NETWORK_VOLUME_PATH):
+    print(f"[runpod_handler] Network volume available at {NETWORK_VOLUME_PATH}")
+
 handler = EndpointHandler(path=MODEL_DIR)
-print(f"[runpod_handler] Model loaded from {MODEL_DIR}")
+print(f"[runpod_handler] Model loaded (MODEL_DIR={MODEL_DIR}, checkpoint={handler.ckpt_path})")
 
 
 # ------------------------------------------------------------------
