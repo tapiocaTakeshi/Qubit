@@ -298,6 +298,25 @@ def cmd_train_split_auto(args):
         time.sleep(args.chunk_interval)
 
 
+def cmd_train_math_code_conv(args):
+    """Math/Coding/Conversation domain training."""
+    payload = {
+        "action": "train_math_code_conv",
+        "parameters": {
+            "epochs": args.epochs,
+            "lr": args.lr,
+            "batch_size": args.batch_size,
+            "grad_accum_steps": args.grad_accum_steps,
+            "warmup_steps": args.warmup_steps,
+        },
+    }
+    if hasattr(args, 'max_samples') and args.max_samples:
+        payload["parameters"]["max_samples_per_dataset"] = args.max_samples
+
+    result = run_job(payload, timeout=args.timeout)
+    _print_result(result)
+
+
 def cmd_split_status(args):
     """Check split training progress."""
     result = run_sync_job({"action": "split_status"}, timeout=60)
@@ -427,6 +446,16 @@ Examples:
     p_tqd.add_argument("--max-samples", type=int, default=1500)
     p_tqd.add_argument("--timeout", type=int, default=3600)
 
+    # --- train-math-code-conv ---
+    p_mcc = sub.add_parser("train-math-code-conv", help="Math/Coding/Conversation domain training")
+    p_mcc.add_argument("--epochs", type=int, default=10)
+    p_mcc.add_argument("--lr", type=float, default=5e-5)
+    p_mcc.add_argument("--batch-size", type=int, default=4)
+    p_mcc.add_argument("--grad-accum-steps", type=int, default=8)
+    p_mcc.add_argument("--warmup-steps", type=int, default=50)
+    p_mcc.add_argument("--max-samples", type=int, default=None)
+    p_mcc.add_argument("--timeout", type=int, default=3600)
+
     # --- train-qa ---
     p_qa = sub.add_parser("train-qa", help="Train with QA pairs")
     p_qa.add_argument("--qa-file", help="JSON file with QA pairs")
@@ -479,6 +508,7 @@ Examples:
         "health": cmd_health,
         "train": cmd_train,
         "train-qa-dataset": cmd_train_qa_dataset,
+        "train-math-code-conv": cmd_train_math_code_conv,
         "train-qa": cmd_train_qa,
         "train-split": cmd_train_split,
         "train-split-next": cmd_train_split_next,

@@ -7,6 +7,7 @@ Supports both inference and training via the "action" field:
   - action: "train"               — fine-tuning on HF datasets
   - action: "train_qa"            — QA pairs training (qa_pairs format)
   - action: "train_qa_dataset"    — QA-format fine-tuning on HF datasets
+  - action: "train_math_code_conv" — math/coding/conversation training
   - action: "train_split"         — split dataset training (chunked)
   - action: "train_split_next"    — train next chunk only (timeout-safe)
   - action: "split_status"        — check split training progress
@@ -437,6 +438,7 @@ class EndpointHandler:
             "train":            self._handle_train,
             "train_qa":         self._train_qa,
             "train_qa_dataset": self._handle_train_qa,
+            "train_math_code_conv": self._handle_train_math_code_conv,
             "train_split":      self._handle_train_split,
             "train_split_next": self._handle_train_split_next,
         }
@@ -748,6 +750,124 @@ class EndpointHandler:
             self._save_checkpoint(
                 datasets=[d["id"] for d in QA_DATASETS_INFO] + extra_ds,
                 extra_meta={"qa_training": True},
+            )
+
+            return [{"status": "success", "message": self.training_status["message"],
+                     "log": self.training_status["log"]}]
+
+        except Exception as e:
+            import traceback
+            self.training_status["running"] = False
+            self.training_status["message"] = f"Error: {e}"
+            self.training_status["log"].append(traceback.format_exc())
+            self.model.eval()
+            return [{"status": "error", "message": str(e),
+                     "log": self.training_status["log"]}]
+
+    # --------------------------------------------------------
+    # Training (Math / Coding / Conversation)
+    # --------------------------------------------------------
+
+    MATH_CODE_CONV_DATASETS = [
+        {"id": "openai/gsm8k", "max_samples": 3000, "format": "gsm8k"},
+        {"id": "sahil2801/CodeAlpaca-20k", "max_samples": 5000, "format": "alpaca"},
+        {"id": "iamtarun/code_instructions_120k_alpaca", "max_samples": 3000, "format": "alpaca"},
+        {"id": "kunishou/databricks-dolly-15k-ja", "max_samples": 5000, "format": "dolly"},
+        {"id": "kunishou/oasst1-chat-44k-ja", "max_samples": 5000, "format": "conversations"},
+        {"id": "shi3z/Japanese_wikipedia_conversation_100K", "max_samples": 3000, "format": "conversations"},
+    ]
+
+    def _handle_train_math_code_conv(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Run math/coding/conversation domain training."""
+        if self.training_status["running"]:
+            return [{"status": "error", "message": "Training already in progress"}]
+
+        from dataset_utils import safe_load_dataset
+
+        params = data.get("parameters", {})
+        epochs = int(params.get("epochs", 10))
+        lr = float(params.get("lr", 5e-5))
+        batch_size = int(params.get("batch_size", 4))
+        grad_accum_steps = int(params.get("grad_accum_steps", 8))
+        warmup_steps = int(params.get("warmup_steps", 50))
+        max_samples_override = params.get("max_samples_per_dataset", None)
+
+        self.training_status = {"running": True, "log": [], "message": "Loading math/code/conv datasets..."}
+
+        try:
+            all_qa = []
+            ds_list = []
+
+            for ds_info in self.MATH_CODE_CONV_DATASETS:
+                ds_id = ds_info["id"]
+                fmt = ds_info["format"]
+                max_samples = int(max_samples_override) if max_samples_override else ds_info["max_samples"]
+                ds_list.append(ds_id)
+
+                try:
+                    self.training_status["message"] = f"Loading {ds_id}..."
+                    if ds_id == "openai/gsm8k":
+                        ds = safe_load_dataset(ds_id, split="train", name="main")
+                    else:
+                        ds = safe_load_dataset(ds_id, split="train")
+                    n = min(max_samples, len(ds))
+                    count = 0
+
+                    for row in ds.select(range(n)):
+                        text = None
+                        if fmt == "gsm8k":
+                            q = row.get("question", "").strip()
+                            a = row.get("answer", "").strip()
+                            if q and a:
+                                text = f"質問: {q}\n回答: {a}"
+                        elif fmt == "alpaca":
+                            text = format_qa_alpaca(row)
+                        elif fmt == "dolly":
+                            inst = row.get("instruction", "").strip()
+                            ctx = row.get("context", "").strip()
+                            resp = row.get("response", "").strip()
+                            if inst and resp:
+                                q = f"{inst}\n{ctx}" if ctx else inst
+                                text = f"質問: {q}\n回答: {resp}"
+                        elif fmt == "conversations":
+                            text = format_qa_conversations(row)
+
+                        if text and len(text) > 10:
+                            all_qa.append(text)
+                            count += 1
+
+                    self.training_status["log"].append(f"Loaded {ds_id}: {count} QA samples")
+                except Exception as e:
+                    self.training_status["log"].append(f"Error loading {ds_id}: {e}")
+
+            # Add crafted QA for all 3 domains
+            crafted = CRAFTED_QA + [
+                "質問: 123 + 456 はいくつですか？\n回答: 123 + 456 = 579 です。",
+                "質問: 15 × 24 はいくつですか？\n回答: 15 × 24 = 360 です。",
+                "質問: 2x + 5 = 13 のとき、xはいくつですか？\n回答: 2x + 5 = 13 より、2x = 8、x = 4 です。",
+                "質問: x² - 5x + 6 = 0 の解は？\n回答: 因数分解すると (x-2)(x-3) = 0 なので、x = 2 または x = 3 です。",
+                "質問: Pythonでリストの要素を逆順にするには？\n回答: list.reverse() メソッドまたは list[::-1] スライスを使います。",
+                "質問: JavaScriptで配列の重複を除去するには？\n回答: Set を使います。const unique = [...new Set(array)]; で重複を除去できます。",
+                "質問: こんにちは\n回答: こんにちは！何かお手伝いできることはありますか？",
+                "質問: ありがとう\n回答: どういたしまして！他にも質問があればいつでもお聞きください。",
+            ]
+            for _ in range(30):
+                all_qa.extend(crafted)
+            self.training_status["log"].append(f"Added {len(crafted) * 30} crafted QA samples")
+
+            if not all_qa:
+                self.training_status["running"] = False
+                self.training_status["message"] = "No training data loaded"
+                return [{"status": "error", "message": "No training data loaded",
+                         "log": self.training_status["log"]}]
+
+            # Tokenize and train
+            self._train_from_texts(all_qa, epochs, lr, batch_size, grad_accum_steps, warmup_steps)
+
+            # Save checkpoint
+            self._save_checkpoint(
+                datasets=ds_list,
+                extra_meta={"math_code_conv_training": True}
             )
 
             return [{"status": "success", "message": self.training_status["message"],
@@ -1688,7 +1808,8 @@ def _runpod_handler(event):
 
     Supported actions:
         inference (default), train, train_qa, train_qa_dataset,
-        train_split, train_split_next, split_status, split_reset, status
+        train_math_code_conv, train_split, train_split_next,
+        split_status, split_reset, status
     """
     job_input = event.get("input", {})
 
