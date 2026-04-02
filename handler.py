@@ -469,10 +469,11 @@ class EndpointHandler:
 
         params = data.get("parameters", {})
         temperature = float(params.get("temperature", 0.7))
-        max_new_tokens = int(params.get("max_new_tokens", 100))
+        max_new_tokens = int(params.get("max_new_tokens", params.get("max_tokens", 100)))
         top_k = int(params.get("top_k", 40))
         top_p = float(params.get("top_p", 0.9))
         repetition_penalty = float(params.get("repetition_penalty", 1.3))
+        ignore_eos = bool(params.get("ignore_eos", False))
 
         # Match training format: [BOF, BOS] + content + [EOS, EOF]
         # For inference, use [BOF, BOS] + content (no EOS, so model generates)
@@ -533,7 +534,7 @@ class EndpointHandler:
                         "is_eof": nxt_id == self.tokenizer.eof_id,
                     })
 
-                if nxt_id in (self.tokenizer.eos_id, self.tokenizer.eof_id):
+                if not ignore_eos and nxt_id in (self.tokenizer.eos_id, self.tokenizer.eof_id):
                     break
                 if nxt_id in (self.tokenizer.pad_id, self.tokenizer.bof_id):
                     # Still update input_tensor to avoid regenerating the same token
