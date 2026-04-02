@@ -236,6 +236,7 @@ def generate_text(prompt: str, max_new_tokens: int = 100, temperature: float = 0
             if nxt_id in (tokenizer.eos_id, tokenizer.eof_id):
                 break
             if nxt_id in (tokenizer.pad_id, tokenizer.bof_id):
+                input_tensor = torch.cat([input_tensor, nxt], dim=1)
                 continue
 
             generated.append(nxt_id)

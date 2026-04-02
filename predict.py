@@ -94,6 +94,7 @@ class Predictor(BasePredictor):
                 if nxt_id in (self.tokenizer.eos_id, self.tokenizer.eof_id):
                     break
                 if nxt_id in (self.tokenizer.pad_id, self.tokenizer.bof_id):
+                    input_tensor = torch.cat([input_tensor, nxt], dim=1)
                     continue
 
                 generated.append(nxt_id)
