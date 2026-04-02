@@ -149,11 +149,12 @@ NETWORK_VOLUME_PATH = os.environ.get("NETWORK_VOLUME_PATH", "/runpod-volume")
 # ============================================================
 
 def find_checkpoint(path: str):
-    """Search for a checkpoint file in the model directory and network volume."""
-    # Search in both local path and network volume
-    search_dirs = [path]
+    """Search for a checkpoint file in the network volume (priority) and model directory."""
+    # Prioritize network volume for persistent checkpoints across pod restarts
+    search_dirs = []
     if os.path.isdir(NETWORK_VOLUME_PATH):
         search_dirs.append(NETWORK_VOLUME_PATH)
+    search_dirs.append(path)
 
     for search_dir in search_dirs:
         candidates = [
@@ -299,12 +300,14 @@ class EndpointHandler:
             checkpoint = torch.load(self.ckpt_path, map_location="cpu")
             self.config = checkpoint.get("config", dict(DEFAULT_CONFIG))
 
-            # Load tokenizer (check local path first, then network volume)
-            tokenizer_path = os.path.join(path, "neuroq_tokenizer.model")
-            if not os.path.isfile(tokenizer_path) and os.path.isdir(NETWORK_VOLUME_PATH):
+            # Load tokenizer (prioritize network volume for consistency with checkpoint)
+            tokenizer_path = None
+            if os.path.isdir(NETWORK_VOLUME_PATH):
                 nv_tok = os.path.join(NETWORK_VOLUME_PATH, "neuroq_tokenizer.model")
                 if os.path.isfile(nv_tok):
                     tokenizer_path = nv_tok
+            if not tokenizer_path:
+                tokenizer_path = os.path.join(path, "neuroq_tokenizer.model")
             self.tokenizer = NeuroQuantumTokenizer(
                 vocab_size=self.config["vocab_size"],
                 model_file=tokenizer_path if os.path.isfile(tokenizer_path) else None,
