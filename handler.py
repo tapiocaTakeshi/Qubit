@@ -1088,6 +1088,11 @@ class EndpointHandler:
                                 text = format_qa_conversations(row)
                         if not text and row.get("instruction"):
                             text = format_qa_alpaca(row)
+                        # Fallback: use plain text column (e.g. Wikipedia)
+                        if not text:
+                            val = row.get("text") or row.get("content") or ""
+                            if isinstance(val, str) and len(val.strip()) > 20:
+                                text = val.strip()
                     else:
                         for col in ["text", "content", "output", "sentence", "document"]:
                             val = row.get(col)
