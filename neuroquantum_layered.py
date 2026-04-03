@@ -162,7 +162,7 @@ class NeuroQuantumConfig:
         hidden_dim: int = 1024,
         num_heads: int = 8,
         num_layers: int = 6,
-        max_seq_len: int = 512,
+        max_seq_len: int = 10000,
         dropout: float = 0.1,
         lambda_entangle: float = 0.5,  # QBNNもつれ強度
     ):
@@ -262,7 +262,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             "hidden_dim": 1024,
             "num_heads": 8,
             "num_layers": 6,
-            "max_seq_len": 512,
+            "max_seq_len": 10000,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 8,
@@ -272,7 +272,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             "hidden_dim": 768,
             "num_heads": 8,
             "num_layers": 6,
-            "max_seq_len": 512,
+            "max_seq_len": 10000,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 4,
@@ -282,7 +282,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             "hidden_dim": 512,
             "num_heads": 8,
             "num_layers": 4,
-            "max_seq_len": 256,
+            "max_seq_len": 4096,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 2,
@@ -292,7 +292,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             "hidden_dim": 256,
             "num_heads": 4,
             "num_layers": 3,
-            "max_seq_len": 128,
+            "max_seq_len": 2048,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 1,
@@ -310,7 +310,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             config["hidden_dim"] = 1024
             config["num_heads"] = 8
             config["num_layers"] = 6
-            config["max_seq_len"] = 512
+            config["max_seq_len"] = 10000
             config["batch_size"] = 4
         elif ram_gb >= 64:
             # mid ティア（detect_gpu_tier で判定済み）— さらに微調整
@@ -318,7 +318,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             config["hidden_dim"] = 768
             config["num_heads"] = 8
             config["num_layers"] = 6
-            config["max_seq_len"] = 512
+            config["max_seq_len"] = 10000
             config["batch_size"] = 2
         elif ram_gb >= 32:
             # low ティア（detect_gpu_tier で判定済み）
@@ -326,7 +326,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             config["hidden_dim"] = 512
             config["num_heads"] = 8
             config["num_layers"] = 4
-            config["max_seq_len"] = 256
+            config["max_seq_len"] = 4096
             config["batch_size"] = 2
         elif ram_gb >= 16:
             # RAM 16GB: cpu デフォルトより少し大きめ
@@ -334,7 +334,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             config["hidden_dim"] = 384
             config["num_heads"] = 4
             config["num_layers"] = 3
-            config["max_seq_len"] = 192
+            config["max_seq_len"] = 2048
             config["batch_size"] = 1
         # ram_gb < 16: デフォルトの cpu ティア設定をそのまま使用
 
@@ -345,11 +345,11 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             config["hidden_dim"] = 1024
             config["num_heads"] = 8
             config["num_layers"] = 6
-            config["max_seq_len"] = 512
+            config["max_seq_len"] = 10000
             config["batch_size"] = 8
         elif ram_gb >= 32:
             config["batch_size"] = min(config["batch_size"] + 2, 8)
-            config["max_seq_len"] = 512
+            config["max_seq_len"] = 10000
 
     else:
         # CUDA GPU環境: RAMが十分にある場合、batch_size を増加
@@ -2047,7 +2047,7 @@ class NeuroQuantumAI:
         hidden_dim: int = 2048,       # ニューロン数（FFN層の次元）
         num_heads: int = 8,
         num_layers: int = 6,
-        max_seq_len: int = 512,
+        max_seq_len: int = 10000,
         dropout: float = 0.1,
         lambda_entangle: float = 0.5,
         use_openai_embedding: bool = False,  # OpenAI Embeddingを使用するか
@@ -3227,7 +3227,7 @@ def main(num_neurons: int = 4096):
         hidden_dim=num_neurons,  # ニューロン数
         num_heads=4,
         num_layers=5,
-        max_seq_len=128,
+        max_seq_len=10000,
         dropout=0.1,
         lambda_entangle=0.35,
     )

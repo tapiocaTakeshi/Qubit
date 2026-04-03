@@ -70,7 +70,7 @@ DEFAULT_CONFIG = {
     "hidden_dim": 1024,
     "num_heads": 8,
     "num_layers": 6,
-    "max_seq_len": 512,
+    "max_seq_len": 10000,
     "entangle_strength": 0.5,
     "dropout": 0.1,
     "architecture": "neuroquantum",

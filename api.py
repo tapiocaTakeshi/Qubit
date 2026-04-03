@@ -67,7 +67,7 @@ DEFAULT_CONFIG = {
     "hidden_dim": 1024,
     "num_heads": 8,
     "num_layers": 6,
-    "max_seq_len": 512,
+    "max_seq_len": 10000,
     "entangle_strength": 0.5,
     "dropout": 0.1,
     "architecture": "neuroquantum",
@@ -80,7 +80,7 @@ DEFAULT_CONFIG = {
 
 class InferenceRequest(BaseModel):
     prompt: str
-    max_new_tokens: int = 100
+    max_new_tokens: int = 10000
     temperature: float = 0.7
     top_k: int = 40
     top_p: float = 0.9
