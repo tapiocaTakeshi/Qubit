@@ -61,8 +61,17 @@ def _resolve_tokenizer_path():
     return LOCAL_TOKENIZER_PATH
 
 
-CKPT_PATH = _resolve_checkpoint_path()
-TOKENIZER_PATH = _resolve_tokenizer_path()
+DEFAULT_CONFIG = {
+    "vocab_size": 8000,
+    "embed_dim": 512,
+    "hidden_dim": 1024,
+    "num_heads": 8,
+    "num_layers": 6,
+    "max_seq_len": 512,
+    "entangle_strength": 0.5,
+    "dropout": 0.1,
+    "architecture": "neuroquantum",
+}
 
 
 # ========================================
@@ -183,39 +192,96 @@ class TrainStatusResponse(BaseModel):
 # ========================================
 
 def load_model():
-    """Load model and tokenizer from checkpoint."""
+    """Load model and tokenizer from checkpoint.
+
+    Checkpoint resolution priority:
+      1. RunPod network volume (/runpod-volume or NETWORK_VOLUME_PATH)
+      2. Local application directory
+      3. Fresh model initialization (no checkpoint)
+    """
     global model, tokenizer, config, device
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    if not os.path.exists(CKPT_PATH):
-        raise RuntimeError(f"Checkpoint not found: {CKPT_PATH}")
+    # Dynamically resolve paths each time (network volume may appear after cold start)
+    ckpt_path = _resolve_checkpoint_path()
+    tok_path = _resolve_tokenizer_path()
 
-    checkpoint = torch.load(CKPT_PATH, map_location="cpu")
-    config = checkpoint["config"]
+    if os.path.exists(ckpt_path):
+        checkpoint = torch.load(ckpt_path, map_location="cpu")
+        config = checkpoint.get("config", dict(DEFAULT_CONFIG))
 
-    tokenizer = NeuroQuantumTokenizer(
-        vocab_size=config["vocab_size"], model_file=TOKENIZER_PATH
-    )
+        tokenizer = NeuroQuantumTokenizer(
+            vocab_size=config["vocab_size"],
+            model_file=tok_path if os.path.isfile(tok_path) else None,
+        )
 
-    nq_config = NeuroQuantumConfig(
-        vocab_size=config["vocab_size"],
-        embed_dim=config["embed_dim"],
-        hidden_dim=config.get("hidden_dim", config["embed_dim"] * 2),
-        num_heads=config["num_heads"],
-        num_layers=config["num_layers"],
-        max_seq_len=config["max_seq_len"],
-        dropout=config.get("dropout", 0.1),
-        lambda_entangle=config.get("entangle_strength", 0.5),
-    )
-    model = NeuroQuantum(config=nq_config).to(device)
-    migrated = migrate_legacy_state_dict(checkpoint["model_state"], model)
-    model.load_state_dict(migrated)
-    model.eval()
+        # Sync vocab_size: tokenizer's actual size takes priority
+        tok_vocab = tokenizer.actual_vocab_size or tokenizer.vocab_size
+        if tok_vocab and tok_vocab != config["vocab_size"]:
+            print(f"[api] vocab_size mismatch: config={config['vocab_size']}, tokenizer={tok_vocab}. Resizing to {tok_vocab}.")
+            config["vocab_size"] = tok_vocab
 
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"Model loaded: {n_params:,} params on {device}")
-    return checkpoint
+        nq_config = NeuroQuantumConfig(
+            vocab_size=config["vocab_size"],
+            embed_dim=config["embed_dim"],
+            hidden_dim=config.get("hidden_dim", config["embed_dim"] * 2),
+            num_heads=config["num_heads"],
+            num_layers=config["num_layers"],
+            max_seq_len=config["max_seq_len"],
+            dropout=config.get("dropout", 0.1),
+            lambda_entangle=config.get("entangle_strength", 0.5),
+        )
+        model = NeuroQuantum(config=nq_config).to(device)
+        migrated = migrate_legacy_state_dict(checkpoint["model_state"], model)
+
+        # Handle vocab_size mismatch: partially load weights for resized layers
+        model_state = model.state_dict()
+        resized_keys = []
+        for key in list(migrated.keys()):
+            if key in model_state and migrated[key].shape != model_state[key].shape:
+                old_shape = migrated[key].shape
+                new_shape = model_state[key].shape
+                new_tensor = model_state[key].clone()
+                slices = tuple(slice(0, min(o, n)) for o, n in zip(old_shape, new_shape))
+                new_tensor[slices] = migrated[key][slices]
+                migrated[key] = new_tensor
+                resized_keys.append(f"{key}: {list(old_shape)}->{list(new_shape)}")
+        if resized_keys:
+            print(f"[api] Resized layers: {', '.join(resized_keys)}")
+
+        model.load_state_dict(migrated)
+        model.eval()
+
+        n_params = sum(p.numel() for p in model.parameters())
+        print(f"[api] Model loaded from {ckpt_path}: {n_params:,} params on {device}")
+        return checkpoint
+    else:
+        # No checkpoint found: initialize fresh model (like handler.py)
+        print(f"[api] No checkpoint found, initializing fresh model")
+        config = dict(DEFAULT_CONFIG)
+
+        tokenizer = NeuroQuantumTokenizer(
+            vocab_size=config["vocab_size"],
+            model_file=tok_path if os.path.isfile(tok_path) else None,
+        )
+
+        nq_config = NeuroQuantumConfig(
+            vocab_size=config["vocab_size"],
+            embed_dim=config["embed_dim"],
+            hidden_dim=config.get("hidden_dim", config["embed_dim"] * 2),
+            num_heads=config["num_heads"],
+            num_layers=config["num_layers"],
+            max_seq_len=config["max_seq_len"],
+            dropout=config.get("dropout", 0.1),
+            lambda_entangle=config.get("entangle_strength", 0.5),
+        )
+        model = NeuroQuantum(config=nq_config).to(device)
+        model.eval()
+
+        n_params = sum(p.numel() for p in model.parameters())
+        print(f"[api] Fresh model initialized: {n_params:,} params on {device}")
+        return None
 
 
 # ========================================
@@ -469,7 +535,8 @@ def run_training(req: TrainRequest):
 
         # Save checkpoint
         model.eval()
-        checkpoint = torch.load(CKPT_PATH, map_location="cpu")
+        _save_ckpt_path = _resolve_checkpoint_path()
+        checkpoint = torch.load(_save_ckpt_path, map_location="cpu")
         prev_log = checkpoint.get("training_log", [])
         new_log_entries = [{"epoch": len(prev_log) + i + 1, "loss": float(l.split("Loss: ")[1])}
                           for i, l in enumerate(training_status["log"]) if "Loss:" in l]
@@ -485,9 +552,9 @@ def run_training(req: TrainRequest):
                 ["range3/cc100-ja"]
             )),
         }
-        torch.save(new_checkpoint, CKPT_PATH)
-        training_status["log"].append(f"Checkpoint saved: {CKPT_PATH}")
-        nv_path = sync_checkpoint_to_network_volume(CKPT_PATH)
+        torch.save(new_checkpoint, _save_ckpt_path)
+        training_status["log"].append(f"Checkpoint saved: {_save_ckpt_path}")
+        nv_path = sync_checkpoint_to_network_volume(_save_ckpt_path)
         if nv_path:
             training_status["log"].append(f"Checkpoint synced to network volume: {nv_path}")
         training_status["message"] = "Training complete!"
@@ -746,7 +813,8 @@ def run_qa_training(req: TrainQARequest):
 
 def save_qa_checkpoint(mdl, cfg, status, epoch_num, extra_datasets=None):
     """Save QA training checkpoint."""
-    checkpoint = torch.load(CKPT_PATH, map_location="cpu")
+    ckpt_path = _resolve_checkpoint_path()
+    checkpoint = torch.load(ckpt_path, map_location="cpu")
     prev_log = checkpoint.get("training_log", [])
     new_log_entries = [
         {"epoch": len(prev_log) + i + 1, "loss": float(l.split("Loss: ")[1])}
@@ -764,9 +832,9 @@ def save_qa_checkpoint(mdl, cfg, status, epoch_num, extra_datasets=None):
         "qa_training": True,
         "qa_high_epoch": True,
     }
-    torch.save(new_checkpoint, CKPT_PATH)
+    torch.save(new_checkpoint, ckpt_path)
     status["log"].append(f"Checkpoint saved at epoch {epoch_num}")
-    sync_checkpoint_to_network_volume(CKPT_PATH)
+    sync_checkpoint_to_network_volume(ckpt_path)
 
 
 # ========================================
@@ -1685,12 +1753,10 @@ async def train_status():
 @app.post("/reload")
 async def reload_model():
     """Reload model from latest checkpoint (re-checks network volume)."""
-    global CKPT_PATH, TOKENIZER_PATH
     try:
-        CKPT_PATH = _resolve_checkpoint_path()
-        TOKENIZER_PATH = _resolve_tokenizer_path()
+        ckpt_path = _resolve_checkpoint_path()
         load_model()
-        return {"status": "reloaded", "message": f"Model reloaded from {CKPT_PATH}"}
+        return {"status": "reloaded", "message": f"Model reloaded from {ckpt_path}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
