@@ -586,37 +586,56 @@ class EndpointHandler:
 
         self.training_status = {"running": True, "log": [], "message": "Loading datasets..."}
 
+        mode = params.get("mode", "general")
+        crafted_repeat = int(params.get("crafted_repeat", 20))
+
         try:
             all_texts = []
-            datasets_to_use = DEFAULT_DATASETS
             if dataset_ids:
-                datasets_to_use = [{"id": did, "col": "text"} for did in dataset_ids]
+                # Use _load_custom_datasets for proper format detection & colon parsing
+                all_texts = self._load_custom_datasets(dataset_ids, max_samples, mode)
+                if mode == "qa" and crafted_repeat > 0:
+                    for _ in range(crafted_repeat):
+                        all_texts.extend(CRAFTED_QA)
+                    self.training_status["log"].append(
+                        f"Added {len(CRAFTED_QA) * crafted_repeat} crafted QA samples"
+                    )
+            else:
+                if mode == "qa":
+                    all_texts = self._load_all_qa_texts(max_samples)
+                    for _ in range(crafted_repeat):
+                        all_texts.extend(CRAFTED_QA)
+                    self.training_status["log"].append(
+                        f"Added {len(CRAFTED_QA) * crafted_repeat} crafted QA samples"
+                    )
+                else:
+                    datasets_to_use = DEFAULT_DATASETS
+                    for ds_info in datasets_to_use:
+                        try:
+                            self.training_status["message"] = f"Loading {ds_info['id']}..."
+                            ds = safe_load_dataset(ds_info["id"], split="train")
+                            texts = extract_texts(ds, ds_info["col"], max_samples)
+                            all_texts.extend(texts)
+                            self.training_status["log"].append(f"Loaded {ds_info['id']}: {len(texts)} texts")
+                        except Exception as e:
+                            self.training_status["log"].append(f"Error loading {ds_info['id']}: {e}")
 
-            for ds_info in datasets_to_use:
+            # Also load cc100-ja for general mode without custom datasets
+            if not dataset_ids and mode != "qa":
                 try:
-                    self.training_status["message"] = f"Loading {ds_info['id']}..."
-                    ds = safe_load_dataset(ds_info["id"], split="train")
-                    texts = extract_texts(ds, ds_info["col"], max_samples)
-                    all_texts.extend(texts)
-                    self.training_status["log"].append(f"Loaded {ds_info['id']}: {len(texts)} texts")
+                    self.training_status["message"] = "Loading cc100-ja..."
+                    ds_cc = safe_load_dataset("range3/cc100-ja", split="train", streaming=True)
+                    cc_texts = []
+                    for i, row in enumerate(ds_cc):
+                        if i >= max_samples:
+                            break
+                        text = row.get("text", "").strip()
+                        if len(text) > 10:
+                            cc_texts.append(text)
+                    all_texts.extend(cc_texts)
+                    self.training_status["log"].append(f"Loaded cc100-ja: {len(cc_texts)} texts")
                 except Exception as e:
-                    self.training_status["log"].append(f"Error loading {ds_info['id']}: {e}")
-
-            # Also load cc100-ja
-            try:
-                self.training_status["message"] = "Loading cc100-ja..."
-                ds_cc = safe_load_dataset("range3/cc100-ja", split="train", streaming=True)
-                cc_texts = []
-                for i, row in enumerate(ds_cc):
-                    if i >= max_samples:
-                        break
-                    text = row.get("text", "").strip()
-                    if len(text) > 10:
-                        cc_texts.append(text)
-                all_texts.extend(cc_texts)
-                self.training_status["log"].append(f"Loaded cc100-ja: {len(cc_texts)} texts")
-            except Exception as e:
-                self.training_status["log"].append(f"Error loading cc100-ja: {e}")
+                    self.training_status["log"].append(f"Error loading cc100-ja: {e}")
 
             if not all_texts:
                 self.training_status["running"] = False
@@ -637,9 +656,8 @@ class EndpointHandler:
             )
 
             # Save checkpoint
-            self._save_checkpoint(
-                datasets=[d["id"] for d in datasets_to_use] + ["range3/cc100-ja"]
-            )
+            ds_names = dataset_ids if dataset_ids else [d["id"] for d in DEFAULT_DATASETS] + ["range3/cc100-ja"]
+            self._save_checkpoint(datasets=ds_names)
 
             return [{"status": "success", "message": self.training_status["message"],
                      "log": self.training_status["log"]}]
