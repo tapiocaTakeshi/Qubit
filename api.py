@@ -1137,14 +1137,73 @@ def _split_into_chunks(data, num_chunks, samples_per_batch=None):
 
 
 def _save_split_state(state):
+    """Save split training state incrementally (append to history instead of overwriting)."""
+    existing = None
+    if os.path.exists(SPLIT_STATE_PATH):
+        try:
+            with open(SPLIT_STATE_PATH, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except Exception:
+            existing = None
+
+    # Migrate old format (no history key) to new format
+    if existing and "history" not in existing:
+        existing = {
+            "history": [existing],
+            "trained_datasets": existing.get("trained_datasets", []),
+        }
+
+    if existing is None:
+        existing = {"history": [], "trained_datasets": []}
+
+    # Accumulate trained datasets
+    new_datasets = state.pop("datasets_used", [])
+    all_datasets = list(set(existing.get("trained_datasets", []) + new_datasets))
+    existing["trained_datasets"] = all_datasets
+
+    # Check if this is a continuation of the current session (same mode, updating chunk)
+    history = existing.get("history", [])
+    if (history
+            and history[-1].get("mode") == state.get("mode")
+            and history[-1].get("session_id") == state.get("session_id", "")):
+        # Update the latest session entry (same training session, next chunk)
+        history[-1].update(state)
+    else:
+        # New training session — append to history
+        history.append(state)
+
+    existing["history"] = history
+
+    # Also keep top-level fields for backward compatibility
+    existing["mode"] = state.get("mode")
+    existing["num_chunks"] = state.get("num_chunks")
+    existing["last_completed_chunk"] = state.get("last_completed_chunk")
+    existing["best_loss"] = state.get("best_loss")
+    existing["timed_out"] = state.get("timed_out", False)
+    existing["timestamp"] = state.get("timestamp")
+
     with open(SPLIT_STATE_PATH, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+        json.dump(existing, f, ensure_ascii=False, indent=2)
 
 
 def _load_split_state():
     if os.path.exists(SPLIT_STATE_PATH):
         with open(SPLIT_STATE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        # Support both old and new formats
+        if "history" in data:
+            return data
+        # Old format: wrap in new structure for compatibility
+        return {
+            "history": [data],
+            "trained_datasets": data.get("trained_datasets", []),
+            "mode": data.get("mode"),
+            "num_chunks": data.get("num_chunks"),
+            "last_completed_chunk": data.get("last_completed_chunk"),
+            "best_loss": data.get("best_loss"),
+            "timed_out": data.get("timed_out", False),
+            "timestamp": data.get("timestamp"),
+        }
     return None
 
 
@@ -1153,8 +1212,23 @@ def run_split_training(req: TrainSplitRequest):
     global model, tokenizer, config, device, training_status
     from dataset_utils import safe_load_dataset as _load_ds
 
-    training_status = {"running": True, "log": [], "message": "Loading datasets for split training..."}
+    # Load previous training log from checkpoint for continuity
+    prev_log_entries = []
+    try:
+        ckpt_path = _resolve_checkpoint_path()
+        if ckpt_path and os.path.isfile(ckpt_path):
+            ckpt = torch.load(ckpt_path, map_location="cpu")
+            prev_log_entries = ckpt.get("training_log", [])
+    except Exception:
+        pass
+
+    training_status = {
+        "running": True,
+        "log": [f"[Incremental] Previous training sessions: {len(prev_log_entries)} log entries accumulated"],
+        "message": "Loading datasets for split training...",
+    }
     min_lr_ratio = 0.1
+    session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
     try:
         # Load data
@@ -1356,6 +1430,8 @@ def run_split_training(req: TrainSplitRequest):
                 "best_loss": best_loss,
                 "timed_out": timed_out,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "session_id": session_id,
+                "datasets_used": dataset_ids,
             })
 
             # If timed out, stop processing further chunks
@@ -1382,7 +1458,21 @@ def run_split_next_training(req: TrainSplitNextRequest):
     global model, tokenizer, config, device, training_status
     from dataset_utils import safe_load_dataset as _load_ds
 
-    training_status = {"running": True, "log": [], "message": "Loading datasets for batch training..."}
+    # Load previous training log from checkpoint for continuity
+    prev_log_entries = []
+    try:
+        ckpt_path = _resolve_checkpoint_path()
+        if ckpt_path and os.path.isfile(ckpt_path):
+            ckpt = torch.load(ckpt_path, map_location="cpu")
+            prev_log_entries = ckpt.get("training_log", [])
+    except Exception:
+        pass
+
+    training_status = {
+        "running": True,
+        "log": [f"[Incremental] Previous training sessions: {len(prev_log_entries)} log entries accumulated"],
+        "message": "Loading datasets for batch training...",
+    }
     min_lr_ratio = 0.1
 
     try:
@@ -1390,8 +1480,13 @@ def run_split_next_training(req: TrainSplitNextRequest):
         state = _load_split_state()
         if state and state.get("mode") == req.mode:
             next_chunk = state.get("last_completed_chunk", -1) + 1
+            session_id = state.get("history", [{}])[-1].get("session_id", "") if state.get("history") else ""
         else:
             next_chunk = 0
+            session_id = ""
+        # If starting from chunk 0, create a new session
+        if next_chunk == 0:
+            session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
         # Load data
         if req.dataset_ids:
@@ -1447,6 +1542,8 @@ def run_split_next_training(req: TrainSplitNextRequest):
                 "last_completed_chunk": chunk_idx,
                 "best_loss": None,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "session_id": session_id,
+                "datasets_used": dataset_ids,
             })
             training_status["message"] = f"Batch {chunk_idx+1} skipped (no sequences)"
             training_status["running"] = False
@@ -1551,6 +1648,8 @@ def run_split_next_training(req: TrainSplitNextRequest):
             "last_completed_chunk": chunk_idx,
             "best_loss": best_loss,
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "session_id": session_id,
+            "datasets_used": dataset_ids,
         })
 
         model.eval()
@@ -1723,25 +1822,57 @@ async def train_split_next(req: TrainSplitNextRequest):
 
 @app.post("/train/split/reset")
 async def train_split_reset():
-    """分割学習の状態をリセットする。次回の /train/split/next はチャンク0から開始。"""
+    """分割学習の現在セッションをリセットする（履歴は保持）。次回の /train/split/next はチャンク0から開始。"""
     if training_status["running"]:
         raise HTTPException(status_code=409, detail="Training in progress, cannot reset")
 
     if os.path.exists(SPLIT_STATE_PATH):
-        os.remove(SPLIT_STATE_PATH)
-        return {"status": "reset", "message": "Split training state cleared. Next call will start from chunk 0."}
+        # Preserve history but reset current session progress
+        try:
+            with open(SPLIT_STATE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = None
+
+        if data and "history" in data:
+            # Keep history and trained_datasets, but reset current session fields
+            data["mode"] = None
+            data["num_chunks"] = None
+            data["last_completed_chunk"] = None
+            data["best_loss"] = None
+            data["timed_out"] = False
+            data["timestamp"] = None
+            with open(SPLIT_STATE_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            history_count = len(data.get("history", []))
+            trained_ds = data.get("trained_datasets", [])
+            return {
+                "status": "reset",
+                "message": f"Current session reset. Next call will start from chunk 0. "
+                           f"Training history preserved: {history_count} sessions, "
+                           f"{len(trained_ds)} datasets accumulated.",
+                "history_count": history_count,
+                "trained_datasets": trained_ds,
+            }
+        else:
+            os.remove(SPLIT_STATE_PATH)
+            return {"status": "reset", "message": "Split training state cleared. Next call will start from chunk 0."}
     return {"status": "no_state", "message": "No split training state found. Already at initial state."}
 
 
 @app.get("/train/split/status")
 async def train_split_status():
-    """分割学習の進捗状態を取得。"""
+    """分割学習の進捗状態を取得（累積履歴を含む）。"""
     state = _load_split_state()
+    history = state.get("history", []) if state else []
+    trained_datasets = state.get("trained_datasets", []) if state else []
     return {
         "training_running": training_status["running"],
         "split_state": state,
         "current_status": training_status["message"],
         "log": training_status["log"],
+        "total_sessions": len(history),
+        "trained_datasets": trained_datasets,
     }
 
 
