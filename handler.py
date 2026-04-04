@@ -1002,12 +1002,71 @@ class EndpointHandler:
     def _load_split_state(self):
         if os.path.exists(self.split_state_path):
             with open(self.split_state_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            # Support both old and new formats
+            if "history" in data:
+                return data
+            # Old format: wrap in new structure for compatibility
+            return {
+                "history": [data],
+                "trained_datasets": data.get("trained_datasets", []),
+                "mode": data.get("mode"),
+                "num_chunks": data.get("num_chunks"),
+                "last_completed_chunk": data.get("last_completed_chunk"),
+                "best_loss": data.get("best_loss"),
+                "timed_out": data.get("timed_out", False),
+                "timestamp": data.get("timestamp"),
+            }
         return None
 
     def _save_split_state(self, state):
+        """Save split training state incrementally (append to history instead of overwriting)."""
+        existing = None
+        if os.path.exists(self.split_state_path):
+            try:
+                with open(self.split_state_path, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+            except Exception:
+                existing = None
+
+        # Migrate old format (no history key) to new format
+        if existing and "history" not in existing:
+            existing = {
+                "history": [existing],
+                "trained_datasets": existing.get("trained_datasets", []),
+            }
+
+        if existing is None:
+            existing = {"history": [], "trained_datasets": []}
+
+        # Accumulate trained datasets
+        new_datasets = state.pop("datasets_used", [])
+        all_datasets = list(set(existing.get("trained_datasets", []) + new_datasets))
+        existing["trained_datasets"] = all_datasets
+
+        # Check if this is a continuation of the current session (same mode, updating chunk)
+        history = existing.get("history", [])
+        if (history
+                and history[-1].get("mode") == state.get("mode")
+                and history[-1].get("session_id") == state.get("session_id", "")):
+            # Update the latest session entry (same training session, next chunk)
+            history[-1].update(state)
+        else:
+            # New training session — append to history
+            history.append(state)
+
+        existing["history"] = history
+
+        # Also keep top-level fields for backward compatibility
+        existing["mode"] = state.get("mode")
+        existing["num_chunks"] = state.get("num_chunks")
+        existing["last_completed_chunk"] = state.get("last_completed_chunk")
+        existing["best_loss"] = state.get("best_loss")
+        existing["timed_out"] = state.get("timed_out", False)
+        existing["timestamp"] = state.get("timestamp")
+
         with open(self.split_state_path, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+            json.dump(existing, f, ensure_ascii=False, indent=2)
 
     def _load_all_qa_texts(self, max_samples):
         """Load all QA texts from default datasets."""
@@ -1306,7 +1365,21 @@ class EndpointHandler:
         dataset_ids = params.get("dataset_ids", None)
         resume = bool(params.get("resume", False))
 
-        self.training_status = {"running": True, "log": [], "message": "Loading datasets for split training..."}
+        # Load previous training log from checkpoint for continuity
+        prev_log_count = 0
+        if self.ckpt_path and os.path.isfile(self.ckpt_path):
+            try:
+                old_ckpt = torch.load(self.ckpt_path, map_location="cpu")
+                prev_log_count = len(old_ckpt.get("training_log", []))
+            except Exception:
+                pass
+
+        self.training_status = {
+            "running": True,
+            "log": [f"[Incremental] Previous training sessions: {prev_log_count} log entries accumulated"],
+            "message": "Loading datasets for split training...",
+        }
+        session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
         try:
             # Load data
@@ -1419,6 +1492,8 @@ class EndpointHandler:
                     "best_loss": best_loss,
                     "timed_out": timed_out,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                    "datasets_used": ds_names,
                 })
 
                 if timed_out:
@@ -1498,15 +1573,33 @@ class EndpointHandler:
         crafted_repeat = int(params.get("crafted_repeat", 20))
         dataset_ids = params.get("dataset_ids", None)
 
-        self.training_status = {"running": True, "log": [], "message": "Loading datasets for batch training..."}
+        # Load previous training log from checkpoint for continuity
+        prev_log_count = 0
+        if self.ckpt_path and os.path.isfile(self.ckpt_path):
+            try:
+                old_ckpt = torch.load(self.ckpt_path, map_location="cpu")
+                prev_log_count = len(old_ckpt.get("training_log", []))
+            except Exception:
+                pass
+
+        self.training_status = {
+            "running": True,
+            "log": [f"[Incremental] Previous training sessions: {prev_log_count} log entries accumulated"],
+            "message": "Loading datasets for batch training...",
+        }
 
         try:
             # Determine next chunk from saved state
             state = self._load_split_state()
             if state and state.get("mode") == mode:
                 next_chunk = state.get("last_completed_chunk", -1) + 1
+                session_id = state.get("history", [{}])[-1].get("session_id", "") if state.get("history") else ""
             else:
                 next_chunk = 0
+                session_id = ""
+            # If starting from chunk 0, create a new session
+            if next_chunk == 0:
+                session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
             # Load data
             if dataset_ids:
@@ -1556,6 +1649,8 @@ class EndpointHandler:
                     "last_completed_chunk": next_chunk,
                     "best_loss": None,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "session_id": session_id,
+                    "datasets_used": ds_names,
                 })
                 self.training_status["running"] = False
                 return [{"status": "skipped", "chunk_index": next_chunk,
@@ -1580,6 +1675,8 @@ class EndpointHandler:
                 "best_loss": best_loss,
                 "timed_out": timed_out,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "session_id": session_id,
+                "datasets_used": ds_names,
             })
 
             remaining = actual_num_chunks - next_chunk - 1
@@ -1611,26 +1708,55 @@ class EndpointHandler:
     # --------------------------------------------------------
 
     def _handle_split_status(self) -> List[Dict[str, Any]]:
-        """Return split training progress."""
+        """Return split training progress (with accumulated history)."""
         state = self._load_split_state()
         if state:
+            history = state.get("history", [])
+            trained_datasets = state.get("trained_datasets", [])
             return [{
                 "status": "ok",
                 "mode": state.get("mode"),
                 "num_chunks": state.get("num_chunks"),
                 "last_completed_chunk": state.get("last_completed_chunk"),
-                "chunks_remaining": state.get("num_chunks", 0) - state.get("last_completed_chunk", -1) - 1,
+                "chunks_remaining": (state.get("num_chunks") or 0) - (state.get("last_completed_chunk") or -1) - 1,
                 "best_loss": state.get("best_loss"),
                 "timed_out": state.get("timed_out", False),
                 "timestamp": state.get("timestamp"),
+                "total_sessions": len(history),
+                "trained_datasets": trained_datasets,
+                "history": history,
             }]
         return [{"status": "no_state", "message": "No split training state found"}]
 
     def _handle_split_reset(self) -> List[Dict[str, Any]]:
-        """Reset split training state to start over."""
+        """Reset current session (preserve training history)."""
         if os.path.exists(self.split_state_path):
-            os.remove(self.split_state_path)
-            return [{"status": "ok", "message": "Split training state reset"}]
+            try:
+                with open(self.split_state_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = None
+
+            if data and "history" in data:
+                # Keep history and trained_datasets, but reset current session fields
+                data["mode"] = None
+                data["num_chunks"] = None
+                data["last_completed_chunk"] = None
+                data["best_loss"] = None
+                data["timed_out"] = False
+                data["timestamp"] = None
+                with open(self.split_state_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                history_count = len(data.get("history", []))
+                trained_ds = data.get("trained_datasets", [])
+                return [{"status": "ok",
+                         "message": f"Current session reset. History preserved: "
+                                    f"{history_count} sessions, {len(trained_ds)} datasets.",
+                         "history_count": history_count,
+                         "trained_datasets": trained_ds}]
+            else:
+                os.remove(self.split_state_path)
+                return [{"status": "ok", "message": "Split training state reset"}]
         return [{"status": "ok", "message": "No state to reset"}]
 
     # --------------------------------------------------------
