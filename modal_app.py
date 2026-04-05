@@ -48,7 +48,7 @@ image = (
 # Modal App
 # ==============================================================
 
-app = modal.App(name="neuroq-qbnn", image=image)
+app = modal.App(name="qubit_ai", image=image)
 
 # チェックポイント永続化用 Volume
 volume = modal.Volume.from_name("neuroq-checkpoints", create_if_missing=True)
