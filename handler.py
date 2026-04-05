@@ -578,7 +578,7 @@ class EndpointHandler:
         params = data.get("parameters", {})
         epochs = int(params.get("epochs", 10))
         lr = float(params.get("lr", 1e-4))
-        batch_size = int(params.get("batch_size", 4))
+        batch_size = int(params.get("batch_size", 8))
         grad_accum_steps = int(params.get("grad_accum_steps", 8))
         warmup_steps = int(params.get("warmup_steps", 100))
         max_samples = int(params.get("max_samples_per_dataset", 5000))
@@ -685,7 +685,7 @@ class EndpointHandler:
         params = data.get("parameters", {})
         epochs = int(params.get("epochs", 20))
         lr = float(params.get("lr", 3e-5))
-        batch_size = int(params.get("batch_size", 4))
+        batch_size = int(params.get("batch_size", 8))
         grad_accum_steps = int(params.get("grad_accum_steps", 4))
         warmup_steps = int(params.get("warmup_steps", 30))
         max_samples = int(params.get("max_samples_per_dataset", 1500))
@@ -805,7 +805,7 @@ class EndpointHandler:
         repeat = int(params.get("repeat", 3))
         epochs = int(params.get("epochs", 20))
         lr = float(params.get("lr", 3e-5))
-        batch_size = int(params.get("batch_size", 4))
+        batch_size = int(params.get("batch_size", 8))
         grad_accum_steps = int(params.get("grad_accum_steps", 4))
         warmup_steps = int(params.get("warmup_steps", 10))
 
@@ -852,7 +852,7 @@ class EndpointHandler:
             return [{"status": "error", "message": str(e),
                      "log": self.training_status["log"]}]
 
-    def _train_from_texts(self, texts, epochs=20, lr=3e-5, batch_size=4,
+    def _train_from_texts(self, texts, epochs=20, lr=3e-5, batch_size=8,
                           grad_accum_steps=4, warmup_steps=10):
         """Tokenize texts and run the shared training loop."""
         self.training_status["message"] = "Tokenizing..."
@@ -1357,7 +1357,7 @@ class EndpointHandler:
             max_minutes_per_chunk = float(max_minutes_per_chunk)
         epochs_per_chunk = int(params.get("epochs_per_chunk", 5))
         lr = float(params.get("lr", 3e-5))
-        batch_size = int(params.get("batch_size", 4))
+        batch_size = int(params.get("batch_size", 8))
         grad_accum_steps = int(params.get("grad_accum_steps", 4))
         warmup_steps = int(params.get("warmup_steps", 20))
         max_samples = int(params.get("max_samples_per_dataset", 2000))
@@ -1566,7 +1566,7 @@ class EndpointHandler:
             samples_per_batch = int(samples_per_batch)
         epochs_per_chunk = int(params.get("epochs_per_chunk", 3))
         lr = float(params.get("lr", 3e-5))
-        batch_size = int(params.get("batch_size", 4))
+        batch_size = int(params.get("batch_size", 8))
         grad_accum_steps = int(params.get("grad_accum_steps", 4))
         warmup_steps = int(params.get("warmup_steps", 20))
         max_samples = int(params.get("max_samples_per_dataset", 2000))

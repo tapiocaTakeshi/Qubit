@@ -25,10 +25,10 @@ import modal
 # ==============================================================
 
 image = (
-    modal.Image.debian_slim(python_version="3.10")
+    modal.Image.debian_slim(python_version="3.11")
     .apt_install("git")
     .pip_install(
-        "torch>=2.0.0",
+        "torch>=2.4.0",
         "numpy>=1.24.0",
         "sentencepiece>=0.1.99",
         "huggingface-hub>=0.30.0,<1.0",
@@ -56,7 +56,7 @@ VOLUME_PATH = "/data/checkpoints"
 
 
 @app.cls(
-    gpu="A10G",
+    gpu="A100-80GB",
     timeout=600,
     scaledown_window=120,
     volumes={VOLUME_PATH: volume},

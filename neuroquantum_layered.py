@@ -205,7 +205,9 @@ def detect_gpu_tier() -> Tuple[str, str, dict]:
         gpu_info["vram_gb"] = round(vram_gb, 1)
         gpu_info["compute_capability"] = f"{major}.{minor}"
 
-        if vram_gb >= 16:
+        if vram_gb >= 40:
+            return "ultra", device_name, gpu_info
+        elif vram_gb >= 16:
             return "high", device_name, gpu_info
         elif vram_gb >= 8:
             return "mid", device_name, gpu_info
@@ -237,9 +239,10 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
 
     ティア判定の基準:
         GPU環境:
-            high (VRAM >= 16GB): フル設定 - 大規模モデル
-            mid  (VRAM >= 8GB):  中規模設定
-            low  (VRAM < 8GB):   軽量設定
+            ultra (VRAM >= 40GB): A100最大設定 - 超大規模モデル
+            high  (VRAM >= 16GB): フル設定 - 大規模モデル
+            mid   (VRAM >= 8GB):  中規模設定
+            low   (VRAM < 8GB):   軽量設定
         MPS (Apple Silicon):
             統合メモリ(RAM)に基づいてティアを判定
         CPU環境:
@@ -257,6 +260,16 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
 
     # ティア別のベースニューロン数設定
     TIER_CONFIGS = {
+        "ultra": {
+            "embed_dim": 768,
+            "hidden_dim": 2048,
+            "num_heads": 12,
+            "num_layers": 12,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 16,
+        },
         "high": {
             "embed_dim": 512,
             "hidden_dim": 1024,
@@ -353,7 +366,9 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
 
     else:
         # CUDA GPU環境: RAMが十分にある場合、batch_size を増加
-        if ram_gb >= 64:
+        if tier == "ultra" and ram_gb >= 128:
+            config["batch_size"] = min(config["batch_size"] * 2, 32)
+        elif ram_gb >= 64:
             config["batch_size"] = min(config["batch_size"] * 2, 16)
         elif ram_gb >= 32:
             config["batch_size"] = min(config["batch_size"] + 2, 12)

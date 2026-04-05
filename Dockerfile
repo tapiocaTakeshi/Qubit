@@ -1,6 +1,6 @@
 # RunPod Serverless用Dockerfile
 # NeuroQ QBNN - NeuroQuantum Transformer
-FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 # 作業ディレクトリの設定
 WORKDIR /app
