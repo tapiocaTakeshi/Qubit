@@ -57,7 +57,7 @@ VOLUME_PATH = "/data/checkpoints"
 @app.cls(
     gpu="T4",
     timeout=600,
-    container_idle_timeout=120,
+    scaledown_window=120,
     volumes={VOLUME_PATH: volume},
     allow_concurrent_inputs=4,
 )
