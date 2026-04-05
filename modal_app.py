@@ -122,13 +122,13 @@ class NeuroQService:
 
         volume.commit()
 
-    @modal.web_endpoint(method="POST")
+    @modal.fastapi_endpoint(method="POST")
     def inference(self, request: dict):
         """推論エンドポイント"""
         request.setdefault("action", "inference")
         return self._process(request)
 
-    @modal.web_endpoint(method="POST")
+    @modal.fastapi_endpoint(method="POST")
     def train(self, request: dict):
         """学習エンドポイント"""
         request.setdefault("action", "train")
@@ -136,7 +136,7 @@ class NeuroQService:
         self._sync_checkpoint()
         return result
 
-    @modal.web_endpoint(method="POST")
+    @modal.fastapi_endpoint(method="POST")
     def train_qa(self, request: dict):
         """QA学習エンドポイント"""
         request.setdefault("action", "train_qa")
@@ -144,7 +144,7 @@ class NeuroQService:
         self._sync_checkpoint()
         return result
 
-    @modal.web_endpoint(method="GET")
+    @modal.fastapi_endpoint(method="GET")
     def status(self):
         """モデルステータス"""
         return self._process({"action": "status"})
