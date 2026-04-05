@@ -57,7 +57,7 @@ class RunPodManager:
         self,
         name: str,
         template_id: str,
-        gpu_ids: str = "AMPERE_16",
+        gpu_ids: str = "AMPERE_80",
         workers_min: int = 0,
         workers_max: int = 1,
         idle_timeout: int = 5,
@@ -70,7 +70,7 @@ class RunPodManager:
         Args:
             name: Display name for the endpoint.
             template_id: RunPod template ID (Docker image config).
-            gpu_ids: GPU type filter (e.g. "AMPERE_16", "ADA_24").
+            gpu_ids: GPU type filter (e.g. "AMPERE_80", "AMPERE_16", "ADA_24").
             workers_min: Minimum active workers (0 = scale to zero).
             workers_max: Maximum workers to scale up to.
             idle_timeout: Seconds before idle worker shuts down.
