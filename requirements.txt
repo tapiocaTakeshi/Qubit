@@ -6,3 +6,4 @@ datasets>=2.18.0
 accelerate>=1.1.0
 runpod>=1.6.0
 replicate>=0.25.0
+modal>=0.73.0
