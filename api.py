@@ -293,8 +293,14 @@ def generate_text(prompt: str, max_new_tokens: int = 100, temperature: float = 0
     """Generate text from prompt."""
     global model, tokenizer, config, device
 
-    prompt = f"<s>{prompt}</s>"
-    tokens = tokenizer.encode(prompt, add_special=True)
+    # Format as QA prompt matching training data format
+    raw_input = prompt.strip()
+    if not raw_input.startswith("質問:") and not raw_input.startswith("回答:"):
+        raw_input = f"質問: {raw_input}\n回答:"
+
+    # Match training format: [BOF, BOS] + content (no EOS, so model generates)
+    content_ids = tokenizer.encode(raw_input, add_special=False)
+    tokens = [tokenizer.bof_id, tokenizer.bos_id] + content_ids
     input_tensor = torch.tensor([tokens], dtype=torch.long, device=device)
     generated = list(tokens)
     max_seq_len = config["max_seq_len"]
@@ -325,7 +331,10 @@ def generate_text(prompt: str, max_new_tokens: int = 100, temperature: float = 0
             if repetition_penalty > 1.0 and len(generated) > 1:
                 for prev in set(generated[-50:]):
                     if prev < logits.size(-1):
-                        logits[0, prev] /= repetition_penalty
+                        if logits[0, prev] > 0:
+                            logits[0, prev] /= repetition_penalty
+                        else:
+                            logits[0, prev] *= repetition_penalty
 
             probs = F.softmax(logits, dim=-1)
             nxt = torch.multinomial(probs, 1)
