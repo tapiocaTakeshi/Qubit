@@ -56,7 +56,7 @@ VOLUME_PATH = "/data/checkpoints"
 
 
 @app.cls(
-    gpu="A10G",
+    gpu="A100",
     timeout=600,
     scaledown_window=120,
     volumes={VOLUME_PATH: volume},
