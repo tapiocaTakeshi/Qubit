@@ -34,6 +34,7 @@ image = (
         "huggingface-hub>=0.30.0,<1.0",
         "datasets>=2.18.0",
         "accelerate>=1.1.0",
+        "fastapi[standard]",
     )
     .add_local_file("neuroquantum_layered.py", "/app/neuroquantum_layered.py", copy=True)
     .add_local_file("handler.py", "/app/handler.py", copy=True)
