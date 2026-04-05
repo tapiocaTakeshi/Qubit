@@ -35,11 +35,11 @@ image = (
         "datasets>=2.18.0",
         "accelerate>=1.1.0",
     )
-    .copy_local_file("neuroquantum_layered.py", "/app/neuroquantum_layered.py")
-    .copy_local_file("handler.py", "/app/handler.py")
-    .copy_local_file("dataset_utils.py", "/app/dataset_utils.py")
-    .copy_local_file("training_history.json", "/app/training_history.json")
-    .copy_local_file("train_tokenizer.py", "/app/train_tokenizer.py")
+    .add_local_file("neuroquantum_layered.py", "/app/neuroquantum_layered.py")
+    .add_local_file("handler.py", "/app/handler.py")
+    .add_local_file("dataset_utils.py", "/app/dataset_utils.py")
+    .add_local_file("training_history.json", "/app/training_history.json")
+    .add_local_file("train_tokenizer.py", "/app/train_tokenizer.py")
     .run_commands("cd /app && python train_tokenizer.py 8000 /app 20000")
 )
 
