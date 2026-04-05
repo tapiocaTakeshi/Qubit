@@ -34,13 +34,9 @@ jobs:
             echo "::error::MODAL_TOKEN_SECRET secret is not set. Please add it in Settings > Secrets and variables > Actions."
             exit 1
           fi
-          # Trim whitespace and validate format
+          # Trim whitespace
           MODAL_TOKEN_ID="$(echo "$MODAL_TOKEN_ID" | tr -d '[:space:]')"
           MODAL_TOKEN_SECRET="$(echo "$MODAL_TOKEN_SECRET" | tr -d '[:space:]')"
-          if [[ ! "$MODAL_TOKEN_ID" =~ ^ak- ]]; then
-            echo "::error::MODAL_TOKEN_ID appears malformed (expected 'ak-' prefix). Please verify the secret value in Settings > Secrets and variables > Actions."
-            exit 1
-          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
