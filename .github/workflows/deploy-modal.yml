@@ -22,13 +22,23 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate Modal token
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
         run: |
-          if [ -z "${{ secrets.MODAL_TOKEN_ID }}" ]; then
+          if [ -z "$MODAL_TOKEN_ID" ]; then
             echo "::error::MODAL_TOKEN_ID secret is not set. Please add it in Settings > Secrets and variables > Actions."
             exit 1
           fi
-          if [ -z "${{ secrets.MODAL_TOKEN_SECRET }}" ]; then
+          if [ -z "$MODAL_TOKEN_SECRET" ]; then
             echo "::error::MODAL_TOKEN_SECRET secret is not set. Please add it in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          # Trim whitespace and validate format
+          MODAL_TOKEN_ID="$(echo "$MODAL_TOKEN_ID" | tr -d '[:space:]')"
+          MODAL_TOKEN_SECRET="$(echo "$MODAL_TOKEN_SECRET" | tr -d '[:space:]')"
+          if [[ ! "$MODAL_TOKEN_ID" =~ ^ak- ]]; then
+            echo "::error::MODAL_TOKEN_ID appears malformed (expected 'ak-' prefix). Please verify the secret value in Settings > Secrets and variables > Actions."
             exit 1
           fi
 
@@ -40,10 +50,17 @@ jobs:
       - name: Install Modal CLI
         run: pip install modal
 
-      - name: Deploy to Modal
+      - name: Configure Modal token
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          # Trim any whitespace/newlines that may have been introduced when saving the secret
+          MODAL_TOKEN_ID="$(echo "$MODAL_TOKEN_ID" | tr -d '[:space:]')"
+          MODAL_TOKEN_SECRET="$(echo "$MODAL_TOKEN_SECRET" | tr -d '[:space:]')"
+          modal token set --token-id "$MODAL_TOKEN_ID" --token-secret "$MODAL_TOKEN_SECRET"
+
+      - name: Deploy to Modal
         run: |
           MAX_RETRIES=4
           RETRY_DELAY=2
@@ -51,7 +68,7 @@ jobs:
           for i in $(seq 1 $MAX_RETRIES); do
             echo "Deploy attempt $i/$MAX_RETRIES..."
             if modal deploy modal_app.py; then
-              echo "✅ Deploy succeeded"
+              echo "Deploy succeeded"
               exit 0
             fi
 
