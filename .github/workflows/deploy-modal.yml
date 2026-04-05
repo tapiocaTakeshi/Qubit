@@ -21,7 +21,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Validate Modal token
+      - name: Validate Modal secrets
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
@@ -32,13 +32,6 @@ jobs:
           fi
           if [ -z "$MODAL_TOKEN_SECRET" ]; then
             echo "::error::MODAL_TOKEN_SECRET secret is not set. Please add it in Settings > Secrets and variables > Actions."
-            exit 1
-          fi
-          # Trim whitespace and validate format
-          MODAL_TOKEN_ID="$(echo "$MODAL_TOKEN_ID" | tr -d '[:space:]')"
-          MODAL_TOKEN_SECRET="$(echo "$MODAL_TOKEN_SECRET" | tr -d '[:space:]')"
-          if [[ ! "$MODAL_TOKEN_ID" =~ ^ak- ]]; then
-            echo "::error::MODAL_TOKEN_ID appears malformed (expected 'ak-' prefix). Please verify the secret value in Settings > Secrets and variables > Actions."
             exit 1
           fi
 
@@ -56,9 +49,12 @@ jobs:
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
         run: |
           # Trim any whitespace/newlines that may have been introduced when saving the secret
-          MODAL_TOKEN_ID="$(echo "$MODAL_TOKEN_ID" | tr -d '[:space:]')"
-          MODAL_TOKEN_SECRET="$(echo "$MODAL_TOKEN_SECRET" | tr -d '[:space:]')"
-          modal token set --token-id "$MODAL_TOKEN_ID" --token-secret "$MODAL_TOKEN_SECRET"
+          TRIMMED_ID="$(echo "$MODAL_TOKEN_ID" | tr -d '[:space:]')"
+          TRIMMED_SECRET="$(echo "$MODAL_TOKEN_SECRET" | tr -d '[:space:]')"
+          if ! modal token set --token-id "$TRIMMED_ID" --token-secret "$TRIMMED_SECRET"; then
+            echo "::error::Failed to configure Modal token. Please regenerate your token at https://modal.com/settings and update MODAL_TOKEN_ID and MODAL_TOKEN_SECRET in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
 
       - name: Deploy to Modal
         run: |
