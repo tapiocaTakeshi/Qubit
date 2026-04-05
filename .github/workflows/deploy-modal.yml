@@ -1,0 +1,66 @@
+name: Deploy to Modal
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "modal_app.py"
+      - "handler.py"
+      - "neuroquantum_layered.py"
+      - "dataset_utils.py"
+      - "requirements.txt"
+      - "train_tokenizer.py"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Modal token
+        run: |
+          if [ -z "${{ secrets.MODAL_TOKEN_ID }}" ]; then
+            echo "::error::MODAL_TOKEN_ID secret is not set. Please add it in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          if [ -z "${{ secrets.MODAL_TOKEN_SECRET }}" ]; then
+            echo "::error::MODAL_TOKEN_SECRET secret is not set. Please add it in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Modal CLI
+        run: pip install modal
+
+      - name: Deploy to Modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          MAX_RETRIES=4
+          RETRY_DELAY=2
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Deploy attempt $i/$MAX_RETRIES..."
+            if modal deploy modal_app.py; then
+              echo "✅ Deploy succeeded"
+              exit 0
+            fi
+
+            if [ $i -lt $MAX_RETRIES ]; then
+              echo "Deploy failed, retrying in ${RETRY_DELAY}s..."
+              sleep $RETRY_DELAY
+              RETRY_DELAY=$((RETRY_DELAY * 2))
+            fi
+          done
+
+          echo "::error::Deploy failed after $MAX_RETRIES attempts"
+          exit 1
