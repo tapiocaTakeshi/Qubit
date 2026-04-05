@@ -59,8 +59,8 @@ VOLUME_PATH = "/data/checkpoints"
     timeout=600,
     scaledown_window=120,
     volumes={VOLUME_PATH: volume},
-    allow_concurrent_inputs=4,
 )
+@modal.concurrent(max_inputs=4)
 class NeuroQService:
     """Modal serverless class for NeuroQ inference and training."""
 
