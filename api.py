@@ -20,6 +20,7 @@ from pydantic import BaseModel
 sys.path.insert(0, os.path.dirname(__file__))
 from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, migrate_legacy_state_dict
 from dataset_utils import sync_checkpoint_to_network_volume
+from split_learning import SplitLearningTrainer, merge_split_models
 
 app = FastAPI(title="NeuroQuantum API", version="1.0.0")
 
@@ -174,6 +175,22 @@ class TrainSplitNextRequest(BaseModel):
     warmup_steps: int = 20
     max_samples_per_dataset: int = 2000
     crafted_repeat: int = 20
+
+
+class TrainSplitLearningRequest(BaseModel):
+    """分割学習 (Split Learning) リクエスト。モデルをカットレイヤーで分割して学習する。"""
+    data_mode: str = "qa"  # "qa" or "general"
+    dataset_ids: Optional[List[str]] = None
+    cut_layer: Optional[int] = None  # カットレイヤー（未指定時は中間点で自動分割）
+    epochs: int = 5
+    lr: float = 3e-5
+    batch_size: int = 4
+    grad_accum_steps: int = 4
+    warmup_steps: int = 20
+    grad_clip: float = 1.0
+    max_samples: int = 2000
+    crafted_repeat: int = 10
+    max_minutes: Optional[float] = None  # 最大学習時間（分）
 
 
 class TrainResponse(BaseModel):
@@ -1874,6 +1891,149 @@ async def train_split_status():
         "total_sessions": len(history),
         "trained_datasets": trained_datasets,
     }
+
+
+# ========================================
+# 分割学習 (Split Learning) — モデル分割
+# ========================================
+
+def run_split_learning_training(req: "TrainSplitLearningRequest"):
+    """分割学習の学習処理（バックグラウンドタスク）。"""
+    global model, training_status
+    training_status["running"] = True
+    training_status["message"] = "Split learning training in progress"
+    training_status["log"] = []
+
+    try:
+        from train_split_learning import (
+            load_qa_texts, load_general_texts, tokenize_texts, get_lr,
+            CRAFTED_QA,
+        )
+
+        # データ読み込み
+        if req.data_mode == "qa":
+            all_texts = load_qa_texts(req.max_samples)
+            for _ in range(req.crafted_repeat):
+                all_texts.extend(CRAFTED_QA)
+        else:
+            all_texts = load_general_texts(req.max_samples)
+
+        if not all_texts:
+            training_status["message"] = "No texts loaded"
+            training_status["running"] = False
+            return
+
+        sequences = tokenize_texts(all_texts, tokenizer, config["max_seq_len"])
+        training_status["message"] = f"Split learning: {len(sequences)} sequences"
+
+        # カットレイヤー決定
+        num_layers = config["num_layers"]
+        cut_layer = req.cut_layer if req.cut_layer else max(1, num_layers // 2)
+        if cut_layer < 1 or cut_layer >= num_layers:
+            cut_layer = max(1, num_layers // 2)
+
+        # SplitLearningTrainer作成
+        nq_config = model.config
+        trainer = SplitLearningTrainer(
+            model=model,
+            cut_layer=cut_layer,
+            tokenizer=tokenizer,
+            device=device,
+            lr=req.lr,
+            grad_clip=req.grad_clip,
+        )
+
+        max_seq_len = nq_config.max_seq_len
+        batch_size = req.batch_size
+        epochs = req.epochs
+        import time as _time
+        start_time = _time.time()
+
+        for epoch in range(epochs):
+            random.shuffle(sequences)
+            total_loss = 0
+            n_batches = 0
+
+            for i in range(0, len(sequences), batch_size):
+                if req.max_minutes and (_time.time() - start_time) >= req.max_minutes * 60:
+                    break
+
+                batch_seqs = sequences[i:i + batch_size]
+                if not batch_seqs:
+                    continue
+
+                max_len = min(max(len(s) for s in batch_seqs), max_seq_len)
+                input_ids = []
+                labels = []
+                for s in batch_seqs:
+                    ids = s[:max_len]
+                    pad_len = max_len - len(ids)
+                    input_ids.append(ids + [tokenizer.pad_id] * pad_len)
+                    labels.append(ids + [-100] * pad_len)
+
+                input_t = torch.tensor(input_ids, dtype=torch.long, device=device)
+                labels_t = torch.tensor(labels, dtype=torch.long, device=device)
+
+                loss = trainer.train_step(input_t, labels_t)
+                total_loss += loss
+                n_batches += 1
+
+            avg_loss = total_loss / max(n_batches, 1)
+            log_entry = {
+                "epoch": epoch + 1,
+                "loss": avg_loss,
+                "split_learning": True,
+                "cut_layer": cut_layer,
+            }
+            training_status["log"].append(log_entry)
+            training_status["message"] = (
+                f"Split learning epoch {epoch+1}/{epochs}, loss={avg_loss:.4f}"
+            )
+
+        # モデル統合 & 保存
+        merged = trainer.get_merged_model().to(device)
+        model.load_state_dict(merged.state_dict())
+
+        ckpt_path = _resolve_checkpoint_path()
+        checkpoint_data = {
+            "model_state": model.state_dict(),
+            "config": config,
+            "training_log": training_status["log"],
+            "trained_at": datetime.now(timezone.utc).isoformat(),
+            "split_learning": True,
+            "split_learning_config": {"cut_layer": cut_layer},
+        }
+        torch.save(checkpoint_data, ckpt_path)
+        sync_checkpoint_to_network_volume(ckpt_path)
+
+        training_status["message"] = (
+            f"Split learning complete: {epochs} epochs, cut_layer={cut_layer}, "
+            f"final_loss={training_status['log'][-1]['loss']:.4f}"
+        )
+
+    except Exception as e:
+        training_status["message"] = f"Split learning error: {str(e)}"
+        import traceback
+        traceback.print_exc()
+    finally:
+        training_status["running"] = False
+
+
+@app.post("/train/split_learning", response_model=TrainResponse)
+async def train_split_learning(req: TrainSplitLearningRequest, background_tasks: BackgroundTasks):
+    """分割学習（Split Learning）。モデルをカットレイヤーで分割してクライアント・サーバー間で学習する。"""
+    if training_status["running"]:
+        raise HTTPException(status_code=409, detail="Training already in progress")
+
+    num_layers = config["num_layers"] if config else 6
+    cut_layer = req.cut_layer if req.cut_layer else max(1, num_layers // 2)
+
+    background_tasks.add_task(run_split_learning_training, req)
+    return TrainResponse(
+        status="started",
+        message=f"Split Learning started: cut_layer={cut_layer}/{num_layers}, "
+                f"data_mode={req.data_mode}, epochs={req.epochs}, lr={req.lr}",
+    )
 
 
 @app.get("/train/status", response_model=TrainStatusResponse)

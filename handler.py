@@ -281,6 +281,7 @@ class EndpointHandler:
       - action: "train_qa_dataset"    — QA-format training on HF datasets
       - action: "train_split"         — split dataset training (chunked)
       - action: "train_split_next"    — train next chunk only (timeout-safe)
+      - action: "train_split_learning" — split learning (model split at cut layer)
       - action: "split_status"        — check split training progress
       - action: "split_reset"         — reset split training state
       - action: "status"              — model status & training info
@@ -442,6 +443,7 @@ class EndpointHandler:
             "train_qa_dataset": self._handle_train_qa,
             "train_split":      self._handle_train_split,
             "train_split_next": self._handle_train_split_next,
+            "train_split_learning": self._handle_split_learning,
         }
         _routes_no_data = {
             "split_status": self._handle_split_status,
@@ -1728,6 +1730,146 @@ class EndpointHandler:
             }]
         return [{"status": "no_state", "message": "No split training state found"}]
 
+    # --------------------------------------------------------
+    # Split Learning (Model Split)
+    # --------------------------------------------------------
+
+    def _handle_split_learning(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """分割学習（Split Learning）。モデルをカットレイヤーで分割して学習する。"""
+        if self.training_status["running"]:
+            return [{"error": "Training already in progress"}]
+
+        self.training_status["running"] = True
+        self.training_status["message"] = "Split learning training in progress"
+        self.training_status["log"] = []
+
+        try:
+            from split_learning import SplitLearningTrainer
+            from train_split_learning import (
+                load_qa_texts, load_general_texts, tokenize_texts, CRAFTED_QA,
+            )
+
+            data_mode = data.get("data_mode", data.get("mode", "qa"))
+            max_samples = int(data.get("max_samples", data.get("max_samples_per_dataset", 2000)))
+            crafted_repeat = int(data.get("crafted_repeat", 10))
+            cut_layer = data.get("cut_layer")
+            epochs = int(data.get("epochs", 5))
+            lr = float(data.get("lr", 3e-5))
+            batch_size = int(data.get("batch_size", 4))
+            grad_clip = float(data.get("grad_clip", 1.0))
+            max_minutes = data.get("max_minutes")
+
+            # データ読み込み
+            if data_mode == "qa":
+                all_texts = load_qa_texts(max_samples)
+                for _ in range(crafted_repeat):
+                    all_texts.extend(CRAFTED_QA)
+            else:
+                all_texts = load_general_texts(max_samples)
+
+            if not all_texts:
+                self.training_status["running"] = False
+                return [{"error": "No texts loaded"}]
+
+            max_seq_len = self.config["max_seq_len"]
+            sequences = tokenize_texts(all_texts, self.tokenizer, max_seq_len)
+
+            # カットレイヤー決定
+            num_layers = self.config["num_layers"]
+            if cut_layer is None:
+                cut_layer = max(1, num_layers // 2)
+            cut_layer = max(1, min(int(cut_layer), num_layers - 1))
+
+            # トレーナー作成
+            trainer = SplitLearningTrainer(
+                model=self.model,
+                cut_layer=cut_layer,
+                tokenizer=self.tokenizer,
+                device=self.device,
+                lr=lr,
+                grad_clip=grad_clip,
+            )
+
+            import time as _time
+            start_time = _time.time()
+
+            for epoch in range(epochs):
+                random.shuffle(sequences)
+                total_loss = 0
+                n_batches = 0
+
+                for i in range(0, len(sequences), batch_size):
+                    if max_minutes and (_time.time() - start_time) >= float(max_minutes) * 60:
+                        break
+
+                    batch_seqs = sequences[i:i + batch_size]
+                    if not batch_seqs:
+                        continue
+
+                    max_len = min(max(len(s) for s in batch_seqs), max_seq_len)
+                    input_ids = []
+                    labels = []
+                    for s in batch_seqs:
+                        ids = s[:max_len]
+                        pad_len = max_len - len(ids)
+                        input_ids.append(ids + [self.tokenizer.pad_id] * pad_len)
+                        labels.append(ids + [-100] * pad_len)
+
+                    input_t = torch.tensor(input_ids, dtype=torch.long, device=self.device)
+                    labels_t = torch.tensor(labels, dtype=torch.long, device=self.device)
+
+                    loss = trainer.train_step(input_t, labels_t)
+                    total_loss += loss
+                    n_batches += 1
+
+                avg_loss = total_loss / max(n_batches, 1)
+                self.training_status["log"].append({
+                    "epoch": epoch + 1, "loss": avg_loss,
+                    "split_learning": True, "cut_layer": cut_layer,
+                })
+                self.training_status["message"] = (
+                    f"Split learning epoch {epoch+1}/{epochs}, loss={avg_loss:.4f}"
+                )
+
+            # モデル統合 & 保存
+            merged = trainer.get_merged_model().to(self.device)
+            self.model.load_state_dict(merged.state_dict())
+
+            if self.ckpt_path:
+                checkpoint_data = {
+                    "model_state": self.model.state_dict(),
+                    "config": self.config,
+                    "training_log": self.training_status["log"],
+                    "trained_at": datetime.now(timezone.utc).isoformat(),
+                    "split_learning": True,
+                    "split_learning_config": {"cut_layer": cut_layer},
+                }
+                torch.save(checkpoint_data, self.ckpt_path)
+                sync_checkpoint_to_network_volume(self.ckpt_path)
+
+            final_loss = self.training_status["log"][-1]["loss"] if self.training_status["log"] else None
+            self.training_status["message"] = (
+                f"Split learning complete: {epochs} epochs, cut_layer={cut_layer}"
+            )
+            self.training_status["running"] = False
+
+            return [{
+                "status": "ok",
+                "message": f"Split learning training complete",
+                "epochs": epochs,
+                "cut_layer": cut_layer,
+                "num_layers": num_layers,
+                "final_loss": final_loss,
+                "log": self.training_status["log"],
+            }]
+
+        except Exception as e:
+            self.training_status["message"] = f"Split learning error: {str(e)}"
+            self.training_status["running"] = False
+            import traceback
+            traceback.print_exc()
+            return [{"error": str(e)}]
+
     def _handle_split_reset(self) -> List[Dict[str, Any]]:
         """Reset current session (preserve training history)."""
         if os.path.exists(self.split_state_path):
@@ -1841,7 +1983,8 @@ def _runpod_handler(event):
 
     Supported actions:
         inference (default), train, train_qa, train_qa_dataset,
-        train_split, train_split_next, split_status, split_reset, status
+        train_split, train_split_next, train_split_learning,
+        split_status, split_reset, status
     """
     job_input = event.get("input", {})
 
