@@ -70,17 +70,40 @@ class NeuroQService:
     def load_model(self):
         """コンテナ起動時にモデルをロード（コールドスタート時1回のみ）"""
         import sys
+        import shutil
         sys.path.insert(0, "/app")
 
         from handler import EndpointHandler
 
-        # Volume内のチェックポイントを /app にコピー
-        volume_ckpt = os.path.join(VOLUME_PATH, "neuroq_checkpoint.pt")
-        app_ckpt = "/app/neuroq_checkpoint.pt"
-        if os.path.exists(volume_ckpt) and not os.path.exists(app_ckpt):
-            import shutil
-            shutil.copy2(volume_ckpt, app_ckpt)
-            print(f"[modal] Restored checkpoint from volume: {volume_ckpt}")
+        # Volume を最新状態にリフレッシュ（他コンテナの commit を反映）
+        volume.reload()
+
+        # Volume内のチェックポイントを /app にコピー（全候補ファイルを探索）
+        checkpoint_names = [
+            "qbnn_checkpoint.pt",
+            "neuroq_checkpoint.pt",
+            "checkpoint.pt",
+            "model.pt",
+        ]
+        restored_ckpt = False
+        for name in checkpoint_names:
+            volume_ckpt = os.path.join(VOLUME_PATH, name)
+            app_ckpt = os.path.join("/app", name)
+            if os.path.exists(volume_ckpt) and not os.path.exists(app_ckpt):
+                shutil.copy2(volume_ckpt, app_ckpt)
+                print(f"[modal] Restored checkpoint from volume: {volume_ckpt}")
+                restored_ckpt = True
+
+        # Volume内のトークナイザーを /app にコピー（学習時のトークナイザーを優先）
+        for tok_name in ["neuroq_tokenizer.model", "neuroq_tokenizer_8k.model"]:
+            volume_tok = os.path.join(VOLUME_PATH, tok_name)
+            app_tok = os.path.join("/app", tok_name)
+            if os.path.exists(volume_tok):
+                shutil.copy2(volume_tok, app_tok)
+                print(f"[modal] Restored tokenizer from volume: {volume_tok}")
+
+        if not restored_ckpt:
+            print("[modal] No checkpoint found in volume, starting fresh")
 
         self.handler = EndpointHandler(path="/app")
         print(f"[modal] Model loaded (checkpoint={self.handler.ckpt_path})")
@@ -112,7 +135,7 @@ class NeuroQService:
         return result
 
     def _sync_checkpoint(self):
-        """学習後にチェックポイントをVolumeに保存"""
+        """学習後にチェックポイントとトークナイザーをVolumeに保存"""
         import shutil
         import glob
 
@@ -121,6 +144,14 @@ class NeuroQService:
                 dst = os.path.join(VOLUME_PATH, os.path.basename(src))
                 shutil.copy2(src, dst)
                 print(f"[modal] Synced checkpoint to volume: {dst}")
+
+        # トークナイザーも同期（イメージ再ビルド時のトークナイザー不一致を防止）
+        for tok_name in ["neuroq_tokenizer.model", "neuroq_tokenizer_8k.model"]:
+            tok_src = os.path.join("/app", tok_name)
+            if os.path.isfile(tok_src):
+                tok_dst = os.path.join(VOLUME_PATH, tok_name)
+                shutil.copy2(tok_src, tok_dst)
+                print(f"[modal] Synced tokenizer to volume: {tok_dst}")
 
         volume.commit()
 
