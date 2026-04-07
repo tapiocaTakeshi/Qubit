@@ -18,6 +18,7 @@ RUN python train_tokenizer.py 8000 /app 20000
 COPY neuroquantum_layered.py .
 COPY handler.py .
 COPY dataset_utils.py .
+COPY progress_logger.py .
 COPY runpod_handler.py .
 COPY runpod_manager.py .
 COPY predict.py .
