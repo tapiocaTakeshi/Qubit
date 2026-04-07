@@ -163,7 +163,7 @@ class RunPodTrainRequest(BaseModel):
     crafted_repeat: int = 20
     max_minutes_per_chunk: Optional[float] = None
     runpod_endpoint_id: Optional[str] = None  # override env var
-    timeout: int = 3600
+    timeout: int = 86400
 
 
 class TrainSplitNextRequest(BaseModel):
