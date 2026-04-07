@@ -39,6 +39,7 @@ image = (
     .add_local_file("neuroquantum_layered.py", "/app/neuroquantum_layered.py", copy=True)
     .add_local_file("handler.py", "/app/handler.py", copy=True)
     .add_local_file("dataset_utils.py", "/app/dataset_utils.py", copy=True)
+    .add_local_file("progress_logger.py", "/app/progress_logger.py", copy=True)
     .add_local_file("training_history.json", "/app/training_history.json", copy=True)
     .add_local_file("train_tokenizer.py", "/app/train_tokenizer.py", copy=True)
     .run_commands("cd /app && python train_tokenizer.py 8000 /app 20000")
