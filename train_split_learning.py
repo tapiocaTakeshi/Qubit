@@ -53,12 +53,9 @@ from split_learning import (
     split_model,
 )
 from dataset_utils import safe_load_dataset, sync_checkpoint_to_network_volume
+from progress_logger import ProgressLogger
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
+progress = ProgressLogger("split_learning")
 logger = logging.getLogger(__name__)
 
 CKPT_PATH = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
@@ -262,12 +259,18 @@ def train_local_split(model, tokenizer, sequences, config, nq_config, device, ar
     logger.info(f"  Sequences: {len(sequences)}, Steps/epoch: {steps_per_epoch}")
     logger.info(f"  Effective batch size: {batch_size * grad_accum_steps}")
 
+    progress.start_training(
+        epochs=epochs, total_sequences=len(sequences),
+        batch_size=batch_size, lr=args.lr,
+    )
+
     training_log = []
     global_step = 0
     best_loss = float("inf")
     start_time = time.time()
 
     for epoch in range(epochs):
+        progress.start_epoch(epoch + 1, epochs)
         random.shuffle(sequences)
         total_loss = 0
         n_batches = 0
@@ -315,14 +318,10 @@ def train_local_split(model, tokenizer, sequences, config, nq_config, device, ar
 
             if n_batches % 100 == 0:
                 avg = total_loss / n_batches
-                elapsed_min = (time.time() - start_time) / 60
-                logger.info(
-                    f"  Epoch {epoch+1}/{epochs} | Batch {n_batches} | "
-                    f"Loss: {avg:.4f} | Elapsed: {elapsed_min:.1f}min"
-                )
+                progress.log_batch(epoch=epoch + 1, batch=n_batches, loss=avg)
 
         avg_loss = total_loss / max(n_batches, 1)
-        logger.info(f"  Epoch {epoch+1}/{epochs} | Avg Loss: {avg_loss:.6f}")
+        progress.log_epoch(epoch=epoch + 1, total_epochs=epochs, loss=avg_loss)
         training_log.append({"epoch": epoch + 1, "loss": avg_loss})
 
         if avg_loss < best_loss:
@@ -408,8 +407,12 @@ def run_client_mode(model, tokenizer, sequences, nq_config, device, args):
     best_loss = float("inf")
     start_time = time.time()
 
+    progress.start_training(epochs=epochs, total_sequences=len(sequences),
+                            batch_size=batch_size, lr=args.lr)
+
     try:
         for epoch in range(epochs):
+            progress.start_epoch(epoch + 1, epochs)
             random.shuffle(sequences)
             total_loss = 0
             n_batches = 0
@@ -441,14 +444,10 @@ def run_client_mode(model, tokenizer, sequences, nq_config, device, args):
 
                 if n_batches % 100 == 0:
                     avg = total_loss / n_batches
-                    elapsed_min = (time.time() - start_time) / 60
-                    logger.info(
-                        f"  Epoch {epoch+1}/{epochs} | Batch {n_batches} | "
-                        f"Loss: {avg:.4f} | Elapsed: {elapsed_min:.1f}min"
-                    )
+                    progress.log_batch(epoch=epoch + 1, batch=n_batches, loss=avg)
 
             avg_loss = total_loss / max(n_batches, 1)
-            logger.info(f"  Epoch {epoch+1}/{epochs} | Avg Loss: {avg_loss:.6f}")
+            progress.log_epoch(epoch=epoch + 1, total_epochs=epochs, loss=avg_loss)
             training_log.append({"epoch": epoch + 1, "loss": avg_loss})
 
             if avg_loss < best_loss:

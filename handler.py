@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+from progress_logger import ProgressLogger
 
 # ============================================================
 # Import NeuroQuantum architecture
@@ -292,6 +293,7 @@ class EndpointHandler:
         self.model_path = path
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.training_status = {"running": False, "log": [], "message": "idle"}
+        self.progress = ProgressLogger("handler")
         self.split_state_path = os.path.join(path or ".", "split_training_state.json")
 
         # Find checkpoint
@@ -587,6 +589,7 @@ class EndpointHandler:
         dataset_ids = params.get("dataset_ids", None)
 
         self.training_status = {"running": True, "log": [], "message": "Loading datasets..."}
+        self.progress.status = self.training_status
 
         mode = params.get("mode", "general")
         crafted_repeat = int(params.get("crafted_repeat", 20))
@@ -599,7 +602,7 @@ class EndpointHandler:
                 if mode == "qa" and crafted_repeat > 0:
                     for _ in range(crafted_repeat):
                         all_texts.extend(CRAFTED_QA)
-                    self.training_status["log"].append(
+                    self.progress.info(
                         f"Added {len(CRAFTED_QA) * crafted_repeat} crafted QA samples"
                     )
             else:
@@ -607,25 +610,25 @@ class EndpointHandler:
                     all_texts = self._load_all_qa_texts(max_samples)
                     for _ in range(crafted_repeat):
                         all_texts.extend(CRAFTED_QA)
-                    self.training_status["log"].append(
+                    self.progress.info(
                         f"Added {len(CRAFTED_QA) * crafted_repeat} crafted QA samples"
                     )
                 else:
                     datasets_to_use = DEFAULT_DATASETS
                     for ds_info in datasets_to_use:
                         try:
-                            self.training_status["message"] = f"Loading {ds_info['id']}..."
+                            self.progress.info(f"Loading {ds_info['id']}...")
                             ds = safe_load_dataset(ds_info["id"], split="train")
                             texts = extract_texts(ds, ds_info["col"], max_samples)
                             all_texts.extend(texts)
-                            self.training_status["log"].append(f"Loaded {ds_info['id']}: {len(texts)} texts")
+                            self.progress.log_dataset_loaded(ds_info["id"], len(texts))
                         except Exception as e:
-                            self.training_status["log"].append(f"Error loading {ds_info['id']}: {e}")
+                            self.progress.log_dataset_error(ds_info["id"], str(e))
 
             # Also load cc100-ja for general mode without custom datasets
             if not dataset_ids and mode != "qa":
                 try:
-                    self.training_status["message"] = "Loading cc100-ja..."
+                    self.progress.info("Loading cc100-ja...")
                     ds_cc = safe_load_dataset("range3/cc100-ja", split="train", streaming=True)
                     cc_texts = []
                     for i, row in enumerate(ds_cc):
@@ -635,22 +638,25 @@ class EndpointHandler:
                         if len(text) > 10:
                             cc_texts.append(text)
                     all_texts.extend(cc_texts)
-                    self.training_status["log"].append(f"Loaded cc100-ja: {len(cc_texts)} texts")
+                    self.progress.log_dataset_loaded("cc100-ja", len(cc_texts))
                 except Exception as e:
-                    self.training_status["log"].append(f"Error loading cc100-ja: {e}")
+                    self.progress.log_dataset_error("cc100-ja", str(e))
 
             if not all_texts:
-                self.training_status["running"] = False
-                self.training_status["message"] = "No training data loaded"
+                self.progress.error("No training data loaded")
+                self.training_status = self.progress.status
                 return [{"status": "error", "message": "No training data loaded",
                          "log": self.training_status["log"]}]
 
-            self.training_status["message"] = "Tokenizing..."
+            self.progress.info("Tokenizing...")
             max_seq_len = self.config["max_seq_len"]
             sequences = tokenize_texts(all_texts, self.tokenizer, max_seq_len)
-            self.training_status["log"].append(
+            self.progress.info(
                 f"Total: {len(all_texts)} texts -> {len(sequences)} sequences"
             )
+
+            self.progress.start_training(epochs=epochs, total_sequences=len(sequences),
+                                         batch_size=batch_size, lr=lr)
 
             self._run_training_loop(
                 sequences, epochs, lr, batch_size, grad_accum_steps,
@@ -661,14 +667,15 @@ class EndpointHandler:
             ds_names = dataset_ids if dataset_ids else [d["id"] for d in DEFAULT_DATASETS] + ["range3/cc100-ja"]
             self._save_checkpoint(datasets=ds_names)
 
+            self.progress.end_training(checkpoint_path=self.ckpt_path)
+            self.training_status = self.progress.status
             return [{"status": "success", "message": self.training_status["message"],
                      "log": self.training_status["log"]}]
 
         except Exception as e:
             import traceback
-            self.training_status["running"] = False
-            self.training_status["message"] = f"Error: {e}"
-            self.training_status["log"].append(traceback.format_exc())
+            self.progress.end_training_error(str(e), traceback.format_exc())
+            self.training_status = self.progress.status
             self.model.eval()
             return [{"status": "error", "message": str(e),
                      "log": self.training_status["log"]}]
@@ -695,6 +702,7 @@ class EndpointHandler:
         crafted_repeat = int(params.get("crafted_repeat", 40))
 
         self.training_status = {"running": True, "log": [], "message": "Loading QA datasets..."}
+        self.progress.status = self.training_status
 
         try:
             all_qa = []
@@ -702,7 +710,7 @@ class EndpointHandler:
             if dataset_id:
                 # Custom single dataset
                 try:
-                    self.training_status["message"] = f"Loading {dataset_id}..."
+                    self.progress.info(f"Loading {dataset_id}...")
                     ds = safe_load_dataset(dataset_id, split="train", streaming=True)
                     count = 0
                     for row in ds:
@@ -713,9 +721,9 @@ class EndpointHandler:
                         if q and a and len(q) > 2 and len(a) > 2:
                             all_qa.append(f"質問: {q}\n回答: {a}")
                             count += 1
-                    self.training_status["log"].append(f"Loaded {dataset_id}: {count} QA samples")
+                    self.progress.log_dataset_loaded(dataset_id, count)
                 except Exception as e:
-                    self.training_status["log"].append(f"Error loading {dataset_id}: {e}")
+                    self.progress.log_dataset_error(dataset_id, str(e))
             else:
                 # Default QA datasets
                 for ds_info in QA_DATASETS_INFO:
@@ -723,7 +731,7 @@ class EndpointHandler:
                     fmt = ds_info["format"]
                     ms = min(1000, max_samples) if fmt == "izumi" else max_samples
                     try:
-                        self.training_status["message"] = f"Loading {ds_id}..."
+                        self.progress.info(f"Loading {ds_id}...")
                         ds = safe_load_dataset(ds_id, split="train")
                         n = min(ms, len(ds))
                         count = 0
@@ -739,28 +747,29 @@ class EndpointHandler:
                             if text and len(text) > 10:
                                 all_qa.append(text)
                                 count += 1
-                        self.training_status["log"].append(f"Loaded {ds_id}: {count} QA samples")
+                        self.progress.log_dataset_loaded(ds_id, count)
                     except Exception as e:
-                        self.training_status["log"].append(f"Error loading {ds_id}: {e}")
+                        self.progress.log_dataset_error(ds_id, str(e))
 
             # Add crafted QA
             for _ in range(crafted_repeat):
                 all_qa.extend(CRAFTED_QA)
-            self.training_status["log"].append(
-                f"Added {len(CRAFTED_QA) * crafted_repeat} crafted QA samples"
-            )
-            self.training_status["log"].append(f"Total QA texts: {len(all_qa)}")
+            self.progress.info(f"Added {len(CRAFTED_QA) * crafted_repeat} crafted QA samples")
+            self.progress.info(f"Total QA texts: {len(all_qa)}")
 
             if not all_qa:
-                self.training_status["running"] = False
-                self.training_status["message"] = "No QA data loaded"
+                self.progress.error("No QA data loaded")
+                self.training_status = self.progress.status
                 return [{"status": "error", "message": "No QA data loaded",
                          "log": self.training_status["log"]}]
 
-            self.training_status["message"] = "Tokenizing..."
+            self.progress.info("Tokenizing...")
             max_seq_len = self.config["max_seq_len"]
             sequences = tokenize_texts(all_qa, self.tokenizer, max_seq_len)
-            self.training_status["log"].append(f"Training sequences: {len(sequences)}")
+            self.progress.info(f"Training sequences: {len(sequences)}")
+
+            self.progress.start_training(epochs=epochs, total_sequences=len(sequences),
+                                         batch_size=batch_size, lr=lr)
 
             self._run_training_loop(
                 sequences, epochs, lr, batch_size, grad_accum_steps,
@@ -774,14 +783,15 @@ class EndpointHandler:
                 extra_meta={"qa_training": True},
             )
 
+            self.progress.end_training(checkpoint_path=self.ckpt_path)
+            self.training_status = self.progress.status
             return [{"status": "success", "message": self.training_status["message"],
                      "log": self.training_status["log"]}]
 
         except Exception as e:
             import traceback
-            self.training_status["running"] = False
-            self.training_status["message"] = f"Error: {e}"
-            self.training_status["log"].append(traceback.format_exc())
+            self.progress.end_training_error(str(e), traceback.format_exc())
+            self.training_status = self.progress.status
             self.model.eval()
             return [{"status": "error", "message": str(e),
                      "log": self.training_status["log"]}]
@@ -887,7 +897,7 @@ class EndpointHandler:
             n_batches = 0
             optimizer.zero_grad()
 
-            self.training_status["message"] = f"Training epoch {epoch+1}/{epochs}..."
+            self.progress.start_epoch(epoch + 1, epochs)
 
             for i in range(0, len(sequences), batch_size):
                 batch_seqs = sequences[i:i + batch_size]
@@ -936,13 +946,9 @@ class EndpointHandler:
                 global_step += 1
 
             avg_loss = total_loss / max(n_batches, 1)
-            msg = f"Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f}"
-            self.training_status["log"].append(msg)
-            self.training_status["message"] = msg
+            self.progress.log_epoch(epoch=epoch + 1, total_epochs=epochs, loss=avg_loss)
 
         self.model.eval()
-        self.training_status["message"] = f"Training complete! Final loss: {avg_loss:.4f}"
-        self.training_status["running"] = False
 
     # --------------------------------------------------------
     # Checkpoint save
