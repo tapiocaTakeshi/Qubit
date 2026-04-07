@@ -23,6 +23,8 @@ from dataset_utils import sync_checkpoint_to_network_volume
 from split_learning import SplitLearningTrainer, merge_split_models
 from progress_logger import ProgressLogger
 
+_shutdown_event = threading.Event()
+
 app = FastAPI(title="NeuroQuantum API", version="1.0.0")
 
 # Global state
@@ -497,6 +499,9 @@ def run_training(req: TrainRequest):
         global_step = 0
 
         for epoch in range(req.epochs):
+            if _shutdown_event.is_set():
+                progress.info("Training interrupted by server shutdown")
+                break
             random.shuffle(sequences)
             total_loss = 0
             n_batches = 0
@@ -505,6 +510,8 @@ def run_training(req: TrainRequest):
             progress.start_epoch(epoch + 1, req.epochs)
 
             for i in range(0, len(sequences), req.batch_size):
+                if _shutdown_event.is_set():
+                    break
                 batch_seqs = sequences[i:i + req.batch_size]
                 if not batch_seqs:
                     continue
@@ -746,6 +753,9 @@ def run_qa_training(req: TrainQARequest):
         best_loss = float('inf')
 
         for epoch in range(req.epochs):
+            if _shutdown_event.is_set():
+                progress.info("QA training interrupted by server shutdown")
+                break
             random.shuffle(sequences)
             total_loss = 0
             n_batches = 0
@@ -753,6 +763,8 @@ def run_qa_training(req: TrainQARequest):
             progress.start_epoch(epoch + 1, req.epochs)
 
             for i in range(0, len(sequences), req.batch_size):
+                if _shutdown_event.is_set():
+                    break
                 batch_seqs = sequences[i:i + req.batch_size]
                 if not batch_seqs:
                     continue
@@ -914,6 +926,9 @@ def run_markdown_training(req: TrainMarkdownRequest):
         best_loss = float('inf')
 
         for epoch in range(req.epochs):
+            if _shutdown_event.is_set():
+                progress.info("Markdown training interrupted by server shutdown")
+                break
             random.shuffle(sequences)
             total_loss = 0
             n_batches = 0
@@ -921,6 +936,8 @@ def run_markdown_training(req: TrainMarkdownRequest):
             training_status["message"] = f"Markdown Training epoch {epoch+1}/{req.epochs}..."
 
             for i in range(0, len(sequences), req.batch_size):
+                if _shutdown_event.is_set():
+                    break
                 batch_seqs = sequences[i:i + req.batch_size]
                 if not batch_seqs:
                     continue
@@ -1346,6 +1363,9 @@ def run_split_training(req: TrainSplitRequest):
             chunk_start_time = time.time()
 
             for epoch in range(req.epochs_per_chunk):
+                if _shutdown_event.is_set():
+                    progress.info("Split training interrupted by server shutdown")
+                    break
                 random.shuffle(sequences)
                 total_loss = 0
                 n_batches = 0
@@ -1356,6 +1376,8 @@ def run_split_training(req: TrainSplitRequest):
                 )
 
                 for i in range(0, len(sequences), req.batch_size):
+                    if _shutdown_event.is_set():
+                        break
                     # Timeout check
                     if timeout_seconds and (time.time() - chunk_start_time) >= timeout_seconds:
                         elapsed = (time.time() - chunk_start_time) / 60
@@ -1586,6 +1608,9 @@ def run_split_next_training(req: TrainSplitNextRequest):
         chunk_start_time = time.time()
 
         for epoch in range(req.epochs_per_chunk):
+            if _shutdown_event.is_set():
+                progress.info("Batch training interrupted by server shutdown")
+                break
             random.shuffle(sequences)
             total_loss = 0
             n_batches = 0
@@ -1596,6 +1621,8 @@ def run_split_next_training(req: TrainSplitNextRequest):
             )
 
             for i in range(0, len(sequences), req.batch_size):
+                if _shutdown_event.is_set():
+                    break
                 batch_seqs = sequences[i:i + req.batch_size]
                 if not batch_seqs:
                     continue
@@ -1706,6 +1733,14 @@ def run_split_next_training(req: TrainSplitNextRequest):
 @app.on_event("startup")
 async def startup():
     load_model()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    _shutdown_event.set()
+    # Give background training threads a moment to notice and exit cleanly
+    import asyncio
+    await asyncio.sleep(2)
 
 
 @app.get("/")
@@ -1952,11 +1987,16 @@ def run_split_learning_training(req: "TrainSplitLearningRequest"):
         start_time = _time.time()
 
         for epoch in range(epochs):
+            if _shutdown_event.is_set():
+                progress.info("Split learning training interrupted by server shutdown")
+                break
             random.shuffle(sequences)
             total_loss = 0
             n_batches = 0
 
             for i in range(0, len(sequences), batch_size):
+                if _shutdown_event.is_set():
+                    break
                 if req.max_minutes and (_time.time() - start_time) >= req.max_minutes * 60:
                     break
 
