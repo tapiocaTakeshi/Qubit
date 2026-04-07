@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, migrate_legacy_state_dict
 from dataset_utils import sync_checkpoint_to_network_volume
 from split_learning import SplitLearningTrainer, merge_split_models
+from progress_logger import ProgressLogger
 
 app = FastAPI(title="NeuroQuantum API", version="1.0.0")
 
@@ -30,6 +31,7 @@ tokenizer = None
 config = None
 device = None
 training_status = {"running": False, "log": [], "message": "idle"}
+progress = ProgressLogger("api")
 NETWORK_VOLUME_PATH = os.environ.get("NETWORK_VOLUME_PATH", "/runpod-volume")
 LOCAL_CKPT_PATH = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
 LOCAL_TOKENIZER_PATH = os.path.join(os.path.dirname(__file__), "neuroq_tokenizer.model")
@@ -444,6 +446,7 @@ def run_training(req: TrainRequest):
     from dataset_utils import safe_load_dataset
 
     training_status = {"running": True, "log": [], "message": "Loading datasets..."}
+    progress.status = training_status  # sync in-memory status
 
     try:
         # Load datasets
@@ -454,17 +457,17 @@ def run_training(req: TrainRequest):
 
         for ds_info in datasets_to_use:
             try:
-                training_status["message"] = f"Loading {ds_info['id']}..."
+                progress.info(f"Loading {ds_info['id']}...")
                 ds = safe_load_dataset(ds_info["id"], split="train")
                 texts = extract_texts(ds, ds_info["col"], req.max_samples_per_dataset)
                 all_texts.extend(texts)
-                training_status["log"].append(f"Loaded {ds_info['id']}: {len(texts)} texts")
+                progress.log_dataset_loaded(ds_info["id"], len(texts))
             except Exception as e:
-                training_status["log"].append(f"Error loading {ds_info['id']}: {e}")
+                progress.log_dataset_error(ds_info["id"], str(e))
 
         # Also load cc100-ja
         try:
-            training_status["message"] = "Loading cc100-ja..."
+            progress.info("Loading cc100-ja...")
             ds_cc = safe_load_dataset("range3/cc100-ja", split="train", streaming=True)
             cc_texts = []
             for i, row in enumerate(ds_cc):
@@ -474,20 +477,22 @@ def run_training(req: TrainRequest):
                 if len(text) > 10:
                     cc_texts.append(text)
             all_texts.extend(cc_texts)
-            training_status["log"].append(f"Loaded cc100-ja: {len(cc_texts)} texts")
+            progress.log_dataset_loaded("cc100-ja", len(cc_texts))
         except Exception as e:
-            training_status["log"].append(f"Error loading cc100-ja: {e}")
+            progress.log_dataset_error("cc100-ja", str(e))
 
-        training_status["message"] = "Tokenizing..."
+        progress.info("Tokenizing...")
         max_seq_len = config["max_seq_len"]
         sequences = tokenize_texts(all_texts, tokenizer, max_seq_len)
-        training_status["log"].append(f"Total: {len(all_texts)} texts -> {len(sequences)} sequences")
+        progress.info(f"Total: {len(all_texts)} texts -> {len(sequences)} sequences")
 
         # Training
         steps_per_epoch = len(sequences) // req.batch_size
         total_steps = (steps_per_epoch * req.epochs) // req.grad_accum_steps
         optimizer = torch.optim.AdamW(model.parameters(), lr=req.lr, weight_decay=0.01)
 
+        progress.start_training(epochs=req.epochs, total_sequences=len(sequences),
+                                batch_size=req.batch_size, lr=req.lr)
         model.train()
         global_step = 0
 
@@ -497,7 +502,7 @@ def run_training(req: TrainRequest):
             n_batches = 0
             optimizer.zero_grad()
 
-            training_status["message"] = f"Training epoch {epoch+1}/{req.epochs}..."
+            progress.start_epoch(epoch + 1, req.epochs)
 
             for i in range(0, len(sequences), req.batch_size):
                 batch_seqs = sequences[i:i + req.batch_size]
@@ -546,17 +551,15 @@ def run_training(req: TrainRequest):
                 global_step += 1
 
             avg_loss = total_loss / max(n_batches, 1)
-            msg = f"Epoch {epoch+1}/{req.epochs} | Loss: {avg_loss:.4f}"
-            training_status["log"].append(msg)
-            training_status["message"] = msg
+            progress.log_epoch(epoch=epoch + 1, total_epochs=req.epochs, loss=avg_loss)
 
         # Save checkpoint
         model.eval()
         _save_ckpt_path = _resolve_checkpoint_path()
         checkpoint = torch.load(_save_ckpt_path, map_location="cpu")
         prev_log = checkpoint.get("training_log", [])
-        new_log_entries = [{"epoch": len(prev_log) + i + 1, "loss": float(l.split("Loss: ")[1])}
-                          for i, l in enumerate(training_status["log"]) if "Loss:" in l]
+        new_log_entries = [{"epoch": len(prev_log) + i + 1, "loss": m["loss"]}
+                          for i, m in enumerate(progress.metrics)]
 
         new_checkpoint = {
             "model_state": model.state_dict(),
@@ -570,18 +573,17 @@ def run_training(req: TrainRequest):
             )),
         }
         torch.save(new_checkpoint, _save_ckpt_path)
-        training_status["log"].append(f"Checkpoint saved: {_save_ckpt_path}")
+        progress.info(f"Checkpoint saved: {_save_ckpt_path}")
         nv_path = sync_checkpoint_to_network_volume(_save_ckpt_path)
         if nv_path:
-            training_status["log"].append(f"Checkpoint synced to network volume: {nv_path}")
-        training_status["message"] = "Training complete!"
-        training_status["running"] = False
+            progress.info(f"Checkpoint synced to network volume: {nv_path}")
+        progress.end_training(final_loss=avg_loss, checkpoint_path=_save_ckpt_path)
+        training_status = progress.status
 
     except Exception as e:
         import traceback
-        training_status["running"] = False
-        training_status["message"] = f"Error: {e}"
-        training_status["log"].append(traceback.format_exc())
+        progress.end_training_error(str(e), traceback.format_exc())
+        training_status = progress.status
         if model is not None:
             model.eval()
 
@@ -666,6 +668,7 @@ def run_qa_training(req: TrainQARequest):
     from dataset_utils import safe_load_dataset
 
     training_status = {"running": True, "log": [], "message": "Loading QA datasets..."}
+    progress.status = training_status
     min_lr_ratio = 0.1
 
     try:
@@ -675,7 +678,7 @@ def run_qa_training(req: TrainQARequest):
         if req.dataset_id:
             ds_id = req.dataset_id
             try:
-                training_status["message"] = f"Loading {ds_id}..."
+                progress.info(f"Loading {ds_id}...")
                 ds = safe_load_dataset(ds_id, split="train", streaming=True)
                 count = 0
                 for row in ds:
@@ -687,9 +690,9 @@ def run_qa_training(req: TrainQARequest):
                     if q and a and len(q) > 2 and len(a) > 2:
                         all_qa.append(f"質問: {q}\n回答: {a}")
                         count += 1
-                training_status["log"].append(f"Loaded {ds_id}: {count} QA samples")
+                progress.log_dataset_loaded(ds_id, count)
             except Exception as e:
-                training_status["log"].append(f"Error loading {ds_id}: {e}")
+                progress.log_dataset_error(ds_id, str(e))
         else:
             # Default: use built-in QA datasets
             for ds_info in QA_DATASETS_INFO:
@@ -699,7 +702,7 @@ def run_qa_training(req: TrainQARequest):
                 if fmt == "izumi":
                     max_samples = min(1000, max_samples)
                 try:
-                    training_status["message"] = f"Loading {ds_id}..."
+                    progress.info(f"Loading {ds_id}...")
                     ds = safe_load_dataset(ds_id, split="train")
                     n = min(max_samples, len(ds))
                     count = 0
@@ -715,27 +718,29 @@ def run_qa_training(req: TrainQARequest):
                         if text and len(text) > 10:
                             all_qa.append(text)
                             count += 1
-                    training_status["log"].append(f"Loaded {ds_id}: {count} QA samples")
+                    progress.log_dataset_loaded(ds_id, count)
                 except Exception as e:
-                    training_status["log"].append(f"Error loading {ds_id}: {e}")
+                    progress.log_dataset_error(ds_id, str(e))
 
         # Add crafted QA x40
         for _ in range(40):
             all_qa.extend(CRAFTED_QA)
-        training_status["log"].append(f"Added {len(CRAFTED_QA) * 40} crafted QA samples")
-        training_status["log"].append(f"Total QA texts: {len(all_qa)}")
+        progress.info(f"Added {len(CRAFTED_QA) * 40} crafted QA samples")
+        progress.info(f"Total QA texts: {len(all_qa)}")
 
         # Tokenize
-        training_status["message"] = "Tokenizing..."
+        progress.info("Tokenizing...")
         max_seq_len = config["max_seq_len"]
         sequences = tokenize_texts(all_qa, tokenizer, max_seq_len)
-        training_status["log"].append(f"Training sequences: {len(sequences)}")
+        progress.info(f"Training sequences: {len(sequences)}")
 
         # Training setup
         steps_per_epoch = len(sequences) // req.batch_size
         total_steps = (steps_per_epoch * req.epochs) // req.grad_accum_steps
         optimizer = torch.optim.AdamW(model.parameters(), lr=req.lr, weight_decay=0.01)
 
+        progress.start_training(epochs=req.epochs, total_sequences=len(sequences),
+                                batch_size=req.batch_size, lr=req.lr)
         model.train()
         global_step = 0
         best_loss = float('inf')
@@ -745,7 +750,7 @@ def run_qa_training(req: TrainQARequest):
             total_loss = 0
             n_batches = 0
             optimizer.zero_grad()
-            training_status["message"] = f"QA Training epoch {epoch+1}/{req.epochs}..."
+            progress.start_epoch(epoch + 1, req.epochs)
 
             for i in range(0, len(sequences), req.batch_size):
                 batch_seqs = sequences[i:i + req.batch_size]
@@ -779,11 +784,11 @@ def run_qa_training(req: TrainQARequest):
                 n_batches += 1
 
                 if n_batches % req.grad_accum_steps == 0:
-                    progress = (global_step - req.warmup_steps) / max(total_steps - req.warmup_steps, 1)
+                    lr_progress = (global_step - req.warmup_steps) / max(total_steps - req.warmup_steps, 1)
                     if global_step < req.warmup_steps:
                         lr = req.lr * global_step / max(req.warmup_steps, 1)
                     else:
-                        cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+                        cosine_decay = 0.5 * (1 + math.cos(math.pi * lr_progress))
                         lr = req.lr * (min_lr_ratio + (1 - min_lr_ratio) * cosine_decay)
                     for pg in optimizer.param_groups:
                         pg['lr'] = lr
@@ -799,9 +804,7 @@ def run_qa_training(req: TrainQARequest):
                 global_step += 1
 
             avg_loss = total_loss / max(n_batches, 1)
-            msg = f"Epoch {epoch+1}/{req.epochs} | Loss: {avg_loss:.4f}"
-            training_status["log"].append(msg)
-            training_status["message"] = msg
+            progress.log_epoch(epoch=epoch + 1, total_epochs=req.epochs, loss=avg_loss)
 
             extra_ds = [req.dataset_id] if req.dataset_id else []
             if avg_loss < best_loss:
@@ -816,14 +819,13 @@ def run_qa_training(req: TrainQARequest):
         extra_ds = [req.dataset_id] if req.dataset_id else []
         save_qa_checkpoint(model, config, training_status, req.epochs, extra_ds)
         model.eval()
-        training_status["message"] = f"QA Training complete! Best loss: {best_loss:.4f}"
-        training_status["running"] = False
+        progress.end_training(final_loss=best_loss)
+        training_status = progress.status
 
     except Exception as e:
         import traceback
-        training_status["running"] = False
-        training_status["message"] = f"Error: {e}"
-        training_status["log"].append(traceback.format_exc())
+        progress.end_training_error(str(e), traceback.format_exc())
+        training_status = progress.status
         if model is not None:
             model.eval()
 
