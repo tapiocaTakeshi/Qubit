@@ -79,7 +79,7 @@ def get_endpoint():
     return runpod.Endpoint(endpoint_id)
 
 
-def run_job(payload, timeout=600, poll_interval=5):
+def run_job(payload, timeout=86400, poll_interval=5):
     """Submit a job to RunPod and wait for results with polling.
 
     Uses async run + polling for long-running training jobs,
@@ -414,7 +414,7 @@ Examples:
     p_train.add_argument("--grad-accum-steps", type=int, default=8)
     p_train.add_argument("--warmup-steps", type=int, default=100)
     p_train.add_argument("--max-samples", type=int, default=5000)
-    p_train.add_argument("--timeout", type=int, default=3600, help="Max wait time in seconds")
+    p_train.add_argument("--timeout", type=int, default=86400, help="Max wait time in seconds")
 
     # --- train-qa-dataset ---
     p_tqd = sub.add_parser("train-qa-dataset", help="QA-format training from HF datasets")
@@ -425,7 +425,7 @@ Examples:
     p_tqd.add_argument("--grad-accum-steps", type=int, default=4)
     p_tqd.add_argument("--warmup-steps", type=int, default=30)
     p_tqd.add_argument("--max-samples", type=int, default=1500)
-    p_tqd.add_argument("--timeout", type=int, default=3600)
+    p_tqd.add_argument("--timeout", type=int, default=86400)
 
     # --- train-qa ---
     p_qa = sub.add_parser("train-qa", help="Train with QA pairs")
@@ -437,7 +437,7 @@ Examples:
     p_qa.add_argument("--batch-size", type=int, default=4)
     p_qa.add_argument("--grad-accum-steps", type=int, default=4)
     p_qa.add_argument("--warmup-steps", type=int, default=10)
-    p_qa.add_argument("--timeout", type=int, default=3600)
+    p_qa.add_argument("--timeout", type=int, default=86400)
 
     # --- train-split ---
     p_split = sub.add_parser("train-split", help="Split dataset training (all chunks)")
@@ -506,7 +506,7 @@ def _add_split_args(parser):
     parser.add_argument("--crafted-repeat", type=int, default=20)
     parser.add_argument("--max-minutes", type=float, default=None,
                         help="Max minutes per chunk")
-    parser.add_argument("--timeout", type=int, default=3600)
+    parser.add_argument("--timeout", type=int, default=86400)
 
 
 if __name__ == "__main__":

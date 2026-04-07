@@ -37,7 +37,7 @@ def get_endpoint_url():
     )
 
 
-def send_request(url, payload, token=None, timeout=600):
+def send_request(url, payload, token=None, timeout=86400):
     """Send a POST request to the endpoint."""
     headers = {"Content-Type": "application/json"}
     if token:
@@ -187,7 +187,7 @@ def main():
         help="Operation mode",
     )
     parser.add_argument("--token", default=os.environ.get("HF_TOKEN"), help="API token")
-    parser.add_argument("--timeout", type=int, default=600, help="Request timeout (seconds)")
+    parser.add_argument("--timeout", type=int, default=86400, help="Request timeout (seconds)")
 
     # QA mode args
     parser.add_argument("--qa_file", help="JSON file with QA pairs [{question, answer}, ...]")
