@@ -177,11 +177,14 @@ class ProgressLogger:
         batch: int,
         loss: float,
         total_batches: Optional[int] = None,
+        lr: Optional[float] = None,
         **extra: Any,
     ) -> None:
         """バッチ進捗をログに記録 (コンソール + ファイル)"""
         batch_str = f"{batch}/{total_batches}" if total_batches else str(batch)
         msg = f"  Epoch {epoch} | Batch {batch_str} | Loss: {loss:.4f}"
+        if lr is not None:
+            msg += f" | LR: {lr:.2e}"
         self.logger.info(msg)
         self.status["message"] = msg
 
@@ -191,6 +194,7 @@ class ProgressLogger:
             "batch": batch,
             "total_batches": total_batches,
             "loss": round(loss, 4),
+            **({"lr": lr} if lr is not None else {}),
             **extra,
         })
 
