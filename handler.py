@@ -143,6 +143,7 @@ CRAFTED_QA = [
 # Network Volume path (RunPod network volume for persistent storage)
 # ============================================================
 NETWORK_VOLUME_PATH = os.environ.get("NETWORK_VOLUME_PATH", "/runpod-volume")
+MODAL_VOLUME_PATH = os.environ.get("MODAL_VOLUME_PATH", "/data/checkpoints")
 
 
 # ============================================================
@@ -955,9 +956,13 @@ class EndpointHandler:
     # --------------------------------------------------------
 
     def _save_checkpoint(self, datasets=None, extra_meta=None):
-        """Save model checkpoint."""
+        """Save model checkpoint with detailed logging."""
+        save_start = time.time()
+
         if not self.ckpt_path:
             self.ckpt_path = os.path.join(self.model_path or ".", "neuroq_checkpoint.pt")
+
+        self.progress.info(f"Saving checkpoint to {self.ckpt_path} ...")
 
         # Load existing checkpoint for training log history
         prev_log = []
@@ -967,8 +972,12 @@ class EndpointHandler:
                 old_ckpt = torch.load(self.ckpt_path, map_location="cpu")
                 prev_log = old_ckpt.get("training_log", [])
                 prev_datasets = old_ckpt.get("datasets", [])
-            except Exception:
-                pass
+                self.progress.info(
+                    f"Previous checkpoint: {len(prev_log)} log entries, "
+                    f"{len(prev_datasets)} datasets"
+                )
+            except Exception as e:
+                self.progress.warning(f"Could not load previous checkpoint: {e}")
 
         new_log_entries = [
             {"epoch": len(prev_log) + i + 1, "loss": float(l.split("Loss: ")[1])}
@@ -987,21 +996,87 @@ class EndpointHandler:
         if extra_meta:
             checkpoint.update(extra_meta)
 
-        torch.save(checkpoint, self.ckpt_path)
-        self.training_status["log"].append(f"Checkpoint saved: {self.ckpt_path}")
+        # Log checkpoint contents detail
+        n_params = sum(p.numel() for p in self.model.parameters())
+        model_size_mb = sum(p.numel() * p.element_size() for p in self.model.parameters()) / (1024 * 1024)
+        self.progress.info(
+            f"Checkpoint contents: model={n_params:,} params ({model_size_mb:.1f}MB), "
+            f"config={self.config.get('embed_dim')}d/{self.config.get('num_layers')}L/"
+            f"{self.config.get('num_heads')}H, "
+            f"training_log={len(prev_log) + len(new_log_entries)} entries, "
+            f"datasets={ds_list}"
+        )
 
-        # Also save to network volume for persistence across pod restarts
+        torch.save(checkpoint, self.ckpt_path)
+        ckpt_size_mb = os.path.getsize(self.ckpt_path) / (1024 * 1024)
+        save_elapsed = time.time() - save_start
+        self.progress.info(
+            f"Checkpoint saved: {self.ckpt_path} "
+            f"({ckpt_size_mb:.1f}MB, {save_elapsed:.1f}s)"
+        )
+
+        # Sync to persistent storage volumes
+        self._sync_to_volumes()
+
+    def _sync_to_volumes(self):
+        """Sync checkpoint and tokenizer to all available persistent volumes."""
+        volumes_synced = []
+
+        # Collect all volume paths to sync to
+        volume_paths = []
         if os.path.isdir(NETWORK_VOLUME_PATH):
-            nv_ckpt_path = os.path.join(NETWORK_VOLUME_PATH, os.path.basename(self.ckpt_path))
+            volume_paths.append(("RunPod Network Volume", NETWORK_VOLUME_PATH))
+        if os.path.isdir(MODAL_VOLUME_PATH):
+            volume_paths.append(("Modal Volume", MODAL_VOLUME_PATH))
+
+        if not volume_paths:
+            self.progress.info(
+                "No persistent volume found "
+                f"(checked: {NETWORK_VOLUME_PATH}, {MODAL_VOLUME_PATH})"
+            )
+            return
+
+        for vol_name, vol_path in volume_paths:
+            sync_start = time.time()
             try:
-                shutil.copy2(self.ckpt_path, nv_ckpt_path)
-                # Also copy tokenizer model to network volume if it exists
-                tokenizer_src = os.path.join(self.model_path or ".", "neuroq_tokenizer.model")
-                if os.path.isfile(tokenizer_src):
-                    shutil.copy2(tokenizer_src, os.path.join(NETWORK_VOLUME_PATH, "neuroq_tokenizer.model"))
-                self.training_status["log"].append(f"Checkpoint synced to network volume: {nv_ckpt_path}")
+                # Sync checkpoint
+                ckpt_dst = os.path.join(vol_path, os.path.basename(self.ckpt_path))
+                shutil.copy2(self.ckpt_path, ckpt_dst)
+                ckpt_size_mb = os.path.getsize(ckpt_dst) / (1024 * 1024)
+                self.progress.info(
+                    f"[{vol_name}] Checkpoint synced: {ckpt_dst} ({ckpt_size_mb:.1f}MB)"
+                )
+
+                # Sync tokenizer
+                tokenizer_synced = False
+                for tok_name in ["neuroq_tokenizer.model", "neuroq_tokenizer_8k.model"]:
+                    tok_src = os.path.join(self.model_path or ".", tok_name)
+                    if os.path.isfile(tok_src):
+                        tok_dst = os.path.join(vol_path, tok_name)
+                        shutil.copy2(tok_src, tok_dst)
+                        tok_size_kb = os.path.getsize(tok_dst) / 1024
+                        self.progress.info(
+                            f"[{vol_name}] Tokenizer synced: {tok_dst} ({tok_size_kb:.1f}KB)"
+                        )
+                        tokenizer_synced = True
+
+                if not tokenizer_synced:
+                    self.progress.info(f"[{vol_name}] No tokenizer file found to sync")
+
+                sync_elapsed = time.time() - sync_start
+                self.progress.info(
+                    f"[{vol_name}] Sync complete ({sync_elapsed:.1f}s)"
+                )
+                volumes_synced.append(vol_name)
+
             except Exception as e:
-                self.training_status["log"].append(f"Warning: failed to sync to network volume: {e}")
+                self.progress.warning(f"[{vol_name}] Failed to sync: {e}")
+
+        if volumes_synced:
+            self.progress.info(
+                f"Checkpoint synced to {len(volumes_synced)} volume(s): "
+                + ", ".join(volumes_synced)
+            )
 
     # --------------------------------------------------------
     # Split training helpers
