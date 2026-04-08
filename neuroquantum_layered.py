@@ -32,6 +32,9 @@ from collections import Counter
 import re
 from typing import List, Dict, Optional, Tuple
 import warnings
+import logging
+
+logger = logging.getLogger(__name__)
 
 # システムRAM検出用
 try:
@@ -2288,11 +2291,15 @@ class NeuroQuantumAI:
                 total_loss += loss.item()
             
             scheduler.step()
-            avg_loss = total_loss / max(1, len(sequences) // batch_size)
-            
+            num_batches = max(1, len(sequences) // batch_size)
+            avg_loss = total_loss / num_batches
+
+            logger.info(f"Epoch {epoch+1}/{epochs} - loss: {avg_loss:.6f} - lr: {scheduler.get_last_lr()[0]:.6f} - batches: {num_batches}")
+
             if (epoch + 1) % 5 == 0 or epoch == 0:
                 print(f"   Epoch {epoch+1:3d}/{epochs}: Loss = {avg_loss:.4f}")
-        
+
+        logger.info(f"Training complete - final_loss: {avg_loss:.6f} - epochs: {epochs} - sequences: {len(sequences)}")
         print("\n✅ 学習完了！")
         
         # 量子情報

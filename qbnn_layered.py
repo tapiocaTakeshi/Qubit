@@ -21,7 +21,10 @@ import io
 import re
 from collections import Counter
 import warnings
+import logging
 warnings.filterwarnings('ignore')
+
+logger = logging.getLogger(__name__)
 
 print("=" * 70)
 print("🧠⚛️ Entangled Quantum Bit Neural Network (E-QBNN)")
@@ -748,10 +751,13 @@ class EQBNNGenerativeAI:
             
             avg_loss = total_loss / max(num_batches, 1)
             avg_constraint = total_constraint / max(num_batches, 1)
-            
+
+            logger.info(f"Epoch {epoch+1}/{epochs} - loss: {avg_loss:.6f} - constraint: {avg_constraint:.6f} - batches: {num_batches}")
+
             if (epoch + 1) % 2 == 0 or epoch == 0:
                 print(f"   Epoch {epoch+1}/{epochs}: Loss={avg_loss:.4f}, r²+T²={1+avg_constraint:.4f}")
-        
+
+        logger.info(f"Training complete - final_loss: {avg_loss:.6f} - epochs: {epochs}")
         print("   学習完了！")
     
     def generate(self, prompt="The quantum", max_length=50, temperature=1.0, 
