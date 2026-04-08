@@ -889,8 +889,22 @@ class EndpointHandler:
         total_steps = (steps_per_epoch * epochs) // grad_accum_steps
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=0.01)
 
+        self.progress.info(
+            f"Training config: {len(sequences)} sequences, {epochs} epochs, "
+            f"batch_size={batch_size}, grad_accum={grad_accum_steps}, "
+            f"lr={lr:.2e}, warmup={warmup_steps} steps, "
+            f"total_steps={total_steps}, max_seq_len={max_seq_len}"
+        )
+
+        # Batch logging interval: log ~10 times per epoch (at least every batch)
+        total_batches = (len(sequences) + batch_size - 1) // batch_size
+        log_interval = max(1, total_batches // 10)
+
         self.model.train()
         global_step = 0
+        best_loss = float("inf")
+        epoch_losses = []
+        cur_lr = lr
 
         for epoch in range(epochs):
             random.shuffle(sequences)
@@ -940,6 +954,17 @@ class EndpointHandler:
                     optimizer.zero_grad()
                     global_step += 1
 
+                # Batch-level logging at intervals
+                if n_batches % log_interval == 0:
+                    batch_avg_loss = total_loss / n_batches
+                    self.progress.log_batch(
+                        epoch=epoch + 1,
+                        batch=n_batches,
+                        loss=batch_avg_loss,
+                        total_batches=total_batches,
+                        lr=cur_lr,
+                    )
+
             if n_batches % grad_accum_steps != 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 optimizer.step()
@@ -947,7 +972,43 @@ class EndpointHandler:
                 global_step += 1
 
             avg_loss = total_loss / max(n_batches, 1)
-            self.progress.log_epoch(epoch=epoch + 1, total_epochs=epochs, loss=avg_loss)
+            epoch_losses.append(avg_loss)
+
+            # Track best loss and improvement
+            improved = avg_loss < best_loss
+            loss_delta = best_loss - avg_loss if best_loss < float("inf") else 0
+            if improved:
+                best_loss = avg_loss
+
+            self.progress.log_epoch(
+                epoch=epoch + 1,
+                total_epochs=epochs,
+                loss=avg_loss,
+                lr=cur_lr,
+                best_loss=round(best_loss, 6),
+                improved=improved,
+            )
+
+            # Extra detail: improvement info
+            if epoch > 0:
+                prev_loss = epoch_losses[-2]
+                delta = prev_loss - avg_loss
+                direction = "improved" if delta > 0 else "worsened"
+                self.progress.info(
+                    f"  -> Loss {direction} by {abs(delta):.6f} "
+                    f"(prev={prev_loss:.6f}, best={best_loss:.6f})"
+                )
+
+        # Training summary
+        if epoch_losses:
+            first_loss = epoch_losses[0]
+            final_loss = epoch_losses[-1]
+            total_improvement = first_loss - final_loss
+            self.progress.info(
+                f"Training summary: {epochs} epochs, "
+                f"loss {first_loss:.6f} -> {final_loss:.6f} "
+                f"(delta={total_improvement:+.6f}), best={best_loss:.6f}"
+            )
 
         self.model.eval()
 
