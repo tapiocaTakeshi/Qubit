@@ -1987,7 +1987,7 @@ class EndpointHandler:
                     "split_learning_config": {"cut_layer": cut_layer},
                 }
                 torch.save(checkpoint_data, self.ckpt_path)
-                sync_checkpoint_to_network_volume(self.ckpt_path)
+                self._sync_to_volumes()
 
             final_loss = self.training_status["log"][-1]["loss"] if self.training_status["log"] else None
             self.training_status["message"] = (
