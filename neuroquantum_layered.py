@@ -1048,6 +1048,75 @@ class NeuroQuantumHead(nn.Module):
 # Part 5.5: State-dict migration (old → new architecture)
 # ========================================
 
+def _migrate_qbnn_builtin_to_layered(state_dict: dict, model: "NeuroQuantum") -> dict:
+    """
+    Migrate QBNN builtin-style keys to EQBNNLayer (layered) keys.
+
+    Handles the case where a checkpoint was saved with use_qbnn_layered=False
+    (builtin QBNN: *.ffn_qbnn_layer*.J) but the model now uses
+    use_qbnn_layered=True (EQBNNLayer: *.ffn_qbnn_layer*.J_source,
+    *.ffn_qbnn_layer*.eqbnn_core.*).
+
+    Key mappings:
+      *.J  (input_dim, output_dim)  →  *.J_source  (output_dim, input_dim)  [transposed]
+      *.W.weight/bias              →  *.eqbnn_core.linear.weight/bias  [also kept as W.*)
+      missing eqbnn_core.*         →  filled from model default init
+    """
+    model_state = model.state_dict()
+
+    # Detect: does checkpoint have builtin QBNN keys that the model doesn't expect?
+    builtin_j_keys = [k for k in state_dict if ".ffn_qbnn_layer" in k and k.endswith(".J")]
+    expected_j_source_keys = [k for k in model_state if ".ffn_qbnn_layer" in k and k.endswith(".J_source")]
+
+    if not builtin_j_keys or not expected_j_source_keys:
+        return state_dict
+
+    print("[migrate] QBNN builtin→layered migration: converting .J → .J_source + eqbnn_core")
+
+    new_state = dict(state_dict)
+
+    for j_key in builtin_j_keys:
+        j_tensor = new_state.pop(j_key)
+
+        # Derive the layer prefix, e.g. "transformer_blocks.0.ffn_qbnn_layer1"
+        layer_prefix = j_key.rsplit(".J", 1)[0]
+
+        # Map J → J_source (transpose: builtin J is (input, output), J_source is (output, input))
+        j_source_key = f"{layer_prefix}.J_source"
+        if j_source_key in model_state:
+            target_shape = model_state[j_source_key].shape
+            if j_tensor.shape == target_shape:
+                new_state[j_source_key] = j_tensor
+            elif j_tensor.t().shape == target_shape:
+                new_state[j_source_key] = j_tensor.t()
+                print(f"[migrate]   {j_key} {tuple(j_tensor.shape)} → {j_source_key} {tuple(target_shape)} (transposed)")
+            elif j_tensor.numel() == model_state[j_source_key].numel():
+                new_state[j_source_key] = j_tensor.reshape(target_shape)
+                print(f"[migrate]   {j_key} {tuple(j_tensor.shape)} → {j_source_key} {tuple(target_shape)} (reshaped)")
+            else:
+                print(f"[migrate]   {j_key} {tuple(j_tensor.shape)} → {j_source_key} {tuple(target_shape)} shape incompatible, using default init")
+
+        # Map W.weight/bias → eqbnn_core.linear.weight/bias (they alias in the new model)
+        for param in ("weight", "bias"):
+            w_key = f"{layer_prefix}.W.{param}"
+            eqbnn_linear_key = f"{layer_prefix}.eqbnn_core.linear.{param}"
+            if w_key in new_state and eqbnn_linear_key in model_state:
+                if new_state[w_key].shape == model_state[eqbnn_linear_key].shape:
+                    new_state[eqbnn_linear_key] = new_state[w_key]
+
+    # Fill any remaining missing eqbnn_core keys from model default init
+    missing_filled = []
+    for k, v in model_state.items():
+        if k not in new_state and ".eqbnn_core." in k:
+            new_state[k] = v
+            missing_filled.append(k)
+
+    if missing_filled:
+        print(f"[migrate]   Initialized {len(missing_filled)} new eqbnn_core parameters from defaults")
+
+    return new_state
+
+
 def migrate_legacy_state_dict(state_dict: dict, model: "NeuroQuantum") -> dict:
     """
     Migrate a legacy checkpoint state_dict to the current NeuroQuantum architecture.
@@ -1068,9 +1137,9 @@ def migrate_legacy_state_dict(state_dict: dict, model: "NeuroQuantum") -> dict:
         transformer_blocks.{i}.ffn_standard/ffn_qbnn_layer1/ffn_qbnn_layer2.*,
         final_norm.*, output_head.weight
     """
-    # Quick check: if state_dict already has new-style keys, return as-is
+    # Quick check: if state_dict already has new-style keys, only do QBNN migration
     if any(k.startswith("transformer_blocks.") for k in state_dict):
-        return state_dict
+        return _migrate_qbnn_builtin_to_layered(state_dict, model)
 
     # Check for legacy keys
     if not any(k.startswith("layers.") for k in state_dict):
@@ -1187,7 +1256,8 @@ def migrate_legacy_state_dict(state_dict: dict, model: "NeuroQuantum") -> dict:
         if k not in new_state:
             new_state[k] = v
 
-    return new_state
+    # Also handle QBNN builtin→layered migration on the result
+    return _migrate_qbnn_builtin_to_layered(new_state, model)
 
 
 # ========================================
