@@ -3,6 +3,7 @@ Modal Serverless Deployment for NeuroQ QBNN
 NeuroQuantum Transformer - Japanese Language Model
 
 Modal.com上でサーバーレスGPU推論・学習エンドポイントを提供します。
+api.py の全エンドポイントを Modal 上で提供します。
 
 Usage:
     # ローカルテスト
@@ -15,6 +16,22 @@ Usage:
     curl -X POST https://<your-app>.modal.run/inference \
          -H "Content-Type: application/json" \
          -d '{"prompt": "こんにちは", "parameters": {"max_new_tokens": 100}}'
+
+Endpoints:
+    POST /inference          - テキスト生成
+    POST /train              - 一般学習
+    POST /train_qa           - QA学習
+    POST /train_qa_dataset   - QA形式HFデータセット学習
+    POST /train_split        - 分割データセット学習（全チャンク）
+    POST /train_split_next   - 次のチャンクのみ学習（タイムアウト防止）
+    POST /train_split_reset  - 分割学習セッションリセット
+    POST /train_split_learning - 分割学習（モデル分割）
+    POST /tts                - テキスト音声合成（Replicate経由）
+    POST /reload             - モデル再読み込み
+    GET  /status             - モデルステータス
+    GET  /train_status       - 学習進捗ステータス
+    GET  /train_split_status - 分割学習進捗
+    GET  /health             - ヘルスチェック
 """
 
 import os
@@ -35,6 +52,7 @@ image = (
         "datasets>=2.18.0",
         "accelerate>=1.1.0",
         "fastapi[standard]",
+        "replicate>=0.25.0",
     )
     .add_local_file("neuroquantum_layered.py", "/app/neuroquantum_layered.py", copy=True)
     .add_local_file("handler.py", "/app/handler.py", copy=True)
@@ -42,6 +60,9 @@ image = (
     .add_local_file("progress_logger.py", "/app/progress_logger.py", copy=True)
     .add_local_file("training_history.json", "/app/training_history.json", copy=True)
     .add_local_file("train_tokenizer.py", "/app/train_tokenizer.py", copy=True)
+    .add_local_file("split_learning.py", "/app/split_learning.py", copy=True)
+    .add_local_file("train_split_learning.py", "/app/train_split_learning.py", copy=True)
+    .add_local_file("tts_replicate.py", "/app/tts_replicate.py", copy=True)
     .run_commands("cd /app && python train_tokenizer.py 8000 /app 20000")
 )
 
@@ -152,8 +173,19 @@ class NeuroQService:
         if "parameters" in job_input:
             data["parameters"] = job_input["parameters"]
 
-        for key in ("qa_pairs", "dataset_ids", "epochs", "lr", "batch_size",
-                     "mode", "num_chunks", "resume"):
+        # トップレベルのパラメータを parameters に透過的に渡す
+        _passthrough_keys = (
+            "qa_pairs", "dataset_ids", "dataset_id",
+            "epochs", "lr", "batch_size", "grad_accum_steps", "warmup_steps",
+            "max_samples_per_dataset", "max_samples",
+            "mode", "data_mode", "num_chunks", "samples_per_batch",
+            "chunk_index", "start_sample", "end_sample",
+            "max_minutes_per_chunk", "max_minutes",
+            "epochs_per_chunk", "crafted_repeat",
+            "cut_layer", "grad_clip",
+            "resume",
+        )
+        for key in _passthrough_keys:
             if key in job_input:
                 data.setdefault("parameters", {})[key] = job_input[key]
 
@@ -222,15 +254,23 @@ class NeuroQService:
         print(f"[modal] Synced files: {synced_files}")
         print("[modal] ========== Volume Sync End ==========")
 
+    # ==============================================================
+    # 推論エンドポイント
+    # ==============================================================
+
     @modal.fastapi_endpoint(method="POST")
     def inference(self, request: dict):
         """推論エンドポイント"""
         request.setdefault("action", "inference")
         return self._process(request)
 
+    # ==============================================================
+    # 学習エンドポイント
+    # ==============================================================
+
     @modal.fastapi_endpoint(method="POST")
     def train(self, request: dict):
-        """学習エンドポイント"""
+        """一般学習エンドポイント"""
         request.setdefault("action", "train")
         result = self._process(request)
         self._sync_checkpoint()
@@ -246,10 +286,162 @@ class NeuroQService:
         print(f"[modal] Train QA complete. Result status: {result.get('status', 'unknown') if isinstance(result, dict) else 'ok'}")
         return result
 
+    @modal.fastapi_endpoint(method="POST")
+    def train_qa_dataset(self, request: dict):
+        """QA形式HFデータセット学習エンドポイント"""
+        request.setdefault("action", "train_qa_dataset")
+        result = self._process(request)
+        self._sync_checkpoint()
+        print(f"[modal] Train QA Dataset complete. Result status: {result.get('status', 'unknown') if isinstance(result, dict) else 'ok'}")
+        return result
+
+    @modal.fastapi_endpoint(method="POST")
+    def train_split(self, request: dict):
+        """分割データセット学習エンドポイント（全チャンク）"""
+        request.setdefault("action", "train_split")
+        result = self._process(request)
+        self._sync_checkpoint()
+        print(f"[modal] Train Split complete. Result status: {result.get('status', 'unknown') if isinstance(result, dict) else 'ok'}")
+        return result
+
+    @modal.fastapi_endpoint(method="POST")
+    def train_split_next(self, request: dict):
+        """次の1チャンクだけ学習するエンドポイント（タイムアウト防止用）
+
+        使い方:
+          1. POST /train_split_next を呼ぶ → チャンク1を学習
+          2. レスポンスの chunks_remaining > 0 なら再度呼ぶ
+          3. chunks_remaining == 0 になるまで繰り返す
+          4. リセットは POST /train_split_reset を呼ぶ
+        """
+        request.setdefault("action", "train_split_next")
+        result = self._process(request)
+        self._sync_checkpoint()
+        print(f"[modal] Train Split Next complete. Result: {result if isinstance(result, dict) else 'ok'}")
+        return result
+
+    @modal.fastapi_endpoint(method="POST")
+    def train_split_reset(self):
+        """分割学習セッションリセット（履歴は保持）"""
+        return self._process({"action": "split_reset"})
+
+    @modal.fastapi_endpoint(method="POST")
+    def train_split_learning(self, request: dict):
+        """分割学習（Split Learning）エンドポイント。モデルをカットレイヤーで分割して学習する。"""
+        request.setdefault("action", "train_split_learning")
+        result = self._process(request)
+        self._sync_checkpoint()
+        print(f"[modal] Split Learning complete. Result status: {result.get('status', 'unknown') if isinstance(result, dict) else 'ok'}")
+        return result
+
+    # ==============================================================
+    # ステータス・ユーティリティエンドポイント
+    # ==============================================================
+
+    @modal.fastapi_endpoint(method="GET")
+    def health(self):
+        """ヘルスチェック"""
+        handler = self.handler
+        model_info = {
+            "name": "NeuroQuantum API (Modal)",
+            "version": "1.0.0",
+            "model": "neuroquantum",
+            "checkpoint": getattr(handler, "ckpt_path", None),
+            "parameters": sum(p.numel() for p in handler.model.parameters()) if hasattr(handler, "model") and handler.model else 0,
+        }
+        if hasattr(handler, "config") and handler.config:
+            model_info["config"] = handler.config
+        return model_info
+
     @modal.fastapi_endpoint(method="GET")
     def status(self):
         """モデルステータス"""
         return self._process({"action": "status"})
+
+    @modal.fastapi_endpoint(method="GET")
+    def train_status(self):
+        """学習進捗ステータス"""
+        handler = self.handler
+        ts = getattr(handler, "training_status", {"running": False, "log": [], "message": "idle"})
+        return {"running": ts["running"], "log": ts["log"], "message": ts["message"]}
+
+    @modal.fastapi_endpoint(method="GET")
+    def train_split_status(self):
+        """分割学習進捗ステータス"""
+        return self._process({"action": "split_status"})
+
+    @modal.fastapi_endpoint(method="POST")
+    def reload(self):
+        """モデル再読み込み（Volumeから最新チェックポイントをロード）"""
+        import sys
+        import shutil
+        import time
+        sys.path.insert(0, "/app")
+
+        print("[modal] ========== Model Reload ==========")
+
+        # Volume を最新状態にリフレッシュ
+        reload_start = time.time()
+        volume.reload()
+        reload_elapsed = time.time() - reload_start
+        print(f"[modal] Volume reloaded ({reload_elapsed:.1f}s)")
+
+        # Volume内のチェックポイントを /app にコピー
+        checkpoint_names = [
+            "qbnn_checkpoint.pt",
+            "neuroq_checkpoint.pt",
+            "checkpoint.pt",
+            "model.pt",
+        ]
+        for name in checkpoint_names:
+            volume_ckpt = os.path.join(VOLUME_PATH, name)
+            app_ckpt = os.path.join("/app", name)
+            if os.path.exists(volume_ckpt):
+                shutil.copy2(volume_ckpt, app_ckpt)
+                size_mb = os.path.getsize(app_ckpt) / (1024 * 1024)
+                print(f"[modal] Restored checkpoint: {name} ({size_mb:.1f}MB)")
+
+        # トークナイザーもコピー
+        for tok_name in ["neuroq_tokenizer.model", "neuroq_tokenizer_8k.model"]:
+            volume_tok = os.path.join(VOLUME_PATH, tok_name)
+            app_tok = os.path.join("/app", tok_name)
+            if os.path.exists(volume_tok):
+                shutil.copy2(volume_tok, app_tok)
+
+        # handler を再初期化
+        from handler import EndpointHandler
+        self.handler = EndpointHandler(path="/app")
+        print(f"[modal] Model reloaded (checkpoint={self.handler.ckpt_path})")
+        print("[modal] ========== Reload Complete ==========")
+
+        return {"status": "reloaded", "checkpoint": self.handler.ckpt_path}
+
+    # ==============================================================
+    # TTS（テキスト音声合成）エンドポイント
+    # ==============================================================
+
+    @modal.fastapi_endpoint(method="POST")
+    def tts(self, request: dict):
+        """テキスト音声合成（Replicate経由）"""
+        import sys
+        sys.path.insert(0, "/app")
+
+        text = request.get("text", "")
+        voice_id = request.get("voice_id", "Ashley")
+
+        if not text:
+            return {"error": "text is required"}
+
+        try:
+            from tts_replicate import text_to_speech
+            output = text_to_speech(text=text, voice_id=voice_id)
+            return {"status": "ok", "output": output}
+        except Exception as e:
+            return {"error": str(e)}
+
+    # ==============================================================
+    # 汎用メソッド（Modal SDK経由）
+    # ==============================================================
 
     @modal.method()
     def run(self, job_input: dict):
