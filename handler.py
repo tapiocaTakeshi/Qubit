@@ -135,6 +135,28 @@ CRAFTED_QA = [
     "質問: Gitとは何ですか？\n回答: Gitは、ソースコードのバージョン管理システムです。変更履歴の追跡、ブランチによる並行開発、マージによる統合ができます。git init, git add, git commit, git push, git pullなどのコマンドで操作します。GitHubやGitLabなどのホスティングサービスと組み合わせて使います。",
     "質問: データベースとは何ですか？\n回答: データベースは、構造化されたデータを効率的に保存・管理するシステムです。リレーショナルDB（MySQL, PostgreSQL）ではSQLを使ってデータを操作します。NoSQL（MongoDB, Redis）は柔軟なスキーマで大量データを扱えます。CRUD操作（Create, Read, Update, Delete）が基本です。",
     "質問: 計算量のO記法とは何ですか？\n回答: O記法（ビッグオー記法）は、アルゴリズムの効率を表す表記法です。O(1)は定数時間、O(log n)は対数時間、O(n)は線形時間、O(n log n)は線形対数時間、O(n²)は二乗時間です。nはデータの大きさを表し、nが大きくなったときの最悪計算量を示します。",
+    # 日本の地理・ランドマーク
+    "質問: 東京タワーについて教えてください。\n回答: 東京タワーは、東京都港区芝公園にある電波塔で、高さは333メートルです。1958年に完成し、長らく日本で最も高い自立鉄塔でした。エッフェル塔をモデルに設計され、赤と白の塗装が特徴です。観光名所としても人気で、展望台から東京の景色を一望できます。",
+    "質問: 東京スカイツリーについて教えてください。\n回答: 東京スカイツリーは、東京都墨田区にある電波塔で、高さは634メートルです。2012年に開業し、世界で最も高い自立式電波塔としてギネス記録に認定されています。展望台からは東京全域を見渡すことができ、日本有数の観光名所となっています。",
+    "質問: 日本で一番長い川は何ですか？\n回答: 日本で最も長い川は信濃川です。全長は約367キロメートルで、新潟県と長野県を流れています。長野県内では千曲川と呼ばれ、新潟県に入ってから信濃川と呼ばれます。日本海に注ぎます。",
+    "質問: 日本で一番大きい湖は何ですか？\n回答: 日本で最も大きい湖は琵琶湖です。滋賀県にあり、面積は約670平方キロメートル、周囲は約235キロメートルです。日本最古の湖の一つで、世界有数の古代湖としても知られています。",
+    "質問: 日本の人口はどのくらいですか？\n回答: 日本の人口は約1億2,400万人（2024年時点）です。かつては1億2,800万人を超えていましたが、少子高齢化により人口減少が続いています。首都の東京には約1,400万人が住んでいます。",
+    "質問: 北海道について教えてください。\n回答: 北海道は、日本の最北に位置する島で、日本の47都道府県の中で最も面積が広いです。道庁所在地は札幌市で、人口は約510万人です。冷涼な気候で、農業、酪農、漁業が盛んで、雪まつりやラベンダー畑などの観光地でも有名です。",
+    # 地球環境・自然現象
+    "質問: 地球温暖化とは何ですか？\n回答: 地球温暖化とは、二酸化炭素などの温室効果ガスが大気中に増加することで、地球全体の平均気温が上昇する現象です。産業革命以降、化石燃料の燃焼や森林破壊によって加速しており、氷河の融解、海面上昇、異常気象などの影響が世界中で観測されています。パリ協定では気温上昇を1.5度に抑える目標が掲げられています。",
+    "質問: 温室効果ガスとは何ですか？\n回答: 温室効果ガスは、大気中で熱を吸収して地表から放出される赤外線を再放射し、地球の気温を上昇させるガスの総称です。主なものに二酸化炭素（CO2）、メタン（CH4）、一酸化二窒素（N2O）、フロン類があります。産業活動や農業、化石燃料の燃焼が主な排出源です。",
+    "質問: オゾン層とは何ですか？\n回答: オゾン層は、地球の成層圏（地上約10〜50km）に存在するオゾン（O3）の濃い層で、太陽からの有害な紫外線を吸収して地上の生物を守っています。1980年代にフロンガスによるオゾンホールが発見され、モントリオール議定書により世界的にフロンの使用が規制されました。",
+    "質問: 再生可能エネルギーとは何ですか？\n回答: 再生可能エネルギーは、太陽光、風力、水力、地熱、バイオマスなど、自然界で繰り返し補充されるエネルギー源です。化石燃料と異なり、使っても枯渇せず、温室効果ガスの排出が少ないため、地球温暖化対策として重要視されています。",
+    # AI・未来
+    "質問: AIの未来はどうなりますか？\n回答: AI（人工知能）の未来は、医療診断、自動運転、教育、科学研究など幅広い分野で革新をもたらすと予測されています。生成AIの発展により、文章・画像・動画の自動生成が日常化し、人間の生産性が大きく向上します。一方で、雇用への影響、倫理的な問題、プライバシー、AIの判断の透明性など、解決すべき課題も多く、技術の発展と社会制度の整備を両立する必要があります。",
+    "質問: 生成AIとは何ですか？\n回答: 生成AI（Generative AI）は、テキスト、画像、音声、動画などの新しいコンテンツを自動生成する人工知能です。大規模言語モデル（LLM）による文章生成、画像生成AI、音声合成、コード生成などが代表例です。ChatGPTやStable Diffusion、Midjourneyなどが広く知られています。",
+    "質問: ChatGPTとは何ですか？\n回答: ChatGPTは、OpenAI社が開発した大規模言語モデルをベースにした対話型AIサービスです。2022年11月に公開され、自然な対話、文章作成、翻訳、要約、プログラミング支援など多様なタスクに対応できます。GPTはGenerative Pre-trained Transformerの略で、Transformerアーキテクチャを基盤としています。",
+    "質問: 大規模言語モデル（LLM）とは何ですか？\n回答: 大規模言語モデル（LLM: Large Language Model）は、数十億から数千億以上のパラメータを持ち、膨大なテキストデータで学習されたニューラルネットワークモデルです。Transformerアーキテクチャを使い、自然言語の理解と生成に優れた能力を発揮します。GPT、Claude、Gemini、Llamaなどが代表的です。",
+    # 科学・歴史の追加
+    "質問: DNAとは何ですか？\n回答: DNA（デオキシリボ核酸）は、生物の遺伝情報を担う物質です。アデニン（A）、チミン（T）、グアニン（G）、シトシン（C）の4種類の塩基が二重らせん構造で並び、遺伝子として受け継がれます。1953年にワトソンとクリックが二重らせん構造を発見しました。",
+    "質問: 日本の歴史上の人物で有名な人は誰ですか？\n回答: 日本の歴史上、織田信長、豊臣秀吉、徳川家康は戦国時代から江戸時代にかけての三英傑として知られています。他にも聖徳太子、源頼朝、坂本龍馬、明治天皇などが重要な役割を果たしました。",
+    "質問: 明治維新とは何ですか？\n回答: 明治維新は、1868年頃に起きた日本の政治的・社会的な大変革です。江戸幕府が倒れ、天皇を中心とする新政府が成立しました。廃藩置県、四民平等、殖産興業、文明開化などの改革が行われ、日本は近代国家へと大きく変貌しました。",
+    "質問: 第二次世界大戦はいつ終わりましたか？\n回答: 第二次世界大戦は1945年に終結しました。ヨーロッパでは5月8日にドイツが降伏し、アジア太平洋地域では8月15日に日本がポツダム宣言を受諾、9月2日に正式な降伏文書に調印されました。この戦争で世界中で数千万人の犠牲者が出ました。",
 ]
 
 
@@ -1056,6 +1078,37 @@ class EndpointHandler:
                 self.training_status["log"].append(f"Error loading {ds_id}: {e}")
         return all_texts
 
+    @staticmethod
+    def _wiki_to_qa_templates(title, body, max_answer_len=280):
+        """Generate template QA pairs from a Wikipedia passage.
+
+        Takes a title and body (passage text) and returns a list of
+        "質問: ...\n回答: ..." strings using multiple question templates.
+        This turns raw encyclopedia text into learnable QA format so
+        the model learns factual responses to proper-noun questions.
+        """
+        if not isinstance(title, str) or not isinstance(body, str):
+            return []
+        title = title.strip()
+        body = body.strip()
+        if not title or len(body) < 30:
+            return []
+        # Truncate answer to avoid the model learning to emit huge outputs
+        if len(body) > max_answer_len:
+            # Cut at the first sentence boundary after max_answer_len/2
+            cut = body[:max_answer_len]
+            for sep in ["。", "．", ".", "\n"]:
+                idx = cut.rfind(sep)
+                if idx > max_answer_len // 2:
+                    cut = cut[: idx + 1]
+                    break
+            body = cut
+        templates = [
+            f"質問: {title}について教えてください。\n回答: {body}",
+            f"質問: {title}とは何ですか？\n回答: {body}",
+        ]
+        return templates
+
     def _load_custom_datasets(self, dataset_ids, max_samples, mode):
         """Load custom datasets by ID with auto-format detection.
 
@@ -1085,6 +1138,7 @@ class EndpointHandler:
                     ds = safe_load_dataset(ds_id, **load_kwargs)
                     is_streaming = True
 
+                is_wiki = "wikipedia" in ds_id.lower()
                 count = 0
                 iterator = ds if is_streaming else ds.select(range(min(max_samples, len(ds))))
                 for row in iterator:
@@ -1092,6 +1146,18 @@ class EndpointHandler:
                         break
                     text = None
                     if mode == "qa":
+                        # Wikipedia → generate template QA from title + text
+                        if is_wiki:
+                            title = row.get("title") or ""
+                            body = row.get("text") or row.get("content") or ""
+                            qa_list = self._wiki_to_qa_templates(title, body)
+                            if qa_list:
+                                for qa in qa_list:
+                                    if count >= max_samples:
+                                        break
+                                    all_texts.append(qa)
+                                    count += 1
+                                continue  # skip default parsing for wiki rows
                         q = (row.get("question") or row.get("instruction") or row.get("input") or "")
                         q = q.strip() if isinstance(q, str) else ""
                         a = (row.get("answer") or row.get("output") or row.get("response") or "")
@@ -1106,7 +1172,7 @@ class EndpointHandler:
                                 text = format_qa_conversations(row)
                         if not text and row.get("instruction"):
                             text = format_qa_alpaca(row)
-                        # Fallback: use plain text column (e.g. Wikipedia)
+                        # Fallback: use plain text column (non-wiki fallback only)
                         if not text:
                             val = row.get("text") or row.get("content") or ""
                             if isinstance(val, str) and len(val.strip()) > 20:
@@ -1301,7 +1367,7 @@ class EndpointHandler:
         batch_size = int(params.get("batch_size", 4))
         grad_accum_steps = int(params.get("grad_accum_steps", 4))
         warmup_steps = int(params.get("warmup_steps", 20))
-        max_samples = int(params.get("max_samples_per_dataset", 2000))
+        max_samples = int(params.get("max_samples_per_dataset", 10000))
         crafted_repeat = int(params.get("crafted_repeat", 20))
         dataset_ids = params.get("dataset_ids", None)
         resume = bool(params.get("resume", False))
