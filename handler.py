@@ -449,7 +449,7 @@ class EndpointHandler:
             4. デフォルト "inference"
 
         Supported actions:
-            inference, train, train_qa, train_split, train_split_next,
+            inference, train, train_qa, train_dpo, train_split, train_split_next,
             split_status, split_reset, status
 
         Returns:
@@ -462,6 +462,7 @@ class EndpointHandler:
             "train":            self._handle_train,
             "train_qa":         self._train_qa,
             "train_qa_dataset": self._handle_train_qa,
+            "train_dpo":        self._handle_train_dpo,
             "train_split":      self._handle_train_split,
             "train_split_next": self._handle_train_split_next,
         }
@@ -1330,6 +1331,207 @@ class EndpointHandler:
 
         self.model.eval()
         return best_loss, timed_out
+
+    # --------------------------------------------------------
+    # DPO (Direct Preference Optimization)
+    # --------------------------------------------------------
+
+    @staticmethod
+    def _get_sequence_logprobs(model, input_ids, labels, vocab_size):
+        """Compute per-token log probabilities for a sequence."""
+        logits = model(input_ids)
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        log_probs = F.log_softmax(shift_logits, dim=-1)
+        per_token = log_probs.gather(-1, shift_labels.unsqueeze(-1).clamp(min=0)).squeeze(-1)
+        mask = (shift_labels != -100).float()
+        return (per_token * mask).sum(-1)
+
+    def _load_preference_pairs(self, dataset_ids, max_samples):
+        """Load preference datasets with (prompt, chosen, rejected) format."""
+        from dataset_utils import safe_load_dataset
+        pairs = []
+        for ds_spec in dataset_ids:
+            try:
+                if ":" in ds_spec and not ds_spec.startswith("http"):
+                    ds_id, ds_config = ds_spec.rsplit(":", 1)
+                else:
+                    ds_id, ds_config = ds_spec, None
+                self.training_status["message"] = f"Loading {ds_id}..."
+                load_kwargs = {"split": "train"}
+                if ds_config:
+                    load_kwargs["name"] = ds_config
+                try:
+                    ds = safe_load_dataset(ds_id, **load_kwargs)
+                    is_streaming = False
+                except Exception:
+                    load_kwargs["streaming"] = True
+                    ds = safe_load_dataset(ds_id, **load_kwargs)
+                    is_streaming = True
+
+                count = 0
+                iterator = ds if is_streaming else ds.select(range(min(max_samples, len(ds))))
+                for row in iterator:
+                    if count >= max_samples:
+                        break
+                    prompt = row.get("prompt") or row.get("question") or row.get("instruction") or ""
+                    chosen = row.get("chosen") or row.get("preferred") or ""
+                    rejected = row.get("rejected") or row.get("dispreferred") or ""
+                    if isinstance(chosen, list):
+                        chosen = "\n".join(t.get("content", "") if isinstance(t, dict) else str(t) for t in chosen)
+                    if isinstance(rejected, list):
+                        rejected = "\n".join(t.get("content", "") if isinstance(t, dict) else str(t) for t in rejected)
+                    prompt = prompt.strip() if isinstance(prompt, str) else ""
+                    chosen = chosen.strip() if isinstance(chosen, str) else ""
+                    rejected = rejected.strip() if isinstance(rejected, str) else ""
+                    if prompt and chosen and rejected and len(chosen) > 5 and len(rejected) > 5:
+                        pairs.append((
+                            f"質問: {prompt}\n回答: {chosen}",
+                            f"質問: {prompt}\n回答: {rejected}",
+                        ))
+                        count += 1
+                self.training_status["log"].append(f"Loaded {ds_id}: {count} preference pairs")
+            except Exception as e:
+                self.training_status["log"].append(f"Error loading {ds_id}: {e}")
+        return pairs
+
+    def _handle_train_dpo(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """DPO training: learn from preference pairs (chosen vs rejected)."""
+        if self.training_status["running"]:
+            return [{"status": "error", "message": "Training already in progress"}]
+
+        import copy
+        params = data.get("parameters", {})
+        epochs = int(params.get("epochs", 5))
+        lr = float(params.get("lr", 1e-6))
+        beta = float(params.get("beta", 0.1))
+        batch_size = int(params.get("batch_size", 1))
+        grad_accum_steps = int(params.get("grad_accum_steps", 8))
+        max_samples = int(params.get("max_samples", 5000))
+        max_seq_len = int(params.get("max_seq_len", self.config.get("max_seq_len", 512)))
+        dataset_ids = params.get("dataset_ids", [])
+        crafted_repeat = int(params.get("crafted_repeat", 5))
+
+        self.training_status = {"running": True, "log": [], "message": "Loading DPO datasets..."}
+
+        def _run():
+            try:
+                pairs = self._load_preference_pairs(dataset_ids, max_samples)
+
+                if crafted_repeat > 0:
+                    crafted_pairs = []
+                    for qa in CRAFTED_QA:
+                        prompt_part = qa.split("\n回答:")[0].replace("質問: ", "")
+                        crafted_pairs.append((qa, f"質問: {prompt_part}\n回答: わかりません。"))
+                    for _ in range(crafted_repeat):
+                        pairs.extend(crafted_pairs)
+                    self.training_status["log"].append(
+                        f"Added {len(crafted_pairs) * crafted_repeat} crafted DPO pairs"
+                    )
+
+                if not pairs:
+                    self.training_status["message"] = "No preference pairs loaded"
+                    self.training_status["running"] = False
+                    return
+
+                self.training_status["log"].append(f"Total DPO pairs: {len(pairs)}")
+
+                ref_model = copy.deepcopy(self.model)
+                ref_model.eval()
+                for p in ref_model.parameters():
+                    p.requires_grad = False
+
+                optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=0.01)
+                self.model.train()
+
+                for epoch in range(epochs):
+                    random.shuffle(pairs)
+                    total_loss = 0
+                    n_batches = 0
+                    optimizer.zero_grad()
+                    self.training_status["message"] = f"DPO Epoch {epoch+1}/{epochs}..."
+
+                    for i in range(0, len(pairs), batch_size):
+                        batch = pairs[i:i + batch_size]
+                        batch_loss = 0
+                        for chosen_text, rejected_text in batch:
+                            chosen_ids = self.tokenizer.encode(chosen_text)[:max_seq_len]
+                            rejected_ids = self.tokenizer.encode(rejected_text)[:max_seq_len]
+
+                            chosen_t = torch.tensor([chosen_ids], dtype=torch.long, device=self.device)
+                            rejected_t = torch.tensor([rejected_ids], dtype=torch.long, device=self.device)
+                            chosen_labels = chosen_t.clone()
+                            rejected_labels = rejected_t.clone()
+
+                            policy_chosen_lp = self._get_sequence_logprobs(
+                                self.model, chosen_t, chosen_labels, self.config["vocab_size"])
+                            policy_rejected_lp = self._get_sequence_logprobs(
+                                self.model, rejected_t, rejected_labels, self.config["vocab_size"])
+
+                            with torch.no_grad():
+                                ref_chosen_lp = self._get_sequence_logprobs(
+                                    ref_model, chosen_t, chosen_labels, self.config["vocab_size"])
+                                ref_rejected_lp = self._get_sequence_logprobs(
+                                    ref_model, rejected_t, rejected_labels, self.config["vocab_size"])
+
+                            chosen_reward = beta * (policy_chosen_lp - ref_chosen_lp)
+                            rejected_reward = beta * (policy_rejected_lp - ref_rejected_lp)
+                            loss = -F.logsigmoid(chosen_reward - rejected_reward).mean()
+                            loss = loss / grad_accum_steps
+                            loss.backward()
+                            batch_loss += loss.item() * grad_accum_steps
+
+                        total_loss += batch_loss / len(batch)
+                        n_batches += 1
+
+                        if n_batches % grad_accum_steps == 0:
+                            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                            optimizer.step()
+                            optimizer.zero_grad()
+
+                    if n_batches % grad_accum_steps != 0:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                        optimizer.step()
+                        optimizer.zero_grad()
+
+                    avg_loss = total_loss / max(n_batches, 1)
+                    msg = f"DPO Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f}"
+                    self.training_status["log"].append(msg)
+                    self.training_status["message"] = msg
+
+                    self.training_history.append({
+                        "epoch": len(self.training_history) + 1,
+                        "loss": round(avg_loss, 4),
+                        "type": "dpo",
+                    })
+
+                self.model.eval()
+                del ref_model
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+                ckpt = {
+                    "model_state": self.model.state_dict(),
+                    "config": self.config,
+                    "training_history": self.training_history,
+                    "trained_at": datetime.now(timezone.utc).isoformat(),
+                }
+                save_path = self.ckpt_path or os.path.join(self.model_path or ".", "neuroq_checkpoint.pt")
+                torch.save(ckpt, save_path)
+                self.training_status["log"].append(f"DPO checkpoint saved: {save_path}")
+
+                from dataset_utils import sync_checkpoint_to_network_volume
+                sync_checkpoint_to_network_volume(save_path)
+
+                self.training_status["message"] = f"DPO training complete. Final loss: {avg_loss:.4f}"
+            except Exception as e:
+                self.training_status["log"].append(f"DPO error: {e}")
+                self.training_status["message"] = f"DPO error: {e}"
+            finally:
+                self.training_status["running"] = False
+
+        import threading
+        threading.Thread(target=_run, daemon=True).start()
+        return [{"status": "ok", "message": f"DPO training started: {epochs} epochs, beta={beta}, {len(dataset_ids)} datasets"}]
 
     # --------------------------------------------------------
     # Split training (all chunks)
