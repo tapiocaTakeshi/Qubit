@@ -138,6 +138,28 @@ CRAFTED_QA = [
     "質問: Gitとは何ですか？\n回答: Gitは、ソースコードのバージョン管理システムです。変更履歴の追跡、ブランチによる並行開発、マージによる統合ができます。git init, git add, git commit, git push, git pullなどのコマンドで操作します。GitHubやGitLabなどのホスティングサービスと組み合わせて使います。",
     "質問: データベースとは何ですか？\n回答: データベースは、構造化されたデータを効率的に保存・管理するシステムです。リレーショナルDB（MySQL, PostgreSQL）ではSQLを使ってデータを操作します。NoSQL（MongoDB, Redis）は柔軟なスキーマで大量データを扱えます。CRUD操作（Create, Read, Update, Delete）が基本です。",
     "質問: 計算量のO記法とは何ですか？\n回答: O記法（ビッグオー記法）は、アルゴリズムの効率を表す表記法です。O(1)は定数時間、O(log n)は対数時間、O(n)は線形時間、O(n log n)は線形対数時間、O(n²)は二乗時間です。nはデータの大きさを表し、nが大きくなったときの最悪計算量を示します。",
+    # 日本の地理・ランドマーク
+    "質問: 東京タワーについて教えてください。\n回答: 東京タワーは、東京都港区芝公園にある電波塔で、高さは333メートルです。1958年に完成し、長らく日本で最も高い自立鉄塔でした。エッフェル塔をモデルに設計され、赤と白の塗装が特徴です。観光名所としても人気で、展望台から東京の景色を一望できます。",
+    "質問: 東京スカイツリーについて教えてください。\n回答: 東京スカイツリーは、東京都墨田区にある電波塔で、高さは634メートルです。2012年に開業し、世界で最も高い自立式電波塔としてギネス記録に認定されています。展望台からは東京全域を見渡すことができ、日本有数の観光名所となっています。",
+    "質問: 日本で一番長い川は何ですか？\n回答: 日本で最も長い川は信濃川です。全長は約367キロメートルで、新潟県と長野県を流れています。長野県内では千曲川と呼ばれ、新潟県に入ってから信濃川と呼ばれます。日本海に注ぎます。",
+    "質問: 日本で一番大きい湖は何ですか？\n回答: 日本で最も大きい湖は琵琶湖です。滋賀県にあり、面積は約670平方キロメートル、周囲は約235キロメートルです。日本最古の湖の一つで、世界有数の古代湖としても知られています。",
+    "質問: 日本の人口はどのくらいですか？\n回答: 日本の人口は約1億2,400万人（2024年時点）です。かつては1億2,800万人を超えていましたが、少子高齢化により人口減少が続いています。首都の東京には約1,400万人が住んでいます。",
+    "質問: 北海道について教えてください。\n回答: 北海道は、日本の最北に位置する島で、日本の47都道府県の中で最も面積が広いです。道庁所在地は札幌市で、人口は約510万人です。冷涼な気候で、農業、酪農、漁業が盛んで、雪まつりやラベンダー畑などの観光地でも有名です。",
+    # 地球環境・自然現象
+    "質問: 地球温暖化とは何ですか？\n回答: 地球温暖化とは、二酸化炭素などの温室効果ガスが大気中に増加することで、地球全体の平均気温が上昇する現象です。産業革命以降、化石燃料の燃焼や森林破壊によって加速しており、氷河の融解、海面上昇、異常気象などの影響が世界中で観測されています。パリ協定では気温上昇を1.5度に抑える目標が掲げられています。",
+    "質問: 温室効果ガスとは何ですか？\n回答: 温室効果ガスは、大気中で熱を吸収して地表から放出される赤外線を再放射し、地球の気温を上昇させるガスの総称です。主なものに二酸化炭素（CO2）、メタン（CH4）、一酸化二窒素（N2O）、フロン類があります。産業活動や農業、化石燃料の燃焼が主な排出源です。",
+    "質問: オゾン層とは何ですか？\n回答: オゾン層は、地球の成層圏（地上約10〜50km）に存在するオゾン（O3）の濃い層で、太陽からの有害な紫外線を吸収して地上の生物を守っています。1980年代にフロンガスによるオゾンホールが発見され、モントリオール議定書により世界的にフロンの使用が規制されました。",
+    "質問: 再生可能エネルギーとは何ですか？\n回答: 再生可能エネルギーは、太陽光、風力、水力、地熱、バイオマスなど、自然界で繰り返し補充されるエネルギー源です。化石燃料と異なり、使っても枯渇せず、温室効果ガスの排出が少ないため、地球温暖化対策として重要視されています。",
+    # AI・未来
+    "質問: AIの未来はどうなりますか？\n回答: AI（人工知能）の未来は、医療診断、自動運転、教育、科学研究など幅広い分野で革新をもたらすと予測されています。生成AIの発展により、文章・画像・動画の自動生成が日常化し、人間の生産性が大きく向上します。一方で、雇用への影響、倫理的な問題、プライバシー、AIの判断の透明性など、解決すべき課題も多く、技術の発展と社会制度の整備を両立する必要があります。",
+    "質問: 生成AIとは何ですか？\n回答: 生成AI（Generative AI）は、テキスト、画像、音声、動画などの新しいコンテンツを自動生成する人工知能です。大規模言語モデル（LLM）による文章生成、画像生成AI、音声合成、コード生成などが代表例です。ChatGPTやStable Diffusion、Midjourneyなどが広く知られています。",
+    "質問: ChatGPTとは何ですか？\n回答: ChatGPTは、OpenAI社が開発した大規模言語モデルをベースにした対話型AIサービスです。2022年11月に公開され、自然な対話、文章作成、翻訳、要約、プログラミング支援など多様なタスクに対応できます。GPTはGenerative Pre-trained Transformerの略で、Transformerアーキテクチャを基盤としています。",
+    "質問: 大規模言語モデル（LLM）とは何ですか？\n回答: 大規模言語モデル（LLM: Large Language Model）は、数十億から数千億以上のパラメータを持ち、膨大なテキストデータで学習されたニューラルネットワークモデルです。Transformerアーキテクチャを使い、自然言語の理解と生成に優れた能力を発揮します。GPT、Claude、Gemini、Llamaなどが代表的です。",
+    # 科学・歴史の追加
+    "質問: DNAとは何ですか？\n回答: DNA（デオキシリボ核酸）は、生物の遺伝情報を担う物質です。アデニン（A）、チミン（T）、グアニン（G）、シトシン（C）の4種類の塩基が二重らせん構造で並び、遺伝子として受け継がれます。1953年にワトソンとクリックが二重らせん構造を発見しました。",
+    "質問: 日本の歴史上の人物で有名な人は誰ですか？\n回答: 日本の歴史上、織田信長、豊臣秀吉、徳川家康は戦国時代から江戸時代にかけての三英傑として知られています。他にも聖徳太子、源頼朝、坂本龍馬、明治天皇などが重要な役割を果たしました。",
+    "質問: 明治維新とは何ですか？\n回答: 明治維新は、1868年頃に起きた日本の政治的・社会的な大変革です。江戸幕府が倒れ、天皇を中心とする新政府が成立しました。廃藩置県、四民平等、殖産興業、文明開化などの改革が行われ、日本は近代国家へと大きく変貌しました。",
+    "質問: 第二次世界大戦はいつ終わりましたか？\n回答: 第二次世界大戦は1945年に終結しました。ヨーロッパでは5月8日にドイツが降伏し、アジア太平洋地域では8月15日に日本がポツダム宣言を受諾、9月2日に正式な降伏文書に調印されました。この戦争で世界中で数千万人の犠牲者が出ました。",
 ]
 
 
@@ -433,7 +455,7 @@ class EndpointHandler:
             4. デフォルト "inference"
 
         Supported actions:
-            inference, train, train_qa, train_split, train_split_next,
+            inference, train, train_qa, train_dpo, train_split, train_split_next,
             split_status, split_reset, status
 
         Returns:
@@ -446,6 +468,7 @@ class EndpointHandler:
             "train":            self._handle_train,
             "train_qa":         self._train_qa,
             "train_qa_dataset": self._handle_train_qa,
+            "train_dpo":        self._handle_train_dpo,
             "train_split":      self._handle_train_split,
             "train_split_next": self._handle_train_split_next,
             "train_split_learning": self._handle_split_learning,
@@ -1263,6 +1286,37 @@ class EndpointHandler:
                 self.training_status["log"].append(f"Error loading {ds_id}: {e}")
         return all_texts
 
+    @staticmethod
+    def _wiki_to_qa_templates(title, body, max_answer_len=280):
+        """Generate template QA pairs from a Wikipedia passage.
+
+        Takes a title and body (passage text) and returns a list of
+        "質問: ...\n回答: ..." strings using multiple question templates.
+        This turns raw encyclopedia text into learnable QA format so
+        the model learns factual responses to proper-noun questions.
+        """
+        if not isinstance(title, str) or not isinstance(body, str):
+            return []
+        title = title.strip()
+        body = body.strip()
+        if not title or len(body) < 30:
+            return []
+        # Truncate answer to avoid the model learning to emit huge outputs
+        if len(body) > max_answer_len:
+            # Cut at the first sentence boundary after max_answer_len/2
+            cut = body[:max_answer_len]
+            for sep in ["。", "．", ".", "\n"]:
+                idx = cut.rfind(sep)
+                if idx > max_answer_len // 2:
+                    cut = cut[: idx + 1]
+                    break
+            body = cut
+        templates = [
+            f"質問: {title}について教えてください。\n回答: {body}",
+            f"質問: {title}とは何ですか？\n回答: {body}",
+        ]
+        return templates
+
     def _load_custom_datasets(self, dataset_ids, max_samples, mode):
         """Load custom datasets by ID with auto-format detection.
 
@@ -1292,6 +1346,7 @@ class EndpointHandler:
                     ds = safe_load_dataset(ds_id, **load_kwargs)
                     is_streaming = True
 
+                is_wiki = "wikipedia" in ds_id.lower()
                 count = 0
                 iterator = ds if is_streaming else ds.select(range(min(max_samples, len(ds))))
                 for row in iterator:
@@ -1299,6 +1354,18 @@ class EndpointHandler:
                         break
                     text = None
                     if mode == "qa":
+                        # Wikipedia → generate template QA from title + text
+                        if is_wiki:
+                            title = row.get("title") or ""
+                            body = row.get("text") or row.get("content") or ""
+                            qa_list = self._wiki_to_qa_templates(title, body)
+                            if qa_list:
+                                for qa in qa_list:
+                                    if count >= max_samples:
+                                        break
+                                    all_texts.append(qa)
+                                    count += 1
+                                continue  # skip default parsing for wiki rows
                         q = (row.get("question") or row.get("instruction") or row.get("input") or "")
                         q = q.strip() if isinstance(q, str) else ""
                         a = (row.get("answer") or row.get("output") or row.get("response") or "")
@@ -1313,7 +1380,7 @@ class EndpointHandler:
                                 text = format_qa_conversations(row)
                         if not text and row.get("instruction"):
                             text = format_qa_alpaca(row)
-                        # Fallback: use plain text column (e.g. Wikipedia)
+                        # Fallback: use plain text column (non-wiki fallback only)
                         if not text:
                             val = row.get("text") or row.get("content") or ""
                             if isinstance(val, str) and len(val.strip()) > 20:
@@ -1473,6 +1540,207 @@ class EndpointHandler:
         return best_loss, timed_out
 
     # --------------------------------------------------------
+    # DPO (Direct Preference Optimization)
+    # --------------------------------------------------------
+
+    @staticmethod
+    def _get_sequence_logprobs(model, input_ids, labels, vocab_size):
+        """Compute per-token log probabilities for a sequence."""
+        logits = model(input_ids)
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        log_probs = F.log_softmax(shift_logits, dim=-1)
+        per_token = log_probs.gather(-1, shift_labels.unsqueeze(-1).clamp(min=0)).squeeze(-1)
+        mask = (shift_labels != -100).float()
+        return (per_token * mask).sum(-1)
+
+    def _load_preference_pairs(self, dataset_ids, max_samples):
+        """Load preference datasets with (prompt, chosen, rejected) format."""
+        from dataset_utils import safe_load_dataset
+        pairs = []
+        for ds_spec in dataset_ids:
+            try:
+                if ":" in ds_spec and not ds_spec.startswith("http"):
+                    ds_id, ds_config = ds_spec.rsplit(":", 1)
+                else:
+                    ds_id, ds_config = ds_spec, None
+                self.training_status["message"] = f"Loading {ds_id}..."
+                load_kwargs = {"split": "train"}
+                if ds_config:
+                    load_kwargs["name"] = ds_config
+                try:
+                    ds = safe_load_dataset(ds_id, **load_kwargs)
+                    is_streaming = False
+                except Exception:
+                    load_kwargs["streaming"] = True
+                    ds = safe_load_dataset(ds_id, **load_kwargs)
+                    is_streaming = True
+
+                count = 0
+                iterator = ds if is_streaming else ds.select(range(min(max_samples, len(ds))))
+                for row in iterator:
+                    if count >= max_samples:
+                        break
+                    prompt = row.get("prompt") or row.get("question") or row.get("instruction") or ""
+                    chosen = row.get("chosen") or row.get("preferred") or ""
+                    rejected = row.get("rejected") or row.get("dispreferred") or ""
+                    if isinstance(chosen, list):
+                        chosen = "\n".join(t.get("content", "") if isinstance(t, dict) else str(t) for t in chosen)
+                    if isinstance(rejected, list):
+                        rejected = "\n".join(t.get("content", "") if isinstance(t, dict) else str(t) for t in rejected)
+                    prompt = prompt.strip() if isinstance(prompt, str) else ""
+                    chosen = chosen.strip() if isinstance(chosen, str) else ""
+                    rejected = rejected.strip() if isinstance(rejected, str) else ""
+                    if prompt and chosen and rejected and len(chosen) > 5 and len(rejected) > 5:
+                        pairs.append((
+                            f"質問: {prompt}\n回答: {chosen}",
+                            f"質問: {prompt}\n回答: {rejected}",
+                        ))
+                        count += 1
+                self.training_status["log"].append(f"Loaded {ds_id}: {count} preference pairs")
+            except Exception as e:
+                self.training_status["log"].append(f"Error loading {ds_id}: {e}")
+        return pairs
+
+    def _handle_train_dpo(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """DPO training: learn from preference pairs (chosen vs rejected)."""
+        if self.training_status["running"]:
+            return [{"status": "error", "message": "Training already in progress"}]
+
+        import copy
+        params = data.get("parameters", {})
+        epochs = int(params.get("epochs", 5))
+        lr = float(params.get("lr", 1e-6))
+        beta = float(params.get("beta", 0.1))
+        batch_size = int(params.get("batch_size", 1))
+        grad_accum_steps = int(params.get("grad_accum_steps", 8))
+        max_samples = int(params.get("max_samples", 5000))
+        max_seq_len = int(params.get("max_seq_len", self.config.get("max_seq_len", 512)))
+        dataset_ids = params.get("dataset_ids", [])
+        crafted_repeat = int(params.get("crafted_repeat", 5))
+
+        self.training_status = {"running": True, "log": [], "message": "Loading DPO datasets..."}
+
+        def _run():
+            try:
+                pairs = self._load_preference_pairs(dataset_ids, max_samples)
+
+                if crafted_repeat > 0:
+                    crafted_pairs = []
+                    for qa in CRAFTED_QA:
+                        prompt_part = qa.split("\n回答:")[0].replace("質問: ", "")
+                        crafted_pairs.append((qa, f"質問: {prompt_part}\n回答: わかりません。"))
+                    for _ in range(crafted_repeat):
+                        pairs.extend(crafted_pairs)
+                    self.training_status["log"].append(
+                        f"Added {len(crafted_pairs) * crafted_repeat} crafted DPO pairs"
+                    )
+
+                if not pairs:
+                    self.training_status["message"] = "No preference pairs loaded"
+                    self.training_status["running"] = False
+                    return
+
+                self.training_status["log"].append(f"Total DPO pairs: {len(pairs)}")
+
+                ref_model = copy.deepcopy(self.model)
+                ref_model.eval()
+                for p in ref_model.parameters():
+                    p.requires_grad = False
+
+                optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=0.01)
+                self.model.train()
+
+                for epoch in range(epochs):
+                    random.shuffle(pairs)
+                    total_loss = 0
+                    n_batches = 0
+                    optimizer.zero_grad()
+                    self.training_status["message"] = f"DPO Epoch {epoch+1}/{epochs}..."
+
+                    for i in range(0, len(pairs), batch_size):
+                        batch = pairs[i:i + batch_size]
+                        batch_loss = 0
+                        for chosen_text, rejected_text in batch:
+                            chosen_ids = self.tokenizer.encode(chosen_text)[:max_seq_len]
+                            rejected_ids = self.tokenizer.encode(rejected_text)[:max_seq_len]
+
+                            chosen_t = torch.tensor([chosen_ids], dtype=torch.long, device=self.device)
+                            rejected_t = torch.tensor([rejected_ids], dtype=torch.long, device=self.device)
+                            chosen_labels = chosen_t.clone()
+                            rejected_labels = rejected_t.clone()
+
+                            policy_chosen_lp = self._get_sequence_logprobs(
+                                self.model, chosen_t, chosen_labels, self.config["vocab_size"])
+                            policy_rejected_lp = self._get_sequence_logprobs(
+                                self.model, rejected_t, rejected_labels, self.config["vocab_size"])
+
+                            with torch.no_grad():
+                                ref_chosen_lp = self._get_sequence_logprobs(
+                                    ref_model, chosen_t, chosen_labels, self.config["vocab_size"])
+                                ref_rejected_lp = self._get_sequence_logprobs(
+                                    ref_model, rejected_t, rejected_labels, self.config["vocab_size"])
+
+                            chosen_reward = beta * (policy_chosen_lp - ref_chosen_lp)
+                            rejected_reward = beta * (policy_rejected_lp - ref_rejected_lp)
+                            loss = -F.logsigmoid(chosen_reward - rejected_reward).mean()
+                            loss = loss / grad_accum_steps
+                            loss.backward()
+                            batch_loss += loss.item() * grad_accum_steps
+
+                        total_loss += batch_loss / len(batch)
+                        n_batches += 1
+
+                        if n_batches % grad_accum_steps == 0:
+                            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                            optimizer.step()
+                            optimizer.zero_grad()
+
+                    if n_batches % grad_accum_steps != 0:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                        optimizer.step()
+                        optimizer.zero_grad()
+
+                    avg_loss = total_loss / max(n_batches, 1)
+                    msg = f"DPO Epoch {epoch+1}/{epochs} | Loss: {avg_loss:.4f}"
+                    self.training_status["log"].append(msg)
+                    self.training_status["message"] = msg
+
+                    self.training_history.append({
+                        "epoch": len(self.training_history) + 1,
+                        "loss": round(avg_loss, 4),
+                        "type": "dpo",
+                    })
+
+                self.model.eval()
+                del ref_model
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+                ckpt = {
+                    "model_state": self.model.state_dict(),
+                    "config": self.config,
+                    "training_history": self.training_history,
+                    "trained_at": datetime.now(timezone.utc).isoformat(),
+                }
+                save_path = self.ckpt_path or os.path.join(self.model_path or ".", "neuroq_checkpoint.pt")
+                torch.save(ckpt, save_path)
+                self.training_status["log"].append(f"DPO checkpoint saved: {save_path}")
+
+                from dataset_utils import sync_checkpoint_to_network_volume
+                sync_checkpoint_to_network_volume(save_path)
+
+                self.training_status["message"] = f"DPO training complete. Final loss: {avg_loss:.4f}"
+            except Exception as e:
+                self.training_status["log"].append(f"DPO error: {e}")
+                self.training_status["message"] = f"DPO error: {e}"
+            finally:
+                self.training_status["running"] = False
+
+        import threading
+        threading.Thread(target=_run, daemon=True).start()
+        return [{"status": "ok", "message": f"DPO training started: {epochs} epochs, beta={beta}, {len(dataset_ids)} datasets"}]
+
+    # --------------------------------------------------------
     # Split training (all chunks)
     # --------------------------------------------------------
 
@@ -1508,7 +1776,7 @@ class EndpointHandler:
         batch_size = int(params.get("batch_size", 8))
         grad_accum_steps = int(params.get("grad_accum_steps", 4))
         warmup_steps = int(params.get("warmup_steps", 20))
-        max_samples = int(params.get("max_samples_per_dataset", 2000))
+        max_samples = int(params.get("max_samples_per_dataset", 10000))
         crafted_repeat = int(params.get("crafted_repeat", 20))
         dataset_ids = params.get("dataset_ids", None)
         resume = bool(params.get("resume", False))
