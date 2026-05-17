@@ -145,6 +145,35 @@ class TrainSplitRequest(BaseModel):
     resume: bool = False
 
 
+class TrainDPORequest(BaseModel):
+    """DPO (Direct Preference Optimization) training request."""
+    epochs: int = 5
+    lr: float = 1e-5
+    batch_size: int = 2
+    grad_accum_steps: int = 4
+    warmup_steps: int = 20
+    dpo_beta: float = 0.5
+    grad_clip: float = 1.0
+    max_samples_hf: int = 2000
+
+
+class TrainCombinedDPORequest(BaseModel):
+    """Combined QA + DPO training request."""
+    # QA phase
+    qa_epochs: int = 2
+    qa_lr: float = 5e-5
+    qa_batch_size: int = 4
+    qa_grad_accum: int = 8
+    # DPO phase
+    dpo_epochs: int = 3
+    dpo_lr: float = 1e-5
+    dpo_batch_size: int = 2
+    dpo_grad_accum: int = 4
+    dpo_beta: float = 0.5
+    warmup_steps: int = 20
+    grad_clip: float = 1.0
+
+
 class RunPodTrainRequest(BaseModel):
     """RunPod経由でHuggingFaceデータセットの学習を実行するリクエスト。"""
     action: str = "train"  # train, train_qa_dataset, train_split, train_split_next
@@ -2075,6 +2104,68 @@ async def train_split_learning(req: TrainSplitLearningRequest, background_tasks:
         status="started",
         message=f"Split Learning started: cut_layer={cut_layer}/{num_layers}, "
                 f"data_mode={req.data_mode}, epochs={req.epochs}, lr={req.lr}",
+    )
+
+
+def run_dpo_training(req: TrainDPORequest):
+    """Run DPO training in background."""
+    global training_status
+    try:
+        data = {"parameters": req.dict()}
+        result = _handler(data)
+        if result:
+            training_status["log"] = result[0].get("log", [])
+            training_status["message"] = result[0].get("message", "DPO training complete")
+    except Exception as e:
+        training_status["message"] = f"DPO training error: {str(e)}"
+        import traceback
+        traceback.print_exc()
+    finally:
+        training_status["running"] = False
+
+
+def run_combined_dpo_training(req: TrainCombinedDPORequest):
+    """Run combined QA+DPO training in background."""
+    global training_status
+    try:
+        data = {"parameters": req.dict()}
+        result = _handler(data)
+        if result:
+            training_status["log"] = result[0].get("log", [])
+            training_status["message"] = result[0].get("message", "Combined training complete")
+    except Exception as e:
+        training_status["message"] = f"Combined training error: {str(e)}"
+        import traceback
+        traceback.print_exc()
+    finally:
+        training_status["running"] = False
+
+
+@app.post("/train/dpo", response_model=TrainResponse)
+async def train_dpo(req: TrainDPORequest, background_tasks: BackgroundTasks):
+    """DPO (Direct Preference Optimization) training on preference pairs."""
+    if training_status["running"]:
+        raise HTTPException(status_code=409, detail="Training already in progress")
+
+    background_tasks.add_task(run_dpo_training, req)
+    return TrainResponse(
+        status="started",
+        message=f"DPO Training started: {req.epochs} epochs, lr={req.lr}, "
+                f"batch_size={req.batch_size}, dpo_beta={req.dpo_beta}",
+    )
+
+
+@app.post("/train/combined_dpo", response_model=TrainResponse)
+async def train_combined_dpo(req: TrainCombinedDPORequest, background_tasks: BackgroundTasks):
+    """Combined QA + DPO training (two-phase approach)."""
+    if training_status["running"]:
+        raise HTTPException(status_code=409, detail="Training already in progress")
+
+    background_tasks.add_task(run_combined_dpo_training, req)
+    return TrainResponse(
+        status="started",
+        message=f"Combined QA+DPO Training started: QA={req.qa_epochs}ep lr={req.qa_lr}, "
+                f"DPO={req.dpo_epochs}ep lr={req.dpo_lr}, beta={req.dpo_beta}",
     )
 
 

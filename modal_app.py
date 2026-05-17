@@ -26,6 +26,8 @@ Endpoints:
     POST /train_split_next   - 次のチャンクのみ学習（タイムアウト防止）
     POST /train_split_reset  - 分割学習セッションリセット
     POST /train_split_learning - 分割学習（モデル分割）
+    POST /train_dpo          - DPO (Direct Preference Optimization) 学習
+    POST /train_combined_dpo - QA + DPO 統合学習
     POST /tts                - テキスト音声合成（Replicate経由）
     POST /reload             - モデル再読み込み
     GET  /status             - モデルステータス
@@ -58,6 +60,7 @@ image = (
     .add_local_file("handler.py", "/app/handler.py", copy=True)
     .add_local_file("dataset_utils.py", "/app/dataset_utils.py", copy=True)
     .add_local_file("progress_logger.py", "/app/progress_logger.py", copy=True)
+    .add_local_file("dpo_utils.py", "/app/dpo_utils.py", copy=True)
     .add_local_file("training_history.json", "/app/training_history.json", copy=True)
     .add_local_file("train_tokenizer.py", "/app/train_tokenizer.py", copy=True)
     .add_local_file("split_learning.py", "/app/split_learning.py", copy=True)
@@ -86,6 +89,8 @@ ENDPOINTS = {
     "train_split_next": {"method": "POST", "action": "train_split_next"},
     "train_split_reset": {"method": "POST", "action": "split_reset"},
     "train_split_learning": {"method": "POST", "action": "train_split_learning"},
+    "train_dpo": {"method": "POST", "action": "train_dpo"},
+    "train_combined_dpo": {"method": "POST", "action": "train_combined_dpo"},
     "tts": {"method": "POST", "action": "tts"},
     "reload": {"method": "POST", "action": "reload"},
     "status": {"method": "GET", "action": "status"},
@@ -324,6 +329,16 @@ class NeuroQService:
     def train_split_learning(self, request: dict):
         """分割学習（Split Learning）エンドポイント。モデルをカットレイヤーで分割して学習する。"""
         return self._handle_training_endpoint(request, "train_split_learning")
+
+    @modal.fastapi_endpoint(method="POST")
+    def train_dpo(self, request: dict):
+        """DPO (Direct Preference Optimization) 学習エンドポイント。"""
+        return self._handle_training_endpoint(request, "train_dpo")
+
+    @modal.fastapi_endpoint(method="POST")
+    def train_combined_dpo(self, request: dict):
+        """QA + DPO 統合学習エンドポイント。"""
+        return self._handle_training_endpoint(request, "train_combined_dpo")
 
     # ==============================================================
     # ステータス・ユーティリティエンドポイント
