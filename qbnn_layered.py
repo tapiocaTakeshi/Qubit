@@ -416,6 +416,8 @@ class EQBNNGenerativeModel(nn.Module):
 # 5. データ取得（Common Crawl サンプル）
 # ========================================================================
 
+WIKIPEDIA_API_BASE = "https://{lang}.wikipedia.org/w/api.php?action=query&titles={title}&prop=extracts&explaintext&format=json"
+
 def fetch_common_crawl_sample(max_samples=1000, min_length=50, lang='en'):
     """
     学習データを取得
@@ -454,7 +456,7 @@ def fetch_japanese_data(max_samples=1000, min_length=30):
         ]
         
         for title in wiki_titles:
-            url = f"https://ja.wikipedia.org/w/api.php?action=query&titles={title}&prop=extracts&explaintext&format=json"
+            url = WIKIPEDIA_API_BASE.format(lang='ja', title=title)
             response = requests.get(url, timeout=10)
             
             if response.status_code == 200:
@@ -510,7 +512,7 @@ def fetch_english_data(max_samples=1000, min_length=50):
         ]
         
         for title in wiki_titles:
-            url = f"https://en.wikipedia.org/w/api.php?action=query&titles={title}&prop=extracts&explaintext&format=json"
+            url = WIKIPEDIA_API_BASE.format(lang='en', title=title)
             response = requests.get(url, timeout=10)
             
             if response.status_code == 200:
