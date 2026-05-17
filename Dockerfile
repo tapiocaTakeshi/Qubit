@@ -23,6 +23,7 @@ COPY handler.py .
 COPY runpod_handler.py .
 COPY runpod_manager.py .
 COPY dataset_utils.py .
+COPY dpo_utils.py .
 COPY progress_logger.py .
 
 # 分割学習（split learning）サポート
