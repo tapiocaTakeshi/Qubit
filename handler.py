@@ -1621,6 +1621,7 @@ class EndpointHandler:
         self.training_status = {"running": True, "log": [], "message": "Loading DPO datasets..."}
 
         def _run():
+            dpo_log = []
             try:
                 pairs = self._load_preference_pairs(dataset_ids, max_samples)
 
@@ -1705,20 +1706,26 @@ class EndpointHandler:
                     self.training_status["log"].append(msg)
                     self.training_status["message"] = msg
 
-                    self.training_history.append({
-                        "epoch": len(self.training_history) + 1,
+                    dpo_log.append({
+                        "epoch": epoch + 1,
                         "loss": round(avg_loss, 4),
                         "type": "dpo",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                     })
 
                 self.model.eval()
                 del ref_model
                 torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
+                prev_log = []
+                if self.ckpt_path and os.path.exists(self.ckpt_path):
+                    old_ckpt = torch.load(self.ckpt_path, map_location="cpu")
+                    prev_log = old_ckpt.get("training_log", [])
+
                 ckpt = {
                     "model_state": self.model.state_dict(),
                     "config": self.config,
-                    "training_history": self.training_history,
+                    "training_log": prev_log + dpo_log,
                     "trained_at": datetime.now(timezone.utc).isoformat(),
                 }
                 save_path = self.ckpt_path or os.path.join(self.model_path or ".", "neuroq_checkpoint.pt")
