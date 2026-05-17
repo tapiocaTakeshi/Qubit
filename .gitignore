@@ -3,5 +3,4 @@ __pycache__/
 neuroq_checkpoint.pt
 logs/
 gguf_models/
-*.gguf
 *_checkpoint.pt
