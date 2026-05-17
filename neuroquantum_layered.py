@@ -1068,17 +1068,26 @@ def migrate_legacy_state_dict(state_dict: dict, model: "NeuroQuantum") -> dict:
         transformer_blocks.{i}.ffn_standard/ffn_qbnn_layer1/ffn_qbnn_layer2.*,
         final_norm.*, output_head.weight
     """
-    # Quick check: if state_dict already has new-style keys, return as-is
+    model_state = model.state_dict()
+
+    # Quick check: if state_dict already has new-style keys, return as-is (with missing keys filled)
     if any(k.startswith("transformer_blocks.") for k in state_dict):
-        return state_dict
+        new_state = dict(state_dict)
+        for k, v in model_state.items():
+            if k not in new_state:
+                new_state[k] = v
+        return new_state
 
     # Check for legacy keys
     if not any(k.startswith("layers.") for k in state_dict):
-        return state_dict
+        new_state = dict(state_dict)
+        for k, v in model_state.items():
+            if k not in new_state:
+                new_state[k] = v
+        return new_state
 
     print("[migrate] Legacy checkpoint detected — converting keys to NeuroQuantum format")
     new_state = {}
-    model_state = model.state_dict()
     embed_dim = model.config.embed_dim
 
     # --- Simple renames ---

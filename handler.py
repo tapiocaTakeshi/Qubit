@@ -354,7 +354,7 @@ class EndpointHandler:
             if resized_keys:
                 print(f"[handler] Resized layers: {', '.join(resized_keys)}")
 
-            self.model.load_state_dict(migrated)
+            self.model.load_state_dict(migrated, strict=False)
             self.model.eval()
 
             n_params = sum(p.numel() for p in self.model.parameters())
