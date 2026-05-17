@@ -581,3 +581,137 @@ def get_training_status():
 
 ※ 実際の値はデータセット、ハードウェア、最適化設定によって異なります
 
+## 9. GGUF モデル生成 (GGUF Model Generation)
+
+### 9.1. GGUF形式について (About GGUF Format)
+
+GGUF（GGML Universal Format）は、大規模言語モデルの効率的な保存と配布のための標準フォーマットです。Qubitモデルを複数のサイズと形式でGGUF形式に変換することで、以下の利点が得られます：
+
+- **汎用性**: llama.cpp や Ollama など、様々なツールで利用可能
+- **効率性**: メモリ効率的な推論を実現
+- **互換性**: 異なるプラットフォームやハードウェアで動作
+- **配布**: モデルの簡単な共有とアップロード
+
+### 9.2. コマンドラインでのGGUF生成 (Command-line Usage)
+
+#### 基本的な使用方法
+
+すべてのモデルサイズと形式でGGUFを生成：
+
+```bash
+python generate_gguf_models.py
+```
+
+#### カスタム設定での生成
+
+特定の形式とサイズを指定：
+
+```bash
+python generate_gguf_models.py \
+    --architectures neuroquantum qbnn \
+    --sizes small medium large \
+    --output-dir ./my_gguf_models \
+    --device cpu
+```
+
+#### オプション
+
+| オプション | デフォルト | 説明 |
+| :------- | :------: | :--- |
+| `--output-dir` | `gguf_models` | GGUFファイルの出力ディレクトリ |
+| `--architectures` | `neuroquantum qbnn` | 生成するアーキテクチャ |
+| `--sizes` | `small medium large` | 生成するモデルサイズ |
+| `--device` | `cpu` | モデル生成に使用するデバイス（cpu/cuda） |
+| `--skip-checkpoint-cleanup` | - | フラグを指定するとチェックポイント.ptファイルを保持 |
+
+### 9.3. APIでのGGUF生成 (API Usage)
+
+FastAPI経由でGGUFモデルをバックグラウンドで生成：
+
+```bash
+# APIサーバー起動
+python api.py
+```
+
+```python
+import requests
+import json
+
+url = "http://localhost:8000/generate/gguf"
+payload = {
+    "architectures": ["neuroquantum", "qbnn"],
+    "sizes": ["small", "medium", "large"],
+    "output_dir": "gguf_models",
+    "device": "cpu",
+    "skip_checkpoint_cleanup": False
+}
+
+response = requests.post(url, json=payload)
+print(response.json())
+# Output: {
+#   "status": "started",
+#   "message": "GGUF generation started for 2 architectures and 3 sizes",
+#   "output_dir": "gguf_models"
+# }
+```
+
+### 9.4. 生成されるモデル構成 (Generated Model Structure)
+
+GGUF生成プロセスは以下のモデルを生成します：
+
+```
+gguf_models/
+├── neuroquantum_small.gguf
+├── neuroquantum_medium.gguf
+├── neuroquantum_large.gguf
+├── qbnn_small.gguf
+├── qbnn_medium.gguf
+├── qbnn_large.gguf
+└── manifest.json
+```
+
+各GGUFファイルには以下のメタデータが含まれます：
+
+- **モデル名**: Qubit {size} 形式
+- **説明**: アーキテクチャとサイズ情報
+- **バージョン**: 1.0
+- **作者**: tapiocaTakeshi
+- **カスタムメタデータ**:
+  - `model.size`: small/medium/large
+  - `model.architecture`: neuroquantum/qbnn
+  - `model.created`: ISO 8601形式の生成時刻
+
+### 9.5. manifest.json について (Manifest File)
+
+生成完了後、`manifest.json` に全生成モデルの情報が保存されます：
+
+```json
+{
+  "generated_at": "2024-05-17T13:30:45.123456",
+  "models": {
+    "neuroquantum": {
+      "small": {
+        "status": "success",
+        "checkpoint": "gguf_models/neuroquantum_small_checkpoint.pt",
+        "gguf": "gguf_models/neuroquantum_small.gguf",
+        "size_mb": 215.4
+      },
+      ...
+    },
+    "qbnn": { ... }
+  },
+  "output_directory": "gguf_models",
+  "vocab_size": 32000
+}
+```
+
+### 9.6. 推奨用途 (Recommended Usage)
+
+| 用途 | おすすめサイズ | 理由 |
+| :-- | :--------- | :--- |
+| エッジデバイス | small | 低メモリ、高速推論 |
+| 汎用デスクトップ | medium | バランスの取れた性能 |
+| 高精度が必要 | large | 最高の性能（高メモリ要件） |
+| A1等 GPU環境 | small, medium | コスト効率的 |
+| H100等 高性能GPU | large | 最大限のモデル容量活用 |
+
