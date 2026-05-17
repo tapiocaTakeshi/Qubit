@@ -67,7 +67,7 @@ image = (
 )
 
 # ==============================================================
-# Modal App
+# Modal App Configuration
 # ==============================================================
 
 app = modal.App(name="qubit_ai", image=image)
@@ -75,6 +75,24 @@ app = modal.App(name="qubit_ai", image=image)
 # チェックポイント永続化用 Volume
 volume = modal.Volume.from_name("neuroq-checkpoints", create_if_missing=True)
 VOLUME_PATH = "/data/checkpoints"
+
+# エンドポイント設定
+ENDPOINTS = {
+    "inference": {"method": "POST", "action": "inference"},
+    "train": {"method": "POST", "action": "train"},
+    "train_qa": {"method": "POST", "action": "train_qa"},
+    "train_qa_dataset": {"method": "POST", "action": "train_qa_dataset"},
+    "train_split": {"method": "POST", "action": "train_split"},
+    "train_split_next": {"method": "POST", "action": "train_split_next"},
+    "train_split_reset": {"method": "POST", "action": "split_reset"},
+    "train_split_learning": {"method": "POST", "action": "train_split_learning"},
+    "tts": {"method": "POST", "action": "tts"},
+    "reload": {"method": "POST", "action": "reload"},
+    "status": {"method": "GET", "action": "status"},
+    "train_status": {"method": "GET", "action": "train_status"},
+    "train_split_status": {"method": "GET", "action": "split_status"},
+    "health": {"method": "GET", "action": "health"},
+}
 
 
 @app.cls(
@@ -195,6 +213,15 @@ class NeuroQService:
             return result[0]
         return result
 
+    def _handle_training_endpoint(self, request: dict, action: str, include_sync: bool = True):
+        """学習系エンドポイントの共通処理"""
+        request.setdefault("action", action)
+        result = self._process(request)
+        if include_sync:
+            self._sync_checkpoint()
+            print(f"[modal] {action} complete. Result status: {result.get('status', 'unknown') if isinstance(result, dict) else 'ok'}")
+        return result
+
     def _sync_checkpoint(self):
         """学習後にチェックポイントとトークナイザーをVolumeに保存（詳細ログ付き）"""
         import shutil
@@ -261,8 +288,7 @@ class NeuroQService:
     @modal.fastapi_endpoint(method="POST")
     def inference(self, request: dict):
         """推論エンドポイント"""
-        request.setdefault("action", "inference")
-        return self._process(request)
+        return self._handle_training_endpoint(request, "inference", include_sync=False)
 
     # ==============================================================
     # 学習エンドポイント
@@ -271,38 +297,22 @@ class NeuroQService:
     @modal.fastapi_endpoint(method="POST")
     def train(self, request: dict):
         """一般学習エンドポイント"""
-        request.setdefault("action", "train")
-        result = self._process(request)
-        self._sync_checkpoint()
-        print(f"[modal] Train complete. Result status: {result.get('status', 'unknown') if isinstance(result, dict) else 'ok'}")
-        return result
+        return self._handle_training_endpoint(request, "train")
 
     @modal.fastapi_endpoint(method="POST")
     def train_qa(self, request: dict):
         """QA学習エンドポイント"""
-        request.setdefault("action", "train_qa")
-        result = self._process(request)
-        self._sync_checkpoint()
-        print(f"[modal] Train QA complete. Result status: {result.get('status', 'unknown') if isinstance(result, dict) else 'ok'}")
-        return result
+        return self._handle_training_endpoint(request, "train_qa")
 
     @modal.fastapi_endpoint(method="POST")
     def train_qa_dataset(self, request: dict):
         """QA形式HFデータセット学習エンドポイント"""
-        request.setdefault("action", "train_qa_dataset")
-        result = self._process(request)
-        self._sync_checkpoint()
-        print(f"[modal] Train QA Dataset complete. Result status: {result.get('status', 'unknown') if isinstance(result, dict) else 'ok'}")
-        return result
+        return self._handle_training_endpoint(request, "train_qa_dataset")
 
     @modal.fastapi_endpoint(method="POST")
     def train_split(self, request: dict):
         """分割データセット学習エンドポイント（全チャンク）"""
-        request.setdefault("action", "train_split")
-        result = self._process(request)
-        self._sync_checkpoint()
-        print(f"[modal] Train Split complete. Result status: {result.get('status', 'unknown') if isinstance(result, dict) else 'ok'}")
-        return result
+        return self._handle_training_endpoint(request, "train_split")
 
     @modal.fastapi_endpoint(method="POST")
     def train_split_next(self, request: dict):
@@ -314,25 +324,17 @@ class NeuroQService:
           3. chunks_remaining == 0 になるまで繰り返す
           4. リセットは POST /train_split_reset を呼ぶ
         """
-        request.setdefault("action", "train_split_next")
-        result = self._process(request)
-        self._sync_checkpoint()
-        print(f"[modal] Train Split Next complete. Result: {result if isinstance(result, dict) else 'ok'}")
-        return result
+        return self._handle_training_endpoint(request, "train_split_next")
 
     @modal.fastapi_endpoint(method="POST")
     def train_split_reset(self):
         """分割学習セッションリセット（履歴は保持）"""
-        return self._process({"action": "split_reset"})
+        return self._handle_training_endpoint({}, "split_reset", include_sync=False)
 
     @modal.fastapi_endpoint(method="POST")
     def train_split_learning(self, request: dict):
         """分割学習（Split Learning）エンドポイント。モデルをカットレイヤーで分割して学習する。"""
-        request.setdefault("action", "train_split_learning")
-        result = self._process(request)
-        self._sync_checkpoint()
-        print(f"[modal] Split Learning complete. Result status: {result.get('status', 'unknown') if isinstance(result, dict) else 'ok'}")
-        return result
+        return self._handle_training_endpoint(request, "train_split_learning")
 
     # ==============================================================
     # ステータス・ユーティリティエンドポイント
