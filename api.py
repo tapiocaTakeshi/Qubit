@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 
 sys.path.insert(0, os.path.dirname(__file__))
-from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, migrate_legacy_state_dict
+from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, migrate_legacy_state_dict, get_model_config_by_size
 from dataset_utils import sync_checkpoint_to_network_volume
 from split_learning import SplitLearningTrainer, merge_split_models
 from progress_logger import ProgressLogger
@@ -106,6 +106,7 @@ class TrainRequest(BaseModel):
     grad_accum_steps: int = 8
     warmup_steps: int = 100
     max_samples_per_dataset: int = 5000
+    model_size: str = "medium"  # "large" | "medium" | "small"
 
 
 class TrainQARequest(BaseModel):
@@ -116,6 +117,7 @@ class TrainQARequest(BaseModel):
     grad_accum_steps: int = 4
     warmup_steps: int = 30
     max_samples_per_dataset: int = 1500
+    model_size: str = "medium"  # "large" | "medium" | "small"
 
 
 class TrainMarkdownRequest(BaseModel):
@@ -124,6 +126,7 @@ class TrainMarkdownRequest(BaseModel):
     batch_size: int = 4
     grad_accum_steps: int = 4
     warmup_steps: int = 20
+    model_size: str = "medium"  # "large" | "medium" | "small"
 
 
 class TrainSplitRequest(BaseModel):
@@ -143,6 +146,7 @@ class TrainSplitRequest(BaseModel):
     max_samples_per_dataset: int = 2000
     crafted_repeat: int = 20
     resume: bool = False
+    model_size: str = "medium"  # "large" | "medium" | "small"
 
 
 class TrainDPORequest(BaseModel):
@@ -155,6 +159,7 @@ class TrainDPORequest(BaseModel):
     dpo_beta: float = 0.5
     grad_clip: float = 1.0
     max_samples_hf: int = 2000
+    model_size: str = "medium"  # "large" | "medium" | "small"
 
 
 class TrainCombinedDPORequest(BaseModel):
@@ -171,6 +176,7 @@ class TrainCombinedDPORequest(BaseModel):
     dpo_grad_accum: int = 4
     dpo_beta: float = 0.5
     warmup_steps: int = 20
+    model_size: str = "medium"  # "large" | "medium" | "small"
     grad_clip: float = 1.0
 
 
@@ -193,6 +199,7 @@ class RunPodTrainRequest(BaseModel):
     max_minutes_per_chunk: Optional[float] = None
     runpod_endpoint_id: Optional[str] = None  # override env var
     timeout: int = 86400
+    model_size: str = "medium"  # "large" | "medium" | "small"
 
 
 class TrainSplitNextRequest(BaseModel):
@@ -208,6 +215,7 @@ class TrainSplitNextRequest(BaseModel):
     warmup_steps: int = 20
     max_samples_per_dataset: int = 2000
     crafted_repeat: int = 20
+    model_size: str = "medium"  # "large" | "medium" | "small"
 
 
 class TrainSplitLearningRequest(BaseModel):
@@ -221,6 +229,7 @@ class TrainSplitLearningRequest(BaseModel):
     grad_accum_steps: int = 4
     warmup_steps: int = 20
     grad_clip: float = 1.0
+    model_size: str = "medium"  # "large" | "medium" | "small"
     max_samples: int = 2000
     crafted_repeat: int = 10
     max_minutes: Optional[float] = None  # 最大学習時間（分）
@@ -240,6 +249,21 @@ class TrainStatusResponse(BaseModel):
 # ========================================
 # Model loading
 # ========================================
+
+def apply_model_size_config(model_size: str = "medium"):
+    """Apply model size configuration to the global config dictionary."""
+    global config
+    size_config = get_model_config_by_size(model_size, vocab_size=config.get("vocab_size", 8000))
+    # Update config with size-specific settings
+    config["embed_dim"] = size_config["embed_dim"]
+    config["hidden_dim"] = size_config["hidden_dim"]
+    config["num_heads"] = size_config["num_heads"]
+    config["num_layers"] = size_config["num_layers"]
+    config["max_seq_len"] = size_config["max_seq_len"]
+    config["dropout"] = size_config.get("dropout", 0.1)
+    config["entangle_strength"] = size_config.get("entangle_strength", 0.5)
+    config["model_size"] = model_size
+
 
 def load_model():
     """Load model and tokenizer from checkpoint.
@@ -479,6 +503,8 @@ def run_training(req: TrainRequest):
     training_status = {"running": True, "log": [], "message": "Loading datasets..."}
     progress.status = training_status  # sync in-memory status
 
+    apply_model_size_config(req.model_size)
+
     try:
         # Load datasets
         all_texts = []
@@ -707,6 +733,8 @@ def run_qa_training(req: TrainQARequest):
     progress.status = training_status
     min_lr_ratio = 0.1
 
+    apply_model_size_config(req.model_size)
+
     try:
         all_qa = []
 
@@ -931,6 +959,8 @@ def run_markdown_training(req: TrainMarkdownRequest):
     global model, tokenizer, config, device, training_status
     training_status = {"running": True, "log": [], "message": "Preparing markdown training data..."}
     min_lr_ratio = 0.1
+
+    apply_model_size_config(req.model_size)
 
     try:
         # Build markdown training corpus: repeat to reinforce the pattern
@@ -1294,6 +1324,8 @@ def run_split_training(req: TrainSplitRequest):
     }
     min_lr_ratio = 0.1
     session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+
+    apply_model_size_config(req.model_size)
 
     try:
         # Load data
@@ -1970,6 +2002,8 @@ def run_split_learning_training(req: "TrainSplitLearningRequest"):
     training_status["message"] = "Split learning training in progress"
     training_status["log"] = []
 
+    apply_model_size_config(req.model_size)
+
     try:
         from train_split_learning import (
             load_qa_texts, load_general_texts, tokenize_texts, get_lr,
@@ -2110,6 +2144,7 @@ async def train_split_learning(req: TrainSplitLearningRequest, background_tasks:
 def run_dpo_training(req: TrainDPORequest):
     """Run DPO training in background."""
     global training_status
+    apply_model_size_config(req.model_size)
     try:
         data = {"parameters": req.dict()}
         result = _handler(data)
@@ -2127,6 +2162,7 @@ def run_dpo_training(req: TrainDPORequest):
 def run_combined_dpo_training(req: TrainCombinedDPORequest):
     """Run combined QA+DPO training in background."""
     global training_status
+    apply_model_size_config(req.model_size)
     try:
         data = {"parameters": req.dict()}
         result = _handler(data)
