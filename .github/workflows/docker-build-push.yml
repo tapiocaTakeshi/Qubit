@@ -6,8 +6,16 @@ on:
     paths:
       - "Dockerfile"
       - "requirements.txt"
+      - "requirements-runpod.txt"
       - "handler.py"
-      - "*.py"
+      - "runpod_handler.py"
+      - "neuroquantum_layered.py"
+      - "qbnn_layered.py"
+      - "split_learning.py"
+      - "train_split_learning.py"
+      - "dataset_utils.py"
+      - "progress_logger.py"
+      - "train_tokenizer.py"
   workflow_dispatch:
 
 env:

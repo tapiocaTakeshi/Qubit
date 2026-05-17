@@ -13,6 +13,9 @@ import json
 
 sys.path.insert(0, os.path.dirname(__file__))
 from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, get_gpu_adaptive_config
+from progress_logger import ProgressLogger
+
+progress = ProgressLogger("train_local")
 
 # GPUの性能に基づいてニューロン数を自動決定
 CONFIG = get_gpu_adaptive_config(vocab_size=32000)
@@ -139,32 +142,32 @@ def train_epoch(model, sequences, tokenizer, optimizer, epoch, device):
 
         if n_batches % 50 == 0:
             avg = total_loss / n_batches
-            print(f"  Epoch {epoch+1} | Batch {n_batches} | Avg Loss: {avg:.4f}")
+            progress.log_batch(epoch=epoch + 1, batch=n_batches, loss=avg)
 
     return total_loss / max(n_batches, 1)
 
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
+    progress.info(f"Device: {device}")
 
     # Step 1: Load all datasets and extract texts
-    print("\n=== Loading datasets ===")
+    progress.info("=== Loading datasets ===")
     all_texts = []
     for ds_info in DATASETS:
-        print(f"  Loading {ds_info['id']}...")
+        progress.info(f"Loading {ds_info['id']}...")
         try:
             ds = safe_load_dataset(ds_info["id"], split="train")
             texts = extract_texts(ds, ds_info["col"], ds_info["max_samples"])
-            print(f"    -> {len(texts)} texts extracted")
+            progress.log_dataset_loaded(ds_info["id"], len(texts))
             all_texts.extend(texts)
         except Exception as e:
-            print(f"    -> ERROR: {e}")
+            progress.log_dataset_error(ds_info["id"], str(e))
 
-    print(f"\nTotal texts: {len(all_texts)}")
+    progress.info(f"Total texts: {len(all_texts)}")
 
     # Step 2: Build SentencePiece tokenizer
-    print("\n=== Building SentencePiece tokenizer ===")
+    progress.info("=== Building SentencePiece tokenizer ===")
     tokenizer = NeuroQuantumTokenizer(vocab_size=CONFIG["vocab_size"])
     tokenizer.build_vocab(
         all_texts,
@@ -173,10 +176,10 @@ def main():
     )
     actual_vocab = tokenizer.actual_vocab_size or tokenizer.vocab_size
     CONFIG["vocab_size"] = actual_vocab
-    print(f"Actual vocab size: {actual_vocab}")
+    progress.info(f"Actual vocab size: {actual_vocab}")
 
     # Step 3: Build model
-    print("\n=== Building NeuroQuantum model ===")
+    progress.info("=== Building NeuroQuantum model ===")
     nq_config = NeuroQuantumConfig(
         vocab_size=actual_vocab,
         embed_dim=CONFIG["embed_dim"],
@@ -189,27 +192,29 @@ def main():
     )
     model = NeuroQuantum(config=nq_config).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"Parameters: {n_params:,}")
+    progress.info(f"Parameters: {n_params:,}")
 
     # Step 4: Tokenize
-    print("\n=== Tokenizing ===")
+    progress.info("=== Tokenizing ===")
     sequences = tokenize_texts(all_texts, tokenizer, MAX_SEQ_LEN)
-    print(f"Training sequences: {len(sequences)}")
+    progress.info(f"Training sequences: {len(sequences)}")
 
     # Step 5: Train
-    print("\n=== Training ===")
+    progress.info("=== Training ===")
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.01)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
+    progress.start_training(epochs=EPOCHS, total_sequences=len(sequences), batch_size=BATCH_SIZE, lr=LR)
     training_log = []
     for epoch in range(EPOCHS):
+        progress.start_epoch(epoch + 1, EPOCHS)
         avg_loss = train_epoch(model, sequences, tokenizer, optimizer, epoch, device)
         scheduler.step()
-        print(f"Epoch {epoch+1}/{EPOCHS} | Avg Loss: {avg_loss:.6f}")
+        progress.log_epoch(epoch=epoch + 1, total_epochs=EPOCHS, loss=avg_loss)
         training_log.append({"epoch": epoch + 1, "loss": avg_loss})
 
     # Step 6: Save checkpoint
-    print("\n=== Saving checkpoint ===")
+    progress.info("=== Saving checkpoint ===")
     ckpt_path = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
     checkpoint = {
         "model_state": model.state_dict(),
@@ -229,11 +234,13 @@ def main():
         "datasets": [d["id"] for d in DATASETS],
     }
     torch.save(checkpoint, ckpt_path)
-    print(f"Saved: {ckpt_path} ({os.path.getsize(ckpt_path) / 1024 / 1024:.1f} MB)")
+    progress.info(f"Saved: {ckpt_path} ({os.path.getsize(ckpt_path) / 1024 / 1024:.1f} MB)")
     sync_checkpoint_to_network_volume(ckpt_path)
 
+    progress.end_training(final_loss=training_log[-1]["loss"], checkpoint_path=ckpt_path)
+
     # Step 7: Quick inference test
-    print("\n=== Inference test ===")
+    progress.info("=== Inference test ===")
     model.eval()
     test_prompts = ["こんにちは", "量子コンピュータとは", "AIの未来について", "日本の首都は", "プログラミングを学ぶ"]
     for prompt in test_prompts:
@@ -280,8 +287,8 @@ def main():
     }
     with open(history_path, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
-    print(f"\nTraining history saved: {history_path}")
-    print("Done!")
+    progress.info(f"Training history saved: {history_path}")
+    progress.info("Done!")
 
 
 if __name__ == "__main__":

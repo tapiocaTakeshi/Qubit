@@ -18,8 +18,12 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 
 sys.path.insert(0, os.path.dirname(__file__))
-from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, migrate_legacy_state_dict
+from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, migrate_legacy_state_dict, get_model_config_by_size
 from dataset_utils import sync_checkpoint_to_network_volume
+from split_learning import SplitLearningTrainer, merge_split_models
+from progress_logger import ProgressLogger
+
+_shutdown_event = threading.Event()
 
 app = FastAPI(title="NeuroQuantum API", version="1.0.0")
 
@@ -29,6 +33,7 @@ tokenizer = None
 config = None
 device = None
 training_status = {"running": False, "log": [], "message": "idle"}
+progress = ProgressLogger("api")
 NETWORK_VOLUME_PATH = os.environ.get("NETWORK_VOLUME_PATH", "/runpod-volume")
 LOCAL_CKPT_PATH = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
 LOCAL_TOKENIZER_PATH = os.path.join(os.path.dirname(__file__), "neuroq_tokenizer.model")
@@ -101,6 +106,7 @@ class TrainRequest(BaseModel):
     grad_accum_steps: int = 8
     warmup_steps: int = 100
     max_samples_per_dataset: int = 5000
+    model_size: str = "medium"  # "large" | "medium" | "small"
 
 
 class TrainQARequest(BaseModel):
@@ -111,6 +117,7 @@ class TrainQARequest(BaseModel):
     grad_accum_steps: int = 4
     warmup_steps: int = 30
     max_samples_per_dataset: int = 1500
+    model_size: str = "medium"  # "large" | "medium" | "small"
 
 
 class TrainMarkdownRequest(BaseModel):
@@ -119,6 +126,7 @@ class TrainMarkdownRequest(BaseModel):
     batch_size: int = 4
     grad_accum_steps: int = 4
     warmup_steps: int = 20
+    model_size: str = "medium"  # "large" | "medium" | "small"
 
 
 class TrainSplitRequest(BaseModel):
@@ -138,6 +146,38 @@ class TrainSplitRequest(BaseModel):
     max_samples_per_dataset: int = 2000
     crafted_repeat: int = 20
     resume: bool = False
+    model_size: str = "medium"  # "large" | "medium" | "small"
+
+
+class TrainDPORequest(BaseModel):
+    """DPO (Direct Preference Optimization) training request."""
+    epochs: int = 5
+    lr: float = 1e-5
+    batch_size: int = 2
+    grad_accum_steps: int = 4
+    warmup_steps: int = 20
+    dpo_beta: float = 0.5
+    grad_clip: float = 1.0
+    max_samples_hf: int = 2000
+    model_size: str = "medium"  # "large" | "medium" | "small"
+
+
+class TrainCombinedDPORequest(BaseModel):
+    """Combined QA + DPO training request."""
+    # QA phase
+    qa_epochs: int = 2
+    qa_lr: float = 5e-5
+    qa_batch_size: int = 4
+    qa_grad_accum: int = 8
+    # DPO phase
+    dpo_epochs: int = 3
+    dpo_lr: float = 1e-5
+    dpo_batch_size: int = 2
+    dpo_grad_accum: int = 4
+    dpo_beta: float = 0.5
+    warmup_steps: int = 20
+    model_size: str = "medium"  # "large" | "medium" | "small"
+    grad_clip: float = 1.0
 
 
 class RunPodTrainRequest(BaseModel):
@@ -158,7 +198,8 @@ class RunPodTrainRequest(BaseModel):
     crafted_repeat: int = 20
     max_minutes_per_chunk: Optional[float] = None
     runpod_endpoint_id: Optional[str] = None  # override env var
-    timeout: int = 3600
+    timeout: int = 86400
+    model_size: str = "medium"  # "large" | "medium" | "small"
 
 
 class TrainSplitNextRequest(BaseModel):
@@ -174,6 +215,24 @@ class TrainSplitNextRequest(BaseModel):
     warmup_steps: int = 20
     max_samples_per_dataset: int = 2000
     crafted_repeat: int = 20
+    model_size: str = "medium"  # "large" | "medium" | "small"
+
+
+class TrainSplitLearningRequest(BaseModel):
+    """分割学習 (Split Learning) リクエスト。モデルをカットレイヤーで分割して学習する。"""
+    data_mode: str = "qa"  # "qa" or "general"
+    dataset_ids: Optional[List[str]] = None
+    cut_layer: Optional[int] = None  # カットレイヤー（未指定時は中間点で自動分割）
+    epochs: int = 5
+    lr: float = 3e-5
+    batch_size: int = 4
+    grad_accum_steps: int = 4
+    warmup_steps: int = 20
+    grad_clip: float = 1.0
+    model_size: str = "medium"  # "large" | "medium" | "small"
+    max_samples: int = 2000
+    crafted_repeat: int = 10
+    max_minutes: Optional[float] = None  # 最大学習時間（分）
 
 
 class TrainResponse(BaseModel):
@@ -190,6 +249,21 @@ class TrainStatusResponse(BaseModel):
 # ========================================
 # Model loading
 # ========================================
+
+def apply_model_size_config(model_size: str = "medium"):
+    """Apply model size configuration to the global config dictionary."""
+    global config
+    size_config = get_model_config_by_size(model_size, vocab_size=config.get("vocab_size", 8000))
+    # Update config with size-specific settings
+    config["embed_dim"] = size_config["embed_dim"]
+    config["hidden_dim"] = size_config["hidden_dim"]
+    config["num_heads"] = size_config["num_heads"]
+    config["num_layers"] = size_config["num_layers"]
+    config["max_seq_len"] = size_config["max_seq_len"]
+    config["dropout"] = size_config.get("dropout", 0.1)
+    config["entangle_strength"] = size_config.get("entangle_strength", 0.5)
+    config["model_size"] = model_size
+
 
 def load_model():
     """Load model and tokenizer from checkpoint.
@@ -427,6 +501,9 @@ def run_training(req: TrainRequest):
     from dataset_utils import safe_load_dataset
 
     training_status = {"running": True, "log": [], "message": "Loading datasets..."}
+    progress.status = training_status  # sync in-memory status
+
+    apply_model_size_config(req.model_size)
 
     try:
         # Load datasets
@@ -437,17 +514,17 @@ def run_training(req: TrainRequest):
 
         for ds_info in datasets_to_use:
             try:
-                training_status["message"] = f"Loading {ds_info['id']}..."
+                progress.info(f"Loading {ds_info['id']}...")
                 ds = safe_load_dataset(ds_info["id"], split="train")
                 texts = extract_texts(ds, ds_info["col"], req.max_samples_per_dataset)
                 all_texts.extend(texts)
-                training_status["log"].append(f"Loaded {ds_info['id']}: {len(texts)} texts")
+                progress.log_dataset_loaded(ds_info["id"], len(texts))
             except Exception as e:
-                training_status["log"].append(f"Error loading {ds_info['id']}: {e}")
+                progress.log_dataset_error(ds_info["id"], str(e))
 
         # Also load cc100-ja
         try:
-            training_status["message"] = "Loading cc100-ja..."
+            progress.info("Loading cc100-ja...")
             ds_cc = safe_load_dataset("range3/cc100-ja", split="train", streaming=True)
             cc_texts = []
             for i, row in enumerate(ds_cc):
@@ -457,32 +534,39 @@ def run_training(req: TrainRequest):
                 if len(text) > 10:
                     cc_texts.append(text)
             all_texts.extend(cc_texts)
-            training_status["log"].append(f"Loaded cc100-ja: {len(cc_texts)} texts")
+            progress.log_dataset_loaded("cc100-ja", len(cc_texts))
         except Exception as e:
-            training_status["log"].append(f"Error loading cc100-ja: {e}")
+            progress.log_dataset_error("cc100-ja", str(e))
 
-        training_status["message"] = "Tokenizing..."
+        progress.info("Tokenizing...")
         max_seq_len = config["max_seq_len"]
         sequences = tokenize_texts(all_texts, tokenizer, max_seq_len)
-        training_status["log"].append(f"Total: {len(all_texts)} texts -> {len(sequences)} sequences")
+        progress.info(f"Total: {len(all_texts)} texts -> {len(sequences)} sequences")
 
         # Training
         steps_per_epoch = len(sequences) // req.batch_size
         total_steps = (steps_per_epoch * req.epochs) // req.grad_accum_steps
         optimizer = torch.optim.AdamW(model.parameters(), lr=req.lr, weight_decay=0.01)
 
+        progress.start_training(epochs=req.epochs, total_sequences=len(sequences),
+                                batch_size=req.batch_size, lr=req.lr)
         model.train()
         global_step = 0
 
         for epoch in range(req.epochs):
+            if _shutdown_event.is_set():
+                progress.info("Training interrupted by server shutdown")
+                break
             random.shuffle(sequences)
             total_loss = 0
             n_batches = 0
             optimizer.zero_grad()
 
-            training_status["message"] = f"Training epoch {epoch+1}/{req.epochs}..."
+            progress.start_epoch(epoch + 1, req.epochs)
 
             for i in range(0, len(sequences), req.batch_size):
+                if _shutdown_event.is_set():
+                    break
                 batch_seqs = sequences[i:i + req.batch_size]
                 if not batch_seqs:
                     continue
@@ -529,17 +613,15 @@ def run_training(req: TrainRequest):
                 global_step += 1
 
             avg_loss = total_loss / max(n_batches, 1)
-            msg = f"Epoch {epoch+1}/{req.epochs} | Loss: {avg_loss:.4f}"
-            training_status["log"].append(msg)
-            training_status["message"] = msg
+            progress.log_epoch(epoch=epoch + 1, total_epochs=req.epochs, loss=avg_loss)
 
         # Save checkpoint
         model.eval()
         _save_ckpt_path = _resolve_checkpoint_path()
         checkpoint = torch.load(_save_ckpt_path, map_location="cpu")
         prev_log = checkpoint.get("training_log", [])
-        new_log_entries = [{"epoch": len(prev_log) + i + 1, "loss": float(l.split("Loss: ")[1])}
-                          for i, l in enumerate(training_status["log"]) if "Loss:" in l]
+        new_log_entries = [{"epoch": len(prev_log) + i + 1, "loss": m["loss"]}
+                          for i, m in enumerate(progress.metrics)]
 
         new_checkpoint = {
             "model_state": model.state_dict(),
@@ -553,18 +635,17 @@ def run_training(req: TrainRequest):
             )),
         }
         torch.save(new_checkpoint, _save_ckpt_path)
-        training_status["log"].append(f"Checkpoint saved: {_save_ckpt_path}")
+        progress.info(f"Checkpoint saved: {_save_ckpt_path}")
         nv_path = sync_checkpoint_to_network_volume(_save_ckpt_path)
         if nv_path:
-            training_status["log"].append(f"Checkpoint synced to network volume: {nv_path}")
-        training_status["message"] = "Training complete!"
-        training_status["running"] = False
+            progress.info(f"Checkpoint synced to network volume: {nv_path}")
+        progress.end_training(final_loss=avg_loss, checkpoint_path=_save_ckpt_path)
+        training_status = progress.status
 
     except Exception as e:
         import traceback
-        training_status["running"] = False
-        training_status["message"] = f"Error: {e}"
-        training_status["log"].append(traceback.format_exc())
+        progress.end_training_error(str(e), traceback.format_exc())
+        training_status = progress.status
         if model is not None:
             model.eval()
 
@@ -649,7 +730,10 @@ def run_qa_training(req: TrainQARequest):
     from dataset_utils import safe_load_dataset
 
     training_status = {"running": True, "log": [], "message": "Loading QA datasets..."}
+    progress.status = training_status
     min_lr_ratio = 0.1
+
+    apply_model_size_config(req.model_size)
 
     try:
         all_qa = []
@@ -658,7 +742,7 @@ def run_qa_training(req: TrainQARequest):
         if req.dataset_id:
             ds_id = req.dataset_id
             try:
-                training_status["message"] = f"Loading {ds_id}..."
+                progress.info(f"Loading {ds_id}...")
                 ds = safe_load_dataset(ds_id, split="train", streaming=True)
                 count = 0
                 for row in ds:
@@ -670,9 +754,9 @@ def run_qa_training(req: TrainQARequest):
                     if q and a and len(q) > 2 and len(a) > 2:
                         all_qa.append(f"質問: {q}\n回答: {a}")
                         count += 1
-                training_status["log"].append(f"Loaded {ds_id}: {count} QA samples")
+                progress.log_dataset_loaded(ds_id, count)
             except Exception as e:
-                training_status["log"].append(f"Error loading {ds_id}: {e}")
+                progress.log_dataset_error(ds_id, str(e))
         else:
             # Default: use built-in QA datasets
             for ds_info in QA_DATASETS_INFO:
@@ -682,7 +766,7 @@ def run_qa_training(req: TrainQARequest):
                 if fmt == "izumi":
                     max_samples = min(1000, max_samples)
                 try:
-                    training_status["message"] = f"Loading {ds_id}..."
+                    progress.info(f"Loading {ds_id}...")
                     ds = safe_load_dataset(ds_id, split="train")
                     n = min(max_samples, len(ds))
                     count = 0
@@ -698,39 +782,46 @@ def run_qa_training(req: TrainQARequest):
                         if text and len(text) > 10:
                             all_qa.append(text)
                             count += 1
-                    training_status["log"].append(f"Loaded {ds_id}: {count} QA samples")
+                    progress.log_dataset_loaded(ds_id, count)
                 except Exception as e:
-                    training_status["log"].append(f"Error loading {ds_id}: {e}")
+                    progress.log_dataset_error(ds_id, str(e))
 
         # Add crafted QA x40
         for _ in range(40):
             all_qa.extend(CRAFTED_QA)
-        training_status["log"].append(f"Added {len(CRAFTED_QA) * 40} crafted QA samples")
-        training_status["log"].append(f"Total QA texts: {len(all_qa)}")
+        progress.info(f"Added {len(CRAFTED_QA) * 40} crafted QA samples")
+        progress.info(f"Total QA texts: {len(all_qa)}")
 
         # Tokenize
-        training_status["message"] = "Tokenizing..."
+        progress.info("Tokenizing...")
         max_seq_len = config["max_seq_len"]
         sequences = tokenize_texts(all_qa, tokenizer, max_seq_len)
-        training_status["log"].append(f"Training sequences: {len(sequences)}")
+        progress.info(f"Training sequences: {len(sequences)}")
 
         # Training setup
         steps_per_epoch = len(sequences) // req.batch_size
         total_steps = (steps_per_epoch * req.epochs) // req.grad_accum_steps
         optimizer = torch.optim.AdamW(model.parameters(), lr=req.lr, weight_decay=0.01)
 
+        progress.start_training(epochs=req.epochs, total_sequences=len(sequences),
+                                batch_size=req.batch_size, lr=req.lr)
         model.train()
         global_step = 0
         best_loss = float('inf')
 
         for epoch in range(req.epochs):
+            if _shutdown_event.is_set():
+                progress.info("QA training interrupted by server shutdown")
+                break
             random.shuffle(sequences)
             total_loss = 0
             n_batches = 0
             optimizer.zero_grad()
-            training_status["message"] = f"QA Training epoch {epoch+1}/{req.epochs}..."
+            progress.start_epoch(epoch + 1, req.epochs)
 
             for i in range(0, len(sequences), req.batch_size):
+                if _shutdown_event.is_set():
+                    break
                 batch_seqs = sequences[i:i + req.batch_size]
                 if not batch_seqs:
                     continue
@@ -762,11 +853,11 @@ def run_qa_training(req: TrainQARequest):
                 n_batches += 1
 
                 if n_batches % req.grad_accum_steps == 0:
-                    progress = (global_step - req.warmup_steps) / max(total_steps - req.warmup_steps, 1)
+                    lr_progress = (global_step - req.warmup_steps) / max(total_steps - req.warmup_steps, 1)
                     if global_step < req.warmup_steps:
                         lr = req.lr * global_step / max(req.warmup_steps, 1)
                     else:
-                        cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+                        cosine_decay = 0.5 * (1 + math.cos(math.pi * lr_progress))
                         lr = req.lr * (min_lr_ratio + (1 - min_lr_ratio) * cosine_decay)
                     for pg in optimizer.param_groups:
                         pg['lr'] = lr
@@ -782,9 +873,7 @@ def run_qa_training(req: TrainQARequest):
                 global_step += 1
 
             avg_loss = total_loss / max(n_batches, 1)
-            msg = f"Epoch {epoch+1}/{req.epochs} | Loss: {avg_loss:.4f}"
-            training_status["log"].append(msg)
-            training_status["message"] = msg
+            progress.log_epoch(epoch=epoch + 1, total_epochs=req.epochs, loss=avg_loss)
 
             extra_ds = [req.dataset_id] if req.dataset_id else []
             if avg_loss < best_loss:
@@ -799,14 +888,13 @@ def run_qa_training(req: TrainQARequest):
         extra_ds = [req.dataset_id] if req.dataset_id else []
         save_qa_checkpoint(model, config, training_status, req.epochs, extra_ds)
         model.eval()
-        training_status["message"] = f"QA Training complete! Best loss: {best_loss:.4f}"
-        training_status["running"] = False
+        progress.end_training(final_loss=best_loss)
+        training_status = progress.status
 
     except Exception as e:
         import traceback
-        training_status["running"] = False
-        training_status["message"] = f"Error: {e}"
-        training_status["log"].append(traceback.format_exc())
+        progress.end_training_error(str(e), traceback.format_exc())
+        training_status = progress.status
         if model is not None:
             model.eval()
 
@@ -872,6 +960,8 @@ def run_markdown_training(req: TrainMarkdownRequest):
     training_status = {"running": True, "log": [], "message": "Preparing markdown training data..."}
     min_lr_ratio = 0.1
 
+    apply_model_size_config(req.model_size)
+
     try:
         # Build markdown training corpus: repeat to reinforce the pattern
         all_texts = []
@@ -895,6 +985,9 @@ def run_markdown_training(req: TrainMarkdownRequest):
         best_loss = float('inf')
 
         for epoch in range(req.epochs):
+            if _shutdown_event.is_set():
+                progress.info("Markdown training interrupted by server shutdown")
+                break
             random.shuffle(sequences)
             total_loss = 0
             n_batches = 0
@@ -902,6 +995,8 @@ def run_markdown_training(req: TrainMarkdownRequest):
             training_status["message"] = f"Markdown Training epoch {epoch+1}/{req.epochs}..."
 
             for i in range(0, len(sequences), req.batch_size):
+                if _shutdown_event.is_set():
+                    break
                 batch_seqs = sequences[i:i + req.batch_size]
                 if not batch_seqs:
                     continue
@@ -1137,14 +1232,73 @@ def _split_into_chunks(data, num_chunks, samples_per_batch=None):
 
 
 def _save_split_state(state):
+    """Save split training state incrementally (append to history instead of overwriting)."""
+    existing = None
+    if os.path.exists(SPLIT_STATE_PATH):
+        try:
+            with open(SPLIT_STATE_PATH, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except Exception:
+            existing = None
+
+    # Migrate old format (no history key) to new format
+    if existing and "history" not in existing:
+        existing = {
+            "history": [existing],
+            "trained_datasets": existing.get("trained_datasets", []),
+        }
+
+    if existing is None:
+        existing = {"history": [], "trained_datasets": []}
+
+    # Accumulate trained datasets
+    new_datasets = state.pop("datasets_used", [])
+    all_datasets = list(set(existing.get("trained_datasets", []) + new_datasets))
+    existing["trained_datasets"] = all_datasets
+
+    # Check if this is a continuation of the current session (same mode, updating chunk)
+    history = existing.get("history", [])
+    if (history
+            and history[-1].get("mode") == state.get("mode")
+            and history[-1].get("session_id") == state.get("session_id", "")):
+        # Update the latest session entry (same training session, next chunk)
+        history[-1].update(state)
+    else:
+        # New training session — append to history
+        history.append(state)
+
+    existing["history"] = history
+
+    # Also keep top-level fields for backward compatibility
+    existing["mode"] = state.get("mode")
+    existing["num_chunks"] = state.get("num_chunks")
+    existing["last_completed_chunk"] = state.get("last_completed_chunk")
+    existing["best_loss"] = state.get("best_loss")
+    existing["timed_out"] = state.get("timed_out", False)
+    existing["timestamp"] = state.get("timestamp")
+
     with open(SPLIT_STATE_PATH, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+        json.dump(existing, f, ensure_ascii=False, indent=2)
 
 
 def _load_split_state():
     if os.path.exists(SPLIT_STATE_PATH):
         with open(SPLIT_STATE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        # Support both old and new formats
+        if "history" in data:
+            return data
+        # Old format: wrap in new structure for compatibility
+        return {
+            "history": [data],
+            "trained_datasets": data.get("trained_datasets", []),
+            "mode": data.get("mode"),
+            "num_chunks": data.get("num_chunks"),
+            "last_completed_chunk": data.get("last_completed_chunk"),
+            "best_loss": data.get("best_loss"),
+            "timed_out": data.get("timed_out", False),
+            "timestamp": data.get("timestamp"),
+        }
     return None
 
 
@@ -1153,8 +1307,25 @@ def run_split_training(req: TrainSplitRequest):
     global model, tokenizer, config, device, training_status
     from dataset_utils import safe_load_dataset as _load_ds
 
-    training_status = {"running": True, "log": [], "message": "Loading datasets for split training..."}
+    # Load previous training log from checkpoint for continuity
+    prev_log_entries = []
+    try:
+        ckpt_path = _resolve_checkpoint_path()
+        if ckpt_path and os.path.isfile(ckpt_path):
+            ckpt = torch.load(ckpt_path, map_location="cpu")
+            prev_log_entries = ckpt.get("training_log", [])
+    except Exception:
+        pass
+
+    training_status = {
+        "running": True,
+        "log": [f"[Incremental] Previous training sessions: {len(prev_log_entries)} log entries accumulated"],
+        "message": "Loading datasets for split training...",
+    }
     min_lr_ratio = 0.1
+    session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+
+    apply_model_size_config(req.model_size)
 
     try:
         # Load data
@@ -1253,6 +1424,9 @@ def run_split_training(req: TrainSplitRequest):
             chunk_start_time = time.time()
 
             for epoch in range(req.epochs_per_chunk):
+                if _shutdown_event.is_set():
+                    progress.info("Split training interrupted by server shutdown")
+                    break
                 random.shuffle(sequences)
                 total_loss = 0
                 n_batches = 0
@@ -1263,6 +1437,8 @@ def run_split_training(req: TrainSplitRequest):
                 )
 
                 for i in range(0, len(sequences), req.batch_size):
+                    if _shutdown_event.is_set():
+                        break
                     # Timeout check
                     if timeout_seconds and (time.time() - chunk_start_time) >= timeout_seconds:
                         elapsed = (time.time() - chunk_start_time) / 60
@@ -1356,6 +1532,8 @@ def run_split_training(req: TrainSplitRequest):
                 "best_loss": best_loss,
                 "timed_out": timed_out,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "session_id": session_id,
+                "datasets_used": dataset_ids,
             })
 
             # If timed out, stop processing further chunks
@@ -1382,7 +1560,21 @@ def run_split_next_training(req: TrainSplitNextRequest):
     global model, tokenizer, config, device, training_status
     from dataset_utils import safe_load_dataset as _load_ds
 
-    training_status = {"running": True, "log": [], "message": "Loading datasets for batch training..."}
+    # Load previous training log from checkpoint for continuity
+    prev_log_entries = []
+    try:
+        ckpt_path = _resolve_checkpoint_path()
+        if ckpt_path and os.path.isfile(ckpt_path):
+            ckpt = torch.load(ckpt_path, map_location="cpu")
+            prev_log_entries = ckpt.get("training_log", [])
+    except Exception:
+        pass
+
+    training_status = {
+        "running": True,
+        "log": [f"[Incremental] Previous training sessions: {len(prev_log_entries)} log entries accumulated"],
+        "message": "Loading datasets for batch training...",
+    }
     min_lr_ratio = 0.1
 
     try:
@@ -1390,8 +1582,13 @@ def run_split_next_training(req: TrainSplitNextRequest):
         state = _load_split_state()
         if state and state.get("mode") == req.mode:
             next_chunk = state.get("last_completed_chunk", -1) + 1
+            session_id = state.get("history", [{}])[-1].get("session_id", "") if state.get("history") else ""
         else:
             next_chunk = 0
+            session_id = ""
+        # If starting from chunk 0, create a new session
+        if next_chunk == 0:
+            session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
         # Load data
         if req.dataset_ids:
@@ -1447,6 +1644,8 @@ def run_split_next_training(req: TrainSplitNextRequest):
                 "last_completed_chunk": chunk_idx,
                 "best_loss": None,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "session_id": session_id,
+                "datasets_used": dataset_ids,
             })
             training_status["message"] = f"Batch {chunk_idx+1} skipped (no sequences)"
             training_status["running"] = False
@@ -1470,6 +1669,9 @@ def run_split_next_training(req: TrainSplitNextRequest):
         chunk_start_time = time.time()
 
         for epoch in range(req.epochs_per_chunk):
+            if _shutdown_event.is_set():
+                progress.info("Batch training interrupted by server shutdown")
+                break
             random.shuffle(sequences)
             total_loss = 0
             n_batches = 0
@@ -1480,6 +1682,8 @@ def run_split_next_training(req: TrainSplitNextRequest):
             )
 
             for i in range(0, len(sequences), req.batch_size):
+                if _shutdown_event.is_set():
+                    break
                 batch_seqs = sequences[i:i + req.batch_size]
                 if not batch_seqs:
                     continue
@@ -1551,6 +1755,8 @@ def run_split_next_training(req: TrainSplitNextRequest):
             "last_completed_chunk": chunk_idx,
             "best_loss": best_loss,
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "session_id": session_id,
+            "datasets_used": dataset_ids,
         })
 
         model.eval()
@@ -1588,6 +1794,14 @@ def run_split_next_training(req: TrainSplitNextRequest):
 @app.on_event("startup")
 async def startup():
     load_model()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    _shutdown_event.set()
+    # Give background training threads a moment to notice and exit cleanly
+    import asyncio
+    await asyncio.sleep(2)
 
 
 @app.get("/")
@@ -1723,26 +1937,272 @@ async def train_split_next(req: TrainSplitNextRequest):
 
 @app.post("/train/split/reset")
 async def train_split_reset():
-    """分割学習の状態をリセットする。次回の /train/split/next はチャンク0から開始。"""
+    """分割学習の現在セッションをリセットする（履歴は保持）。次回の /train/split/next はチャンク0から開始。"""
     if training_status["running"]:
         raise HTTPException(status_code=409, detail="Training in progress, cannot reset")
 
     if os.path.exists(SPLIT_STATE_PATH):
-        os.remove(SPLIT_STATE_PATH)
-        return {"status": "reset", "message": "Split training state cleared. Next call will start from chunk 0."}
+        # Preserve history but reset current session progress
+        try:
+            with open(SPLIT_STATE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = None
+
+        if data and "history" in data:
+            # Keep history and trained_datasets, but reset current session fields
+            data["mode"] = None
+            data["num_chunks"] = None
+            data["last_completed_chunk"] = None
+            data["best_loss"] = None
+            data["timed_out"] = False
+            data["timestamp"] = None
+            with open(SPLIT_STATE_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            history_count = len(data.get("history", []))
+            trained_ds = data.get("trained_datasets", [])
+            return {
+                "status": "reset",
+                "message": f"Current session reset. Next call will start from chunk 0. "
+                           f"Training history preserved: {history_count} sessions, "
+                           f"{len(trained_ds)} datasets accumulated.",
+                "history_count": history_count,
+                "trained_datasets": trained_ds,
+            }
+        else:
+            os.remove(SPLIT_STATE_PATH)
+            return {"status": "reset", "message": "Split training state cleared. Next call will start from chunk 0."}
     return {"status": "no_state", "message": "No split training state found. Already at initial state."}
 
 
 @app.get("/train/split/status")
 async def train_split_status():
-    """分割学習の進捗状態を取得。"""
+    """分割学習の進捗状態を取得（累積履歴を含む）。"""
     state = _load_split_state()
+    history = state.get("history", []) if state else []
+    trained_datasets = state.get("trained_datasets", []) if state else []
     return {
         "training_running": training_status["running"],
         "split_state": state,
         "current_status": training_status["message"],
         "log": training_status["log"],
+        "total_sessions": len(history),
+        "trained_datasets": trained_datasets,
     }
+
+
+# ========================================
+# 分割学習 (Split Learning) — モデル分割
+# ========================================
+
+def run_split_learning_training(req: "TrainSplitLearningRequest"):
+    """分割学習の学習処理（バックグラウンドタスク）。"""
+    global model, training_status
+    training_status["running"] = True
+    training_status["message"] = "Split learning training in progress"
+    training_status["log"] = []
+
+    apply_model_size_config(req.model_size)
+
+    try:
+        from train_split_learning import (
+            load_qa_texts, load_general_texts, tokenize_texts, get_lr,
+            CRAFTED_QA,
+        )
+
+        # データ読み込み
+        if req.data_mode == "qa":
+            all_texts = load_qa_texts(req.max_samples)
+            for _ in range(req.crafted_repeat):
+                all_texts.extend(CRAFTED_QA)
+        else:
+            all_texts = load_general_texts(req.max_samples)
+
+        if not all_texts:
+            training_status["message"] = "No texts loaded"
+            training_status["running"] = False
+            return
+
+        sequences = tokenize_texts(all_texts, tokenizer, config["max_seq_len"])
+        training_status["message"] = f"Split learning: {len(sequences)} sequences"
+
+        # カットレイヤー決定
+        num_layers = config["num_layers"]
+        cut_layer = req.cut_layer if req.cut_layer else max(1, num_layers // 2)
+        if cut_layer < 1 or cut_layer >= num_layers:
+            cut_layer = max(1, num_layers // 2)
+
+        # SplitLearningTrainer作成
+        nq_config = model.config
+        trainer = SplitLearningTrainer(
+            model=model,
+            cut_layer=cut_layer,
+            tokenizer=tokenizer,
+            device=device,
+            lr=req.lr,
+            grad_clip=req.grad_clip,
+        )
+
+        max_seq_len = nq_config.max_seq_len
+        batch_size = req.batch_size
+        epochs = req.epochs
+        import time as _time
+        start_time = _time.time()
+
+        for epoch in range(epochs):
+            if _shutdown_event.is_set():
+                progress.info("Split learning training interrupted by server shutdown")
+                break
+            random.shuffle(sequences)
+            total_loss = 0
+            n_batches = 0
+
+            for i in range(0, len(sequences), batch_size):
+                if _shutdown_event.is_set():
+                    break
+                if req.max_minutes and (_time.time() - start_time) >= req.max_minutes * 60:
+                    break
+
+                batch_seqs = sequences[i:i + batch_size]
+                if not batch_seqs:
+                    continue
+
+                max_len = min(max(len(s) for s in batch_seqs), max_seq_len)
+                input_ids = []
+                labels = []
+                for s in batch_seqs:
+                    ids = s[:max_len]
+                    pad_len = max_len - len(ids)
+                    input_ids.append(ids + [tokenizer.pad_id] * pad_len)
+                    labels.append(ids + [-100] * pad_len)
+
+                input_t = torch.tensor(input_ids, dtype=torch.long, device=device)
+                labels_t = torch.tensor(labels, dtype=torch.long, device=device)
+
+                loss = trainer.train_step(input_t, labels_t)
+                total_loss += loss
+                n_batches += 1
+
+            avg_loss = total_loss / max(n_batches, 1)
+            log_entry = {
+                "epoch": epoch + 1,
+                "loss": avg_loss,
+                "split_learning": True,
+                "cut_layer": cut_layer,
+            }
+            training_status["log"].append(log_entry)
+            training_status["message"] = (
+                f"Split learning epoch {epoch+1}/{epochs}, loss={avg_loss:.4f}"
+            )
+
+        # モデル統合 & 保存
+        merged = trainer.get_merged_model().to(device)
+        model.load_state_dict(merged.state_dict())
+
+        ckpt_path = _resolve_checkpoint_path()
+        checkpoint_data = {
+            "model_state": model.state_dict(),
+            "config": config,
+            "training_log": training_status["log"],
+            "trained_at": datetime.now(timezone.utc).isoformat(),
+            "split_learning": True,
+            "split_learning_config": {"cut_layer": cut_layer},
+        }
+        torch.save(checkpoint_data, ckpt_path)
+        sync_checkpoint_to_network_volume(ckpt_path)
+
+        training_status["message"] = (
+            f"Split learning complete: {epochs} epochs, cut_layer={cut_layer}, "
+            f"final_loss={training_status['log'][-1]['loss']:.4f}"
+        )
+
+    except Exception as e:
+        training_status["message"] = f"Split learning error: {str(e)}"
+        import traceback
+        traceback.print_exc()
+    finally:
+        training_status["running"] = False
+
+
+@app.post("/train/split_learning", response_model=TrainResponse)
+async def train_split_learning(req: TrainSplitLearningRequest, background_tasks: BackgroundTasks):
+    """分割学習（Split Learning）。モデルをカットレイヤーで分割してクライアント・サーバー間で学習する。"""
+    if training_status["running"]:
+        raise HTTPException(status_code=409, detail="Training already in progress")
+
+    num_layers = config["num_layers"] if config else 6
+    cut_layer = req.cut_layer if req.cut_layer else max(1, num_layers // 2)
+
+    background_tasks.add_task(run_split_learning_training, req)
+    return TrainResponse(
+        status="started",
+        message=f"Split Learning started: cut_layer={cut_layer}/{num_layers}, "
+                f"data_mode={req.data_mode}, epochs={req.epochs}, lr={req.lr}",
+    )
+
+
+def run_dpo_training(req: TrainDPORequest):
+    """Run DPO training in background."""
+    global training_status
+    apply_model_size_config(req.model_size)
+    try:
+        data = {"parameters": req.dict()}
+        result = _handler(data)
+        if result:
+            training_status["log"] = result[0].get("log", [])
+            training_status["message"] = result[0].get("message", "DPO training complete")
+    except Exception as e:
+        training_status["message"] = f"DPO training error: {str(e)}"
+        import traceback
+        traceback.print_exc()
+    finally:
+        training_status["running"] = False
+
+
+def run_combined_dpo_training(req: TrainCombinedDPORequest):
+    """Run combined QA+DPO training in background."""
+    global training_status
+    apply_model_size_config(req.model_size)
+    try:
+        data = {"parameters": req.dict()}
+        result = _handler(data)
+        if result:
+            training_status["log"] = result[0].get("log", [])
+            training_status["message"] = result[0].get("message", "Combined training complete")
+    except Exception as e:
+        training_status["message"] = f"Combined training error: {str(e)}"
+        import traceback
+        traceback.print_exc()
+    finally:
+        training_status["running"] = False
+
+
+@app.post("/train/dpo", response_model=TrainResponse)
+async def train_dpo(req: TrainDPORequest, background_tasks: BackgroundTasks):
+    """DPO (Direct Preference Optimization) training on preference pairs."""
+    if training_status["running"]:
+        raise HTTPException(status_code=409, detail="Training already in progress")
+
+    background_tasks.add_task(run_dpo_training, req)
+    return TrainResponse(
+        status="started",
+        message=f"DPO Training started: {req.epochs} epochs, lr={req.lr}, "
+                f"batch_size={req.batch_size}, dpo_beta={req.dpo_beta}",
+    )
+
+
+@app.post("/train/combined_dpo", response_model=TrainResponse)
+async def train_combined_dpo(req: TrainCombinedDPORequest, background_tasks: BackgroundTasks):
+    """Combined QA + DPO training (two-phase approach)."""
+    if training_status["running"]:
+        raise HTTPException(status_code=409, detail="Training already in progress")
+
+    background_tasks.add_task(run_combined_dpo_training, req)
+    return TrainResponse(
+        status="started",
+        message=f"Combined QA+DPO Training started: QA={req.qa_epochs}ep lr={req.qa_lr}, "
+                f"DPO={req.dpo_epochs}ep lr={req.dpo_lr}, beta={req.dpo_beta}",
+    )
 
 
 @app.get("/train/status", response_model=TrainStatusResponse)

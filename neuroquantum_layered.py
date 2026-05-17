@@ -32,6 +32,9 @@ from collections import Counter
 import re
 from typing import List, Dict, Optional, Tuple
 import warnings
+import logging
+
+logger = logging.getLogger(__name__)
 
 # システムRAM検出用
 try:
@@ -205,7 +208,9 @@ def detect_gpu_tier() -> Tuple[str, str, dict]:
         gpu_info["vram_gb"] = round(vram_gb, 1)
         gpu_info["compute_capability"] = f"{major}.{minor}"
 
-        if vram_gb >= 16:
+        if vram_gb >= 40:
+            return "ultra", device_name, gpu_info
+        elif vram_gb >= 16:
             return "high", device_name, gpu_info
         elif vram_gb >= 8:
             return "mid", device_name, gpu_info
@@ -237,9 +242,10 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
 
     ティア判定の基準:
         GPU環境:
-            high (VRAM >= 16GB): フル設定 - 大規模モデル
-            mid  (VRAM >= 8GB):  中規模設定
-            low  (VRAM < 8GB):   軽量設定
+            ultra (VRAM >= 40GB): A100最大設定 - 超大規模モデル
+            high  (VRAM >= 16GB): フル設定 - 大規模モデル
+            mid   (VRAM >= 8GB):  中規模設定
+            low   (VRAM < 8GB):   軽量設定
         MPS (Apple Silicon):
             統合メモリ(RAM)に基づいてティアを判定
         CPU環境:
@@ -257,6 +263,16 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
 
     # ティア別のベースニューロン数設定
     TIER_CONFIGS = {
+        "ultra": {
+            "embed_dim": 768,
+            "hidden_dim": 2048,
+            "num_heads": 12,
+            "num_layers": 12,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 16,
+        },
         "high": {
             "embed_dim": 512,
             "hidden_dim": 1024,
@@ -353,7 +369,9 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
 
     else:
         # CUDA GPU環境: RAMが十分にある場合、batch_size を増加
-        if ram_gb >= 64:
+        if tier == "ultra" and ram_gb >= 128:
+            config["batch_size"] = min(config["batch_size"] * 2, 32)
+        elif ram_gb >= 64:
             config["batch_size"] = min(config["batch_size"] * 2, 16)
         elif ram_gb >= 32:
             config["batch_size"] = min(config["batch_size"] + 2, 12)
@@ -371,6 +389,72 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
         print(f"  VRAM: {gpu_info['vram_gb']} GB")
     if gpu_info["compute_capability"]:
         print(f"  Compute Capability: {gpu_info['compute_capability']}")
+    print(f"  embed_dim: {config['embed_dim']}")
+    print(f"  hidden_dim: {config['hidden_dim']}")
+    print(f"  num_heads: {config['num_heads']}")
+    print(f"  num_layers: {config['num_layers']}")
+    print(f"  max_seq_len: {config['max_seq_len']}")
+    print(f"  batch_size: {config['batch_size']}")
+    print(f"========================")
+
+    return config
+
+
+def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> dict:
+    """
+    モデルサイズ（large, medium, small）に基づいて最適なニューロン数・モデル設定を返す。
+
+    Args:
+        size: モデルサイズ ("large" | "medium" | "small")
+        vocab_size: 語彙サイズ
+
+    Returns:
+        dict: モデル設定パラメータを含む辞書
+    """
+    SIZE_CONFIGS = {
+        "large": {
+            "embed_dim": 768,
+            "hidden_dim": 2048,
+            "num_heads": 12,
+            "num_layers": 12,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 16,
+            "vocab_size": vocab_size,
+        },
+        "medium": {
+            "embed_dim": 512,
+            "hidden_dim": 1024,
+            "num_heads": 8,
+            "num_layers": 6,
+            "max_seq_len": 10000,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 8,
+            "vocab_size": vocab_size,
+        },
+        "small": {
+            "embed_dim": 256,
+            "hidden_dim": 512,
+            "num_heads": 8,
+            "num_layers": 4,
+            "max_seq_len": 4096,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 4,
+            "vocab_size": vocab_size,
+        },
+    }
+
+    if size not in SIZE_CONFIGS:
+        raise ValueError(f"Unknown model size: {size}. Choose from {list(SIZE_CONFIGS.keys())}")
+
+    config = SIZE_CONFIGS[size].copy()
+    config["model_size"] = size
+
+    print(f"=== モデルサイズ設定 ===")
+    print(f"  サイズ: {size}")
     print(f"  embed_dim: {config['embed_dim']}")
     print(f"  hidden_dim: {config['hidden_dim']}")
     print(f"  num_heads: {config['num_heads']}")
@@ -1050,17 +1134,26 @@ def migrate_legacy_state_dict(state_dict: dict, model: "NeuroQuantum") -> dict:
         transformer_blocks.{i}.ffn_standard/ffn_qbnn_layer1/ffn_qbnn_layer2.*,
         final_norm.*, output_head.weight
     """
-    # Quick check: if state_dict already has new-style keys, return as-is
+    model_state = model.state_dict()
+
+    # Quick check: if state_dict already has new-style keys, return as-is (with missing keys filled)
     if any(k.startswith("transformer_blocks.") for k in state_dict):
-        return state_dict
+        new_state = dict(state_dict)
+        for k, v in model_state.items():
+            if k not in new_state:
+                new_state[k] = v
+        return new_state
 
     # Check for legacy keys
     if not any(k.startswith("layers.") for k in state_dict):
-        return state_dict
+        new_state = dict(state_dict)
+        for k, v in model_state.items():
+            if k not in new_state:
+                new_state[k] = v
+        return new_state
 
     print("[migrate] Legacy checkpoint detected — converting keys to NeuroQuantum format")
     new_state = {}
-    model_state = model.state_dict()
     embed_dim = model.config.embed_dim
 
     # --- Simple renames ---
@@ -2273,11 +2366,15 @@ class NeuroQuantumAI:
                 total_loss += loss.item()
             
             scheduler.step()
-            avg_loss = total_loss / max(1, len(sequences) // batch_size)
-            
+            num_batches = max(1, len(sequences) // batch_size)
+            avg_loss = total_loss / num_batches
+
+            logger.info(f"Epoch {epoch+1}/{epochs} - loss: {avg_loss:.6f} - lr: {scheduler.get_last_lr()[0]:.6f} - batches: {num_batches}")
+
             if (epoch + 1) % 5 == 0 or epoch == 0:
                 print(f"   Epoch {epoch+1:3d}/{epochs}: Loss = {avg_loss:.4f}")
-        
+
+        logger.info(f"Training complete - final_loss: {avg_loss:.6f} - epochs: {epochs} - sequences: {len(sequences)}")
         print("\n✅ 学習完了！")
         
         # 量子情報
