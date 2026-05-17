@@ -304,31 +304,20 @@ class NeuroQService:
         """QA学習エンドポイント"""
         return self._handle_training_endpoint(request, "train_qa")
 
-    @modal.fastapi_endpoint(method="POST")
     def train_qa_dataset(self, request: dict):
-        """QA形式HFデータセット学習エンドポイント"""
+        """QA形式HFデータセット学習エンドポイント (use train_qa with parameters instead)"""
         return self._handle_training_endpoint(request, "train_qa_dataset")
 
-    @modal.fastapi_endpoint(method="POST")
     def train_split(self, request: dict):
-        """分割データセット学習エンドポイント（全チャンク）"""
+        """分割データセット学習エンドポイント（全チャンク）(use train_split_learning instead)"""
         return self._handle_training_endpoint(request, "train_split")
 
-    @modal.fastapi_endpoint(method="POST")
     def train_split_next(self, request: dict):
-        """次の1チャンクだけ学習するエンドポイント（タイムアウト防止用）
-
-        使い方:
-          1. POST /train_split_next を呼ぶ → チャンク1を学習
-          2. レスポンスの chunks_remaining > 0 なら再度呼ぶ
-          3. chunks_remaining == 0 になるまで繰り返す
-          4. リセットは POST /train_split_reset を呼ぶ
-        """
+        """次の1チャンクだけ学習するエンドポイント（use train_split_learning instead）"""
         return self._handle_training_endpoint(request, "train_split_next")
 
-    @modal.fastapi_endpoint(method="POST")
     def train_split_reset(self):
-        """分割学習セッションリセット（履歴は保持）"""
+        """分割学習セッションリセット（use train_split_learning with reset parameter instead）"""
         return self._handle_training_endpoint({}, "split_reset", include_sync=False)
 
     @modal.fastapi_endpoint(method="POST")
@@ -360,16 +349,14 @@ class NeuroQService:
         """モデルステータス"""
         return self._process({"action": "status"})
 
-    @modal.fastapi_endpoint(method="GET")
     def train_status(self):
-        """学習進捗ステータス"""
+        """学習進捗ステータス (use status endpoint instead)"""
         handler = self.handler
         ts = getattr(handler, "training_status", {"running": False, "log": [], "message": "idle"})
         return {"running": ts["running"], "log": ts["log"], "message": ts["message"]}
 
-    @modal.fastapi_endpoint(method="GET")
     def train_split_status(self):
-        """分割学習進捗ステータス"""
+        """分割学習進捗ステータス (use status endpoint instead)"""
         return self._process({"action": "split_status"})
 
     @modal.fastapi_endpoint(method="POST")
