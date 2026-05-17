@@ -22,6 +22,7 @@ from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumT
 from dataset_utils import sync_checkpoint_to_network_volume
 from split_learning import SplitLearningTrainer, merge_split_models
 from progress_logger import ProgressLogger
+from generate_gguf_models import GGUFModelGenerator
 
 _shutdown_event = threading.Event()
 
@@ -244,6 +245,20 @@ class TrainStatusResponse(BaseModel):
     running: bool
     log: list
     message: str
+
+
+class GGUFGenerationRequest(BaseModel):
+    architectures: list = ["neuroquantum", "qbnn"]
+    sizes: list = ["small", "medium", "large"]
+    output_dir: str = "gguf_models"
+    device: str = "cpu"
+    skip_checkpoint_cleanup: bool = False
+
+
+class GGUFGenerationResponse(BaseModel):
+    status: str
+    message: str
+    output_dir: str
 
 
 # ========================================
@@ -2365,6 +2380,45 @@ async def train_runpod_cancel(job_id: str, endpoint_id: Optional[str] = None):
 class TTSRequest(BaseModel):
     text: str
     voice_id: str = "Ashley"
+
+
+@app.post("/generate/gguf", response_model=GGUFGenerationResponse)
+async def generate_gguf_models(req: GGUFGenerationRequest, background_tasks: BackgroundTasks):
+    """Generate GGUF models for specified architectures and sizes.
+
+    This endpoint generates GGUF format models for different model sizes
+    (small, medium, large) and architectures (neuroquantum, qbnn).
+    Generation runs in the background.
+    """
+    try:
+        def _run_generation():
+            generator = GGUFModelGenerator(
+                output_dir=req.output_dir,
+                device=req.device
+            )
+            results = generator.generate_all(
+                architectures=req.architectures,
+                sizes=req.sizes
+            )
+            generator.print_summary()
+            generator.save_manifest()
+
+            if not req.skip_checkpoint_cleanup:
+                import pathlib
+                output_path = pathlib.Path(req.output_dir)
+                for f in output_path.glob("*_checkpoint.pt"):
+                    f.unlink()
+
+        background_tasks.add_task(_run_generation)
+
+        return GGUFGenerationResponse(
+            status="started",
+            message=f"GGUF generation started for {len(req.architectures)} architectures and {len(req.sizes)} sizes",
+            output_dir=req.output_dir
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"GGUF generation failed: {str(e)}")
 
 
 @app.post("/tts")
