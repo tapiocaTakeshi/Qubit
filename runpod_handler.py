@@ -59,7 +59,8 @@ def run_handler(event):
 
     Supported actions:
         inference (default), train, train_qa, train_qa_dataset,
-        train_split, train_split_next, split_status, split_reset, status
+        train_split, train_split_next, train_dpo, train_combined_dpo,
+        split_status, split_reset, status
     """
     job_input = event.get("input", {})
 
@@ -82,7 +83,11 @@ def run_handler(event):
 
     # Pass through any extra fields (for training payloads)
     for key in ("qa_pairs", "dataset_ids", "epochs", "lr", "batch_size",
-                "mode", "num_chunks", "resume"):
+                "mode", "num_chunks", "resume",
+                "dpo_beta", "grad_accum_steps", "warmup_steps", "grad_clip",
+                "max_samples_hf", "qa_epochs", "qa_lr", "qa_batch_size",
+                "qa_grad_accum", "dpo_epochs", "dpo_lr", "dpo_batch_size",
+                "dpo_grad_accum"):
         if key in job_input:
             data.setdefault("parameters", {})[key] = job_input[key]
 
