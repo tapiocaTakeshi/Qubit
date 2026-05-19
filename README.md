@@ -753,6 +753,107 @@ python export_gguf.py
 | `F16` | ~1.0x | 完全精度 | リファレンス |
 | `F32` | ~2.0x | 完全精度 | 学習用 |
 
+### 9.7. Hugging Faceへのアップロード (Upload to Hugging Face Hub)
+
+生成したGGUFモデルをHugging Face Hubに直接アップロードできます。
+
+#### 前提条件
+
+1. Hugging Faceアカウント作成（https://huggingface.co）
+2. APIトークン取得（Settings → Access Tokens）
+3. 必要なパッケージのインストール：
+
+```bash
+pip install huggingface-hub
+```
+
+#### アップロード手順
+
+**1. Hugging Faceトークンを設定:**
+
+```bash
+# 環境変数で設定（推奨）
+export HF_TOKEN="your_huggingface_token"
+
+# または、スクリプト実行時に指定
+```
+
+**2. GGUFモデルをアップロード:**
+
+```bash
+# デフォルト（公開リポジトリ）
+python upload_to_huggingface.py \
+    --repo-name "username/qubit-q4-k-m" \
+    --gguf-path "gguf_models/neuroquantum_small_Q4_K_M.gguf"
+
+# プライベートリポジトリで作成
+python upload_to_huggingface.py \
+    --repo-name "username/qubit-q4-k-m" \
+    --gguf-path "gguf_models/neuroquantum_small_Q4_K_M.gguf" \
+    --private
+```
+
+#### アップロードスクリプトの機能
+
+`upload_to_huggingface.py`は以下を自動実行します：
+
+- ✅ リポジトリの作成（既存時はスキップ）
+- ✅ GGUFファイルのアップロード（Git LFS自動適用）
+- ✅ モデルカード（README.md）の自動生成
+- ✅ マニフェストファイル（manifest.json）のアップロード
+
+#### 例：完全なワークフロー
+
+```bash
+# 1. Q4_K_M量子化でGGUFを生成
+python generate_gguf_models.py --quantization Q4_K_M
+
+# 2. Hugging Faceトークンを設定
+export HF_TOKEN="hf_xxxxxxxxxxxx"
+
+# 3. Hugging Faceにアップロード
+python upload_to_huggingface.py \
+    --repo-name "username/qubit-q4-k-m" \
+    --gguf-path "gguf_models/neuroquantum_small_Q4_K_M.gguf"
+
+# 4. ブラウザで確認
+# https://huggingface.co/username/qubit-q4-k-m
+```
+
+#### アップロード後の利用
+
+Hugging Face Hubにアップロードされたモデルは、以下のツールで直接使用可能：
+
+**Ollama:**
+```bash
+ollama pull username/qubit-q4-k-m
+ollama run username/qubit-q4-k-m
+```
+
+**llama.cpp:**
+```bash
+# モデルをダウンロード
+curl -L https://huggingface.co/username/qubit-q4-k-m/resolve/main/neuroquantum_small_Q4_K_M.gguf -o model.gguf
+
+# 推論実行
+./main -m model.gguf -p "プロンプト"
+```
+
+**Python:**
+```python
+from llama_cpp import Llama
+
+# Hugging Face Hubから直接ロード
+llm = Llama.from_pretrained(
+    repo_id="username/qubit-q4-k-m",
+    filename="neuroquantum_small_Q4_K_M.gguf",
+    n_ctx=4096,
+)
+
+response = llm("こんにちは")
+print(response)
+```
+
 ### 9.6. manifest.json について (Manifest File)
 
 生成完了後、`manifest.json` に全生成モデルの情報が保存されます：
