@@ -64,11 +64,77 @@ class GGUFModelGenerator:
         return model.to(self.device)
 
     def create_qbnn_model(self, size: str) -> Optional[torch.nn.Module]:
-        """Create a QBNN model of specified size.
+        """Create a QBNN model of specified size."""
+        try:
+            from qbnn_layered import EQBNNGenerativeAI
 
-        Note: QBNN support is not yet fully integrated. Return None for now.
+            # Size configurations
+            size_configs = {
+                "small": {
+                    "vocab_size": self.VOCAB_SIZE,
+                    "embedding_dim": 256,
+                    "hidden_dim": 512,
+                    "num_layers": 6,
+                    "num_heads": 4,
+                    "max_seq_len": 512,
+                },
+                "medium": {
+                    "vocab_size": self.VOCAB_SIZE,
+                    "embedding_dim": 512,
+                    "hidden_dim": 1024,
+                    "num_layers": 12,
+                    "num_heads": 8,
+                    "max_seq_len": 1024,
+                },
+                "large": {
+                    "vocab_size": self.VOCAB_SIZE,
+                    "embedding_dim": 768,
+                    "hidden_dim": 2048,
+                    "num_layers": 24,
+                    "num_heads": 16,
+                    "max_seq_len": 2048,
+                },
+            }
+
+            config = size_configs.get(size, size_configs["small"])
+            model = EQBNNGenerativeAI(**config)
+            return model.to(self.device)
+        except ImportError:
+            print(f"WARNING: EQBNNGenerativeAI not available for {size} model")
+            return None
+
+    def extract_quantum_characteristics_if_qbnn(self, state_dict: Dict, architecture: str) -> Dict:
+        """Extract quantum characteristics for QBNN models.
+
+        Args:
+            state_dict: Model state dictionary
+            architecture: Model architecture
+
+        Returns:
+            Dictionary with quantum characteristics
         """
-        return None
+        if architecture.lower() != "qbnn":
+            return {}
+
+        quantum_info = {
+            "has_quantum_correlation": False,
+            "has_entanglement": False,
+            "apqb_theta_count": 0,
+            "entangle_layer_count": 0,
+            "quantum_tensors": [],
+        }
+
+        for name in state_dict.keys():
+            if "quantum_corr" in name:
+                quantum_info["has_quantum_correlation"] = True
+            if "entangle" in name:
+                quantum_info["has_entanglement"] = True
+                quantum_info["entangle_layer_count"] += 1
+            if "theta" in name:
+                quantum_info["apqb_theta_count"] += 1
+                quantum_info["quantum_tensors"].append(name)
+
+        return quantum_info
 
     def pt_to_gguf(self, pt_file: str, gguf_file: str, model_name: str = "Qubit",
                    model_size: str = "unknown", architecture: str = "neuroquantum",
@@ -104,6 +170,9 @@ class GGUFModelGenerator:
             else:
                 state_dict = checkpoint
 
+            # Extract quantum characteristics if QBNN
+            quantum_info = self.extract_quantum_characteristics_if_qbnn(state_dict, architecture)
+
             print(f"Writing GGUF to {gguf_file}...")
             writer = GGUFWriter(gguf_file, architecture)
 
@@ -123,8 +192,30 @@ class GGUFModelGenerator:
             writer.add_string("model.created", datetime.now().isoformat())
             writer.add_string("model.quantization", quantization)
 
+            # Add quantum metadata if QBNN
+            if quantum_info:
+                writer.add_bool("model.is_quantum", True)
+                if quantum_info["has_quantum_correlation"]:
+                    writer.add_bool("model.has_quantum_correlation", True)
+                if quantum_info["has_entanglement"]:
+                    writer.add_bool("model.has_entanglement", True)
+                    writer.add_int32("model.entangle_layer_count", quantum_info["entangle_layer_count"])
+                if quantum_info["apqb_theta_count"] > 0:
+                    writer.add_int32("model.apqb_theta_count", quantum_info["apqb_theta_count"])
+
+                # Save quantum metadata as JSON
+                quantum_metadata = {
+                    "type": "qbnn",
+                    "has_quantum_correlation": quantum_info["has_quantum_correlation"],
+                    "has_entanglement": quantum_info["has_entanglement"],
+                    "apqb_theta_parameters": quantum_info["apqb_theta_count"],
+                    "entanglement_layers": quantum_info["entangle_layer_count"],
+                }
+                writer.add_string("model.quantum_metadata", json.dumps(quantum_metadata))
+
             count = 0
             total_params = 0
+            quantum_tensor_count = 0
 
             # Map quantization strings to GGMLQuantizationType
             quantization_map = {
@@ -143,18 +234,23 @@ class GGUFModelGenerator:
             for name, tensor in state_dict.items():
                 data = np.ascontiguousarray(tensor.float().detach().cpu().numpy())
 
-                # Only quantize large weight matrices (skip embeddings, norms, biases, and small tensors)
+                # For QBNN: preserve quantum tensors without quantization
+                is_quantum = any(q in name for q in ["quantum_corr", "entangle", "theta"])
+
                 should_quantize = (
                     quant_type is not None
                     and not any(pattern in name for pattern in ["embed", "norm", "bias"])
                     and len(data.shape) >= 2  # At least 2D tensor
                     and data.shape[-1] >= 256  # Last dimension large enough for quantization block
+                    and not is_quantum  # Don't quantize quantum-specific tensors
                 )
 
                 if should_quantize:
                     writer.add_tensor(name, data, raw_dtype=quant_type)
                 else:
                     writer.add_tensor(name, data)
+                    if is_quantum:
+                        quantum_tensor_count += 1
 
                 count += 1
                 total_params += tensor.numel()
@@ -166,10 +262,14 @@ class GGUFModelGenerator:
 
             file_size_mb = os.path.getsize(gguf_file) / (1024 * 1024)
             print(f"✅ Successfully exported {count} tensors ({total_params:,} params, {file_size_mb:.2f}MB) to {gguf_file}.")
+            if quantum_tensor_count > 0:
+                print(f"   ⚛️  Quantum tensors preserved: {quantum_tensor_count}")
             return True
 
         except Exception as e:
             print(f"❌ Error converting {pt_file}: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def generate_model_checkpoint(self, architecture: str, size: str) -> Optional[str]:
@@ -228,7 +328,7 @@ class GGUFModelGenerator:
         """Generate GGUF models for all specified architectures and sizes.
 
         Args:
-            architectures: List of architectures to generate (default: ["neuroquantum"])
+            architectures: List of architectures to generate (default: ["neuroquantum", "qbnn"])
             sizes: List of sizes to generate (default: ["small", "medium", "large"])
             quantization: Quantization type (default: "Q4_K_M")
 
@@ -236,7 +336,7 @@ class GGUFModelGenerator:
             Dictionary with generation results
         """
         if architectures is None:
-            architectures = ["neuroquantum"]
+            architectures = ["neuroquantum", "qbnn"]
         if sizes is None:
             sizes = self.MODEL_SIZES
 
@@ -332,8 +432,8 @@ def main():
     parser.add_argument(
         "--architectures",
         nargs="+",
-        default=["neuroquantum", "qbnn"],
-        help="Architectures to generate (default: neuroquantum qbnn)"
+        default=["neuroquantum"],
+        help="Architectures to generate (default: neuroquantum). Use --architectures neuroquantum qbnn for both"
     )
     parser.add_argument(
         "--sizes",
