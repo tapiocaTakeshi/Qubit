@@ -21,10 +21,11 @@ from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, get_model_con
 from qbnn_layered import EQBNNGenerativeAI
 
 try:
-    from gguf import GGUFWriter
+    from gguf import GGUFWriter, GGUFQuantizationType
 except ImportError:
     print("WARNING: gguf module not available. Install with: pip install gguf")
     GGUFWriter = None
+    GGUFQuantizationType = None
 
 
 class GGUFModelGenerator:
@@ -70,7 +71,8 @@ class GGUFModelGenerator:
         return None
 
     def pt_to_gguf(self, pt_file: str, gguf_file: str, model_name: str = "Qubit",
-                   model_size: str = "unknown", architecture: str = "neuroquantum") -> bool:
+                   model_size: str = "unknown", architecture: str = "neuroquantum",
+                   quantization: str = "Q4_K_M") -> bool:
         """Convert PyTorch model to GGUF format.
 
         Args:
@@ -79,6 +81,7 @@ class GGUFModelGenerator:
             model_name: Name for the model
             model_size: Size of the model (small/medium/large)
             architecture: Model architecture name
+            quantization: Quantization type (e.g., "Q4_K_M", "Q5_K_M", "F32")
 
         Returns:
             True if successful, False otherwise
@@ -118,12 +121,38 @@ class GGUFModelGenerator:
             writer.add_string("model.size", model_size)
             writer.add_string("model.architecture", architecture)
             writer.add_string("model.created", datetime.now().isoformat())
+            writer.add_string("model.quantization", quantization)
 
             count = 0
             total_params = 0
+
+            # Map quantization strings to GGUFQuantizationType
+            quantization_map = {
+                "Q4_K_M": GGUFQuantizationType.Q4_K_M if GGUFQuantizationType else None,
+                "Q4_K_S": GGUFQuantizationType.Q4_K_S if GGUFQuantizationType else None,
+                "Q5_K_M": GGUFQuantizationType.Q5_K_M if GGUFQuantizationType else None,
+                "Q5_K_S": GGUFQuantizationType.Q5_K_S if GGUFQuantizationType else None,
+                "Q6_K": GGUFQuantizationType.Q6_K if GGUFQuantizationType else None,
+                "Q8_0": GGUFQuantizationType.Q8_0 if GGUFQuantizationType else None,
+                "F32": None,  # No quantization
+                "F16": GGUFQuantizationType.F16 if GGUFQuantizationType else None,
+            }
+
+            quant_type = quantization_map.get(quantization)
+
             for name, tensor in state_dict.items():
                 data = np.ascontiguousarray(tensor.float().detach().cpu().numpy())
-                writer.add_tensor(name, data)
+
+                # Skip quantization for embeddings, layer norms, and other special tensors
+                should_quantize = quant_type is not None and not any(
+                    pattern in name for pattern in ["embed", "norm", "bias"]
+                )
+
+                if should_quantize:
+                    writer.add_tensor(name, data, quantization_type=quant_type)
+                else:
+                    writer.add_tensor(name, data)
+
                 count += 1
                 total_params += tensor.numel()
 
@@ -191,12 +220,14 @@ class GGUFModelGenerator:
             traceback.print_exc()
             return None
 
-    def generate_all(self, architectures: list = None, sizes: list = None) -> Dict:
+    def generate_all(self, architectures: list = None, sizes: list = None,
+                     quantization: str = "Q4_K_M") -> Dict:
         """Generate GGUF models for all specified architectures and sizes.
 
         Args:
             architectures: List of architectures to generate (default: ["neuroquantum"])
             sizes: List of sizes to generate (default: ["small", "medium", "large"])
+            quantization: Quantization type (default: "Q4_K_M")
 
         Returns:
             Dictionary with generation results
@@ -214,6 +245,7 @@ class GGUFModelGenerator:
             for size in sizes:
                 print(f"\n{'='*60}")
                 print(f"Generating {architecture.upper()} - {size.upper()}")
+                print(f"Quantization: {quantization}")
                 print(f"{'='*60}")
 
                 # Generate checkpoint
@@ -223,13 +255,14 @@ class GGUFModelGenerator:
                     continue
 
                 # Convert to GGUF
-                gguf_file = self.output_dir / f"{architecture}_{size}.gguf"
+                gguf_file = self.output_dir / f"{architecture}_{size}_{quantization}.gguf"
                 success = self.pt_to_gguf(
                     checkpoint_file,
                     str(gguf_file),
                     model_name="Qubit",
                     model_size=size,
-                    architecture=architecture
+                    architecture=architecture,
+                    quantization=quantization
                 )
 
                 if success:
@@ -237,6 +270,7 @@ class GGUFModelGenerator:
                         "status": "success",
                         "checkpoint": checkpoint_file,
                         "gguf": str(gguf_file),
+                        "quantization": quantization,
                         "size_mb": os.path.getsize(gguf_file) / (1024 * 1024)
                     }
                 else:
@@ -314,6 +348,12 @@ def main():
         action="store_true",
         help="Keep checkpoint .pt files after GGUF conversion"
     )
+    parser.add_argument(
+        "--quantization",
+        default="Q4_K_M",
+        choices=["Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q6_K", "Q8_0", "F32", "F16"],
+        help="Quantization type (default: Q4_K_M)"
+    )
 
     args = parser.parse_args()
 
@@ -321,6 +361,7 @@ def main():
     print(f"   Output: {args.output_dir}")
     print(f"   Architectures: {', '.join(args.architectures)}")
     print(f"   Sizes: {', '.join(args.sizes)}")
+    print(f"   Quantization: {args.quantization}")
     print(f"   Device: {args.device}\n")
 
     generator = GGUFModelGenerator(
@@ -331,7 +372,8 @@ def main():
     # Generate all models
     generator.generate_all(
         architectures=args.architectures,
-        sizes=args.sizes
+        sizes=args.sizes,
+        quantization=args.quantization
     )
 
     # Print summary
