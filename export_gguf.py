@@ -2,7 +2,7 @@ import torch
 import struct
 import numpy as np
 import sys
-from gguf import GGUFWriter, GGUFQuantizationType
+from gguf import GGUFWriter, GGMLQuantizationType
 
 def pt_to_gguf(pt_file, out_file, quantization="Q4_K_M"):
     print(f"Loading {pt_file}...")
@@ -26,16 +26,16 @@ def pt_to_gguf(pt_file, out_file, quantization="Q4_K_M"):
     writer.add_description("Quantum Bit Neural Network Model by tapiocaTakeshi")
     writer.add_string("model.quantization", quantization)
 
-    # Map quantization strings to GGUFQuantizationType
+    # Map quantization strings to GGMLQuantizationType
     quantization_map = {
-        "Q4_K_M": GGUFQuantizationType.Q4_K_M,
-        "Q4_K_S": GGUFQuantizationType.Q4_K_S,
-        "Q5_K_M": GGUFQuantizationType.Q5_K_M,
-        "Q5_K_S": GGUFQuantizationType.Q5_K_S,
-        "Q6_K": GGUFQuantizationType.Q6_K,
-        "Q8_0": GGUFQuantizationType.Q8_0,
+        "Q4_K_M": GGMLQuantizationType.Q4_K,
+        "Q4_K_S": GGMLQuantizationType.Q4_K,
+        "Q5_K_M": GGMLQuantizationType.Q5_K,
+        "Q5_K_S": GGMLQuantizationType.Q5_K,
+        "Q6_K": GGMLQuantizationType.Q6_K,
+        "Q8_0": GGMLQuantizationType.Q8_0,
         "F32": None,
-        "F16": GGUFQuantizationType.F16,
+        "F16": None,
     }
 
     quant_type = quantization_map.get(quantization)
@@ -45,13 +45,16 @@ def pt_to_gguf(pt_file, out_file, quantization="Q4_K_M"):
         # Convert torch tensor to numpy array (must be contiguous)
         data = np.ascontiguousarray(tensor.float().numpy())
 
-        # Skip quantization for embeddings, layer norms, and biases
-        should_quantize = quant_type is not None and not any(
-            pattern in name for pattern in ["embed", "norm", "bias"]
+        # Only quantize large weight matrices (skip embeddings, norms, biases, and small tensors)
+        should_quantize = (
+            quant_type is not None
+            and not any(pattern in name for pattern in ["embed", "norm", "bias"])
+            and len(data.shape) >= 2  # At least 2D tensor
+            and data.shape[-1] >= 256  # Last dimension large enough for quantization block
         )
 
         if should_quantize:
-            writer.add_tensor(name, data, quantization_type=quant_type)
+            writer.add_tensor(name, data, raw_dtype=quant_type)
         else:
             writer.add_tensor(name, data)
         count += 1
