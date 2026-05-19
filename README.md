@@ -611,7 +611,29 @@ python generate_gguf_models.py \
     --architectures neuroquantum qbnn \
     --sizes small medium large \
     --output-dir ./my_gguf_models \
-    --device cpu
+    --device cpu \
+    --quantization Q4_K_M
+```
+
+#### 量子化オプション
+
+Q4_K_M形式で量子化して生成（推奨、最高のバランス）：
+
+```bash
+python generate_gguf_models.py --quantization Q4_K_M
+```
+
+その他の量子化形式を指定：
+
+```bash
+# より小さいサイズ（Q4_K_S）
+python generate_gguf_models.py --quantization Q4_K_S
+
+# より高い精度（Q5_K_M）
+python generate_gguf_models.py --quantization Q5_K_M
+
+# 量子化なし（F32：フルFloat32精度）
+python generate_gguf_models.py --quantization F32
 ```
 
 #### オプション
@@ -621,6 +643,7 @@ python generate_gguf_models.py \
 | `--output-dir` | `gguf_models` | GGUFファイルの出力ディレクトリ |
 | `--architectures` | `neuroquantum qbnn` | 生成するアーキテクチャ |
 | `--sizes` | `small medium large` | 生成するモデルサイズ |
+| `--quantization` | `Q4_K_M` | 量子化タイプ（Q4_K_M, Q4_K_S, Q5_K_M, Q5_K_S, Q6_K, Q8_0, F16, F32） |
 | `--device` | `cpu` | モデル生成に使用するデバイス（cpu/cuda） |
 | `--skip-checkpoint-cleanup` | - | フラグを指定するとチェックポイント.ptファイルを保持 |
 
@@ -657,17 +680,26 @@ print(response.json())
 
 ### 9.4. 生成されるモデル構成 (Generated Model Structure)
 
-GGUF生成プロセスは以下のモデルを生成します：
+GGUF生成プロセスは以下のモデルを生成します（デフォルト：Q4_K_M量子化）：
 
 ```
 gguf_models/
-├── neuroquantum_small.gguf
-├── neuroquantum_medium.gguf
-├── neuroquantum_large.gguf
-├── qbnn_small.gguf
-├── qbnn_medium.gguf
-├── qbnn_large.gguf
+├── neuroquantum_small_Q4_K_M.gguf
+├── neuroquantum_medium_Q4_K_M.gguf
+├── neuroquantum_large_Q4_K_M.gguf
+├── qbnn_small_Q4_K_M.gguf
+├── qbnn_medium_Q4_K_M.gguf
+├── qbnn_large_Q4_K_M.gguf
 └── manifest.json
+```
+
+別の量子化形式を指定した場合（例：Q5_K_M）：
+
+```
+gguf_models/
+├── neuroquantum_small_Q5_K_M.gguf
+├── neuroquantum_medium_Q5_K_M.gguf
+├── ...
 ```
 
 各GGUFファイルには以下のメタデータが含まれます：
@@ -679,9 +711,49 @@ gguf_models/
 - **カスタムメタデータ**:
   - `model.size`: small/medium/large
   - `model.architecture`: neuroquantum/qbnn
+  - `model.quantization`: 使用した量子化形式（Q4_K_M など）
   - `model.created`: ISO 8601形式の生成時刻
 
-### 9.5. manifest.json について (Manifest File)
+### 9.4.1 単一ファイルの変換 (Single File Conversion with export_gguf.py)
+
+既存のPyTorchモデルファイル（.pt）を直接GGUF形式に変換する場合：
+
+```bash
+# Q4_K_M量子化で変換（推奨）
+python export_gguf.py model.pt model.gguf --quantization Q4_K_M
+
+# 異なる量子化形式を指定
+python export_gguf.py model.pt model.gguf --quantization Q5_K_M
+
+# 量子化なし（フルFloat32精度）
+python export_gguf.py model.pt model.gguf --quantization F32
+
+# デフォルト（入出力ファイル名が neuroq_checkpoint.pt → neuroq.gguf）
+python export_gguf.py
+```
+
+#### export_gguf.py オプション
+
+| オプション | デフォルト | 説明 |
+| :------- | :------: | :--- |
+| `input_file` | `neuroq_checkpoint.pt` | 入力PyTorchモデルファイル（.pt） |
+| `output_file` | `neuroq.gguf` | 出力GGUFファイル |
+| `--quantization, -q` | `Q4_K_M` | 量子化タイプ（Q4_K_M, Q4_K_S, Q5_K_M, Q5_K_S, Q6_K, Q8_0, F16, F32） |
+
+### 9.5. 量子化フォーマット比較 (Quantization Format Comparison)
+
+| フォーマット | サイズ比率 | 精度 | 推奨用途 |
+| :------- | :------: | :--- | :--- |
+| `Q4_K_M` | ~0.37x | 高 | **推奨** - 最高のバランス |
+| `Q4_K_S` | ~0.35x | 中 | ストレージ最適化 |
+| `Q5_K_M` | ~0.45x | 高 | 高精度が必要な場合 |
+| `Q5_K_S` | ~0.43x | 中 | バランス型 |
+| `Q6_K` | ~0.54x | 非常に高 | 最高精度 |
+| `Q8_0` | ~0.66x | 非常に高 | 高速推論 |
+| `F16` | ~1.0x | 完全精度 | リファレンス |
+| `F32` | ~2.0x | 完全精度 | 学習用 |
+
+### 9.6. manifest.json について (Manifest File)
 
 生成完了後、`manifest.json` に全生成モデルの情報が保存されます：
 
@@ -693,7 +765,8 @@ gguf_models/
       "small": {
         "status": "success",
         "checkpoint": "gguf_models/neuroquantum_small_checkpoint.pt",
-        "gguf": "gguf_models/neuroquantum_small.gguf",
+        "gguf": "gguf_models/neuroquantum_small_Q4_K_M.gguf",
+        "quantization": "Q4_K_M",
         "size_mb": 215.4
       },
       ...
