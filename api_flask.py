@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Model Training & Inference API for NeuroQuantum.
+Flask-compatible API for NeuroQuantum.
 Provides REST endpoints for training and text generation.
 """
 import os
@@ -13,7 +13,7 @@ import random
 import time
 import threading
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from flask import Flask, jsonify, request
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -83,8 +83,7 @@ DEFAULT_CONFIG = {
 # Request/Response models
 # ========================================
 
-class InferenceRequest:
-    """Request/Response model"""
+class InferenceRequest(BaseModel):
     prompt: str
     max_new_tokens: int = 10000
     temperature: float = 0.7
@@ -93,15 +92,13 @@ class InferenceRequest:
     repetition_penalty: float = 1.3
 
 
-class InferenceResponse:
-    """Request/Response model"""
+class InferenceResponse(BaseModel):
     prompt: str
     generated_text: str
     tokens_generated: int
 
 
-class TrainRequest:
-    """Request/Response model"""
+class TrainRequest(BaseModel):
     dataset_ids: Optional[List[str]] = None
     epochs: int = 10
     lr: float = 1e-4
@@ -112,8 +109,7 @@ class TrainRequest:
     model_size: str = "medium"  # "large" | "medium" | "small"
 
 
-class TrainQARequest:
-    """Request/Response model"""
+class TrainQARequest(BaseModel):
     dataset_id: Optional[str] = None
     epochs: int = 20
     lr: float = 3e-5
@@ -124,8 +120,7 @@ class TrainQARequest:
     model_size: str = "medium"  # "large" | "medium" | "small"
 
 
-class TrainMarkdownRequest:
-    """Request/Response model"""
+class TrainMarkdownRequest(BaseModel):
     epochs: int = 25
     lr: float = 3e-5
     batch_size: int = 4
@@ -134,8 +129,7 @@ class TrainMarkdownRequest:
     model_size: str = "medium"  # "large" | "medium" | "small"
 
 
-class TrainSplitRequest:
-    """Request/Response model"""
+class TrainSplitRequest(BaseModel):
     mode: str = "qa"  # "qa" or "general"
     dataset_ids: Optional[List[str]] = None  # カスタムデータセットIDリスト（指定時はデフォルトの代わりに使用）
     num_chunks: int = 4
@@ -155,8 +149,7 @@ class TrainSplitRequest:
     model_size: str = "medium"  # "large" | "medium" | "small"
 
 
-class TrainDPORequest:
-    """Request/Response model"""
+class TrainDPORequest(BaseModel):
     """DPO (Direct Preference Optimization) training request."""
     epochs: int = 5
     lr: float = 1e-5
@@ -169,8 +162,7 @@ class TrainDPORequest:
     model_size: str = "medium"  # "large" | "medium" | "small"
 
 
-class TrainCombinedDPORequest:
-    """Request/Response model"""
+class TrainCombinedDPORequest(BaseModel):
     """Combined QA + DPO training request."""
     # QA phase
     qa_epochs: int = 2
@@ -188,8 +180,7 @@ class TrainCombinedDPORequest:
     grad_clip: float = 1.0
 
 
-class RunPodTrainRequest:
-    """Request/Response model"""
+class RunPodTrainRequest(BaseModel):
     """RunPod経由でHuggingFaceデータセットの学習を実行するリクエスト。"""
     action: str = "train"  # train, train_qa_dataset, train_split, train_split_next
     dataset_ids: Optional[List[str]] = None
@@ -211,8 +202,7 @@ class RunPodTrainRequest:
     model_size: str = "medium"  # "large" | "medium" | "small"
 
 
-class TrainSplitNextRequest:
-    """Request/Response model"""
+class TrainSplitNextRequest(BaseModel):
     """1チャンクだけ学習するリクエスト。APIタイムアウト防止用。"""
     mode: str = "qa"
     dataset_ids: Optional[List[str]] = None
@@ -228,8 +218,7 @@ class TrainSplitNextRequest:
     model_size: str = "medium"  # "large" | "medium" | "small"
 
 
-class TrainSplitLearningRequest:
-    """Request/Response model"""
+class TrainSplitLearningRequest(BaseModel):
     """分割学習 (Split Learning) リクエスト。モデルをカットレイヤーで分割して学習する。"""
     data_mode: str = "qa"  # "qa" or "general"
     dataset_ids: Optional[List[str]] = None
@@ -246,21 +235,18 @@ class TrainSplitLearningRequest:
     max_minutes: Optional[float] = None  # 最大学習時間（分）
 
 
-class TrainResponse:
-    """Request/Response model"""
+class TrainResponse(BaseModel):
     status: str
     message: str
 
 
-class TrainStatusResponse:
-    """Request/Response model"""
+class TrainStatusResponse(BaseModel):
     running: bool
     log: list
     message: str
 
 
-class GGUFGenerationRequest:
-    """Request/Response model"""
+class GGUFGenerationRequest(BaseModel):
     architectures: list = ["neuroquantum", "qbnn"]
     sizes: list = ["small", "medium", "large"]
     output_dir: str = "gguf_models"
@@ -268,8 +254,7 @@ class GGUFGenerationRequest:
     skip_checkpoint_cleanup: bool = False
 
 
-class GGUFGenerationResponse:
-    """Request/Response model"""
+class GGUFGenerationResponse(BaseModel):
     status: str
     message: str
     output_dir: str
@@ -1820,20 +1805,21 @@ def run_split_next_training(req: TrainSplitNextRequest):
 # API Endpoints
 # ========================================
 
-@app.before_first_request
-def startup():
+@app.on_event("startup")
+async def startup():
     load_model()
 
 
-@app.teardown_appcontext
-def shutdown():
+@app.on_event("shutdown")
+async def shutdown():
     _shutdown_event.set()
     # Give background training threads a moment to notice and exit cleanly
-    time.sleep(2)
+    import asyncio
+    await asyncio.sleep(2)
 
 
-@app.route("/", methods=["GET"])
-def root():
+@app.get("/")
+async def root():
     return {
         "name": "NeuroQuantum API",
         "version": "1.0.0",
@@ -1843,616 +1829,81 @@ def root():
     }
 
 
-@app.route("/inference", methods=["POST"])
-def inference(req: InferenceRequest):
+@app.post("/inference", response_model=InferenceResponse)
+async def inference(req: InferenceRequest):
     if model is None:
-        return {"error": "Model not loaded"}, 503
+        raise HTTPException(status_code=503, detail="Model not loaded")
     if training_status["running"]:
-        return {"error": "Model is currently training"}, 503
+        raise HTTPException(status_code=503, detail="Model is currently training")
 
     text = generate_text(
         req.prompt,
-        max_new_tokens=req.max_new_tokens,
-        temperature=req.temperature,
-        top_k=req.top_k,
-        top_p=req.top_p,
-        repetition_penalty=req.repetition_penalty,
+
+# ========================================
+# Flask Endpoints
+# ========================================
+
+def _load_model():
+    """Load model on startup"""
+    global model, tokenizer, config, device
+    try:
+        load_model()
+        print("[api] Model loaded successfully")
+    except Exception as e:
+        print(f"[api] Failed to load model: {e}")
+
+@app.before_first_request
+def startup():
+    _load_model()
+
+@app.route("/", methods=["GET"])
+def root():
+    return jsonify({
+        "name": "NeuroQuantum API",
+        "version": "1.0.0",
+        "model": "neuroquantum",
+        "config": config,
+        "parameters": sum(p.numel() for p in model.parameters()) if model else 0,
+    })
+
+@app.route("/inference", methods=["POST"])
+def inference():
+    data = request.get_json() or {}
+    if model is None:
+        return jsonify({"error": "Model not loaded"}), 503
+    if training_status["running"]:
+        return jsonify({"error": "Model is currently training"}), 503
+
+    prompt = data.get("prompt", "")
+    max_new_tokens = data.get("max_new_tokens", 10000)
+    temperature = data.get("temperature", 0.7)
+    top_k = data.get("top_k", 40)
+    top_p = data.get("top_p", 0.9)
+    repetition_penalty = data.get("repetition_penalty", 1.3)
+
+    text = generate_text(
+        prompt,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
     )
     tokens_count = len(tokenizer.encode(text, add_special=False)) if text else 0
-    return InferenceResponse(
-        prompt=req.prompt,
-        generated_text=text,
-        tokens_generated=tokens_count,
-    )
-
-
-@app.route("/train", methods=["POST"])
-def train(req: TrainRequest):
-    if training_status["running"]:
-        return {"error": "Training already in progress"}, 409
-
-    # Background task: run_training(req)
-    threading.Thread(target=run_training, args=(req,), daemon=True).start()
-    return TrainResponse(
-        status="started",
-        message=f"Training started: {req.epochs} epochs, lr={req.lr}, "
-                f"effective_batch={req.batch_size * req.grad_accum_steps}",
-    )
-
-
-@app.route("/train/qa", methods=["POST"])
-def train_qa(req: TrainQARequest):
-    """QA形式の日本語データで高エポック学習。"""
-    if training_status["running"]:
-        return {"error": "Training already in progress"}, 409
-
-    # Background task: run_qa_training(req)
-    threading.Thread(target=run_qa_training, args=(req,), daemon=True).start()
-    return TrainResponse(
-        status="started",
-        message=f"QA Training started: {req.epochs} epochs, lr={req.lr}, "
-                f"effective_batch={req.batch_size * req.grad_accum_steps}",
-    )
-
-
-@app.route("/train/markdown", methods=["POST"])
-def train_markdown(req: TrainMarkdownRequest):
-    """マークダウン形式出力の学習。"""
-    if training_status["running"]:
-        return {"error": "Training already in progress"}, 409
-
-    # Background task: run_markdown_training(req)
-    threading.Thread(target=run_markdown_training, args=(req,), daemon=True).start()
-    return TrainResponse(
-        status="started",
-        message=f"Markdown Training started: {req.epochs} epochs, lr={req.lr}, "
-                f"effective_batch={req.batch_size * req.grad_accum_steps}",
-    )
-
-
-@app.route("/train/split", methods=["POST"])
-def train_split(req: TrainSplitRequest):
-    """データセットを分割して学習（タイムアウト回避）。"""
-    if training_status["running"]:
-        return {"error": "Training already in progress"}, 409
-
-    if req.chunk_index is not None:
-        chunk_desc = f"chunk {req.chunk_index}"
-    elif req.samples_per_batch:
-        chunk_desc = f"batches of {req.samples_per_batch} samples"
-    else:
-        chunk_desc = f"all {req.num_chunks} chunks"
-
-    range_desc = ""
-    if req.start_sample is not None or req.end_sample is not None:
-        s = req.start_sample if req.start_sample is not None else 0
-        e = req.end_sample if req.end_sample is not None else "end"
-        range_desc = f", range=[{s},{e})"
-
-    timeout_desc = ""
-    if req.max_minutes_per_chunk:
-        timeout_desc = f", timeout={req.max_minutes_per_chunk}min/chunk"
-
-    # Background task: run_split_training(req)
-    threading.Thread(target=run_split_training, args=(req,), daemon=True).start()
-    return TrainResponse(
-        status="started",
-        message=f"Split Batch Training started: mode={req.mode}, {chunk_desc}, "
-                f"{req.epochs_per_chunk} epochs/chunk, lr={req.lr}"
-                f"{range_desc}{timeout_desc}",
-    )
-
-
-@app.route("/train/split/next", methods=["POST"])
-def train_split_next(req: TrainSplitNextRequest):
-    """次の1チャンクだけ学習する（APIタイムアウト防止用）。
-
-    1回のAPI呼び出しで1バッチだけ学習し、チェックポイントを保存して返す。
-    全バッチ完了まで繰り返し呼び出す。
-
-    使い方:
-      1. POST /train/split/next を呼ぶ → バッチ1を学習
-      2. レスポンスの chunks_remaining > 0 なら再度呼ぶ → バッチ2を学習
-      3. chunks_remaining == 0 になるまで繰り返す
-      4. 最初からやり直す場合は POST /train/split/reset を呼ぶ
-    """
-    if training_status["running"]:
-        return {"error": "Training already in progress"}, 409
-
-    result = run_split_next_training(req)
-
-    if "error" in result:
-        raise HTTPException(status_code=500, detail=result["error"])
-
-    return result
-
-
-@app.route("/train/split/reset", methods=["POST"])
-def train_split_reset():
-    """分割学習の現在セッションをリセットする（履歴は保持）。次回の /train/split/next はチャンク0から開始。"""
-    if training_status["running"]:
-        return {"error": "Training in progress, cannot reset"}, 409
-
-    if os.path.exists(SPLIT_STATE_PATH):
-        # Preserve history but reset current session progress
-        try:
-            with open(SPLIT_STATE_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            data = None
-
-        if data and "history" in data:
-            # Keep history and trained_datasets, but reset current session fields
-            data["mode"] = None
-            data["num_chunks"] = None
-            data["last_completed_chunk"] = None
-            data["best_loss"] = None
-            data["timed_out"] = False
-            data["timestamp"] = None
-            with open(SPLIT_STATE_PATH, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            history_count = len(data.get("history", []))
-            trained_ds = data.get("trained_datasets", [])
-            return {
-                "status": "reset",
-                "message": f"Current session reset. Next call will start from chunk 0. "
-                           f"Training history preserved: {history_count} sessions, "
-                           f"{len(trained_ds)} datasets accumulated.",
-                "history_count": history_count,
-                "trained_datasets": trained_ds,
-            }
-        else:
-            os.remove(SPLIT_STATE_PATH)
-            return {"status": "reset", "message": "Split training state cleared. Next call will start from chunk 0."}
-    return {"status": "no_state", "message": "No split training state found. Already at initial state."}
-
-
-@app.route("/train/split/status", methods=["GET"])
-def train_split_status():
-    """分割学習の進捗状態を取得（累積履歴を含む）。"""
-    state = _load_split_state()
-    history = state.get("history", []) if state else []
-    trained_datasets = state.get("trained_datasets", []) if state else []
-    return {
-        "training_running": training_status["running"],
-        "split_state": state,
-        "current_status": training_status["message"],
-        "log": training_status["log"],
-        "total_sessions": len(history),
-        "trained_datasets": trained_datasets,
-    }
-
-
-# ========================================
-# 分割学習 (Split Learning) — モデル分割
-# ========================================
-
-def run_split_learning_training(req: "TrainSplitLearningRequest"):
-    """分割学習の学習処理（バックグラウンドタスク）。"""
-    global model, training_status
-    training_status["running"] = True
-    training_status["message"] = "Split learning training in progress"
-    training_status["log"] = []
-
-    apply_model_size_config(req.model_size)
-
-    try:
-        from train_split_learning import (
-            load_qa_texts, load_general_texts, tokenize_texts, get_lr,
-            CRAFTED_QA,
-        )
-
-        # データ読み込み
-        if req.data_mode == "qa":
-            all_texts = load_qa_texts(req.max_samples)
-            for _ in range(req.crafted_repeat):
-                all_texts.extend(CRAFTED_QA)
-        else:
-            all_texts = load_general_texts(req.max_samples)
-
-        if not all_texts:
-            training_status["message"] = "No texts loaded"
-            training_status["running"] = False
-            return
-
-        sequences = tokenize_texts(all_texts, tokenizer, config["max_seq_len"])
-        training_status["message"] = f"Split learning: {len(sequences)} sequences"
-
-        # カットレイヤー決定
-        num_layers = config["num_layers"]
-        cut_layer = req.cut_layer if req.cut_layer else max(1, num_layers // 2)
-        if cut_layer < 1 or cut_layer >= num_layers:
-            cut_layer = max(1, num_layers // 2)
-
-        # SplitLearningTrainer作成
-        nq_config = model.config
-        trainer = SplitLearningTrainer(
-            model=model,
-            cut_layer=cut_layer,
-            tokenizer=tokenizer,
-            device=device,
-            lr=req.lr,
-            grad_clip=req.grad_clip,
-        )
-
-        max_seq_len = nq_config.max_seq_len
-        batch_size = req.batch_size
-        epochs = req.epochs
-        import time as _time
-        start_time = _time.time()
-
-        for epoch in range(epochs):
-            if _shutdown_event.is_set():
-                progress.info("Split learning training interrupted by server shutdown")
-                break
-            random.shuffle(sequences)
-            total_loss = 0
-            n_batches = 0
-
-            for i in range(0, len(sequences), batch_size):
-                if _shutdown_event.is_set():
-                    break
-                if req.max_minutes and (_time.time() - start_time) >= req.max_minutes * 60:
-                    break
-
-                batch_seqs = sequences[i:i + batch_size]
-                if not batch_seqs:
-                    continue
-
-                max_len = min(max(len(s) for s in batch_seqs), max_seq_len)
-                input_ids = []
-                labels = []
-                for s in batch_seqs:
-                    ids = s[:max_len]
-                    pad_len = max_len - len(ids)
-                    input_ids.append(ids + [tokenizer.pad_id] * pad_len)
-                    labels.append(ids + [-100] * pad_len)
-
-                input_t = torch.tensor(input_ids, dtype=torch.long, device=device)
-                labels_t = torch.tensor(labels, dtype=torch.long, device=device)
-
-                loss = trainer.train_step(input_t, labels_t)
-                total_loss += loss
-                n_batches += 1
-
-            avg_loss = total_loss / max(n_batches, 1)
-            log_entry = {
-                "epoch": epoch + 1,
-                "loss": avg_loss,
-                "split_learning": True,
-                "cut_layer": cut_layer,
-            }
-            training_status["log"].append(log_entry)
-            training_status["message"] = (
-                f"Split learning epoch {epoch+1}/{epochs}, loss={avg_loss:.4f}"
-            )
-
-        # モデル統合 & 保存
-        merged = trainer.get_merged_model().to(device)
-        model.load_state_dict(merged.state_dict())
-
-        ckpt_path = _resolve_checkpoint_path()
-        checkpoint_data = {
-            "model_state": model.state_dict(),
-            "config": config,
-            "training_log": training_status["log"],
-            "trained_at": datetime.now(timezone.utc).isoformat(),
-            "split_learning": True,
-            "split_learning_config": {"cut_layer": cut_layer},
-        }
-        torch.save(checkpoint_data, ckpt_path)
-        sync_checkpoint_to_network_volume(ckpt_path)
-
-        training_status["message"] = (
-            f"Split learning complete: {epochs} epochs, cut_layer={cut_layer}, "
-            f"final_loss={training_status['log'][-1]['loss']:.4f}"
-        )
-
-    except Exception as e:
-        training_status["message"] = f"Split learning error: {str(e)}"
-        import traceback
-        traceback.print_exc()
-    finally:
-        training_status["running"] = False
-
-
-@app.route("/train/split_learning", methods=["POST"])
-def train_split_learning(req: TrainSplitLearningRequest):
-    """分割学習（Split Learning）。モデルをカットレイヤーで分割してクライアント・サーバー間で学習する。"""
-    if training_status["running"]:
-        return {"error": "Training already in progress"}, 409
-
-    num_layers = config["num_layers"] if config else 6
-    cut_layer = req.cut_layer if req.cut_layer else max(1, num_layers // 2)
-
-    # Background task: run_split_learning_training(req)
-    threading.Thread(target=run_split_learning_training, args=(req,), daemon=True).start()
-    return TrainResponse(
-        status="started",
-        message=f"Split Learning started: cut_layer={cut_layer}/{num_layers}, "
-                f"data_mode={req.data_mode}, epochs={req.epochs}, lr={req.lr}",
-    )
-
-
-def run_dpo_training(req: TrainDPORequest):
-    """Run DPO training in background."""
-    global training_status
-    apply_model_size_config(req.model_size)
-    try:
-        data = {"parameters": req.dict()}
-        result = _handler(data)
-        if result:
-            training_status["log"] = result[0].get("log", [])
-            training_status["message"] = result[0].get("message", "DPO training complete")
-    except Exception as e:
-        training_status["message"] = f"DPO training error: {str(e)}"
-        import traceback
-        traceback.print_exc()
-    finally:
-        training_status["running"] = False
-
-
-def run_combined_dpo_training(req: TrainCombinedDPORequest):
-    """Run combined QA+DPO training in background."""
-    global training_status
-    apply_model_size_config(req.model_size)
-    try:
-        data = {"parameters": req.dict()}
-        result = _handler(data)
-        if result:
-            training_status["log"] = result[0].get("log", [])
-            training_status["message"] = result[0].get("message", "Combined training complete")
-    except Exception as e:
-        training_status["message"] = f"Combined training error: {str(e)}"
-        import traceback
-        traceback.print_exc()
-    finally:
-        training_status["running"] = False
-
-
-@app.route("/train/dpo", methods=["POST"])
-def train_dpo(req: TrainDPORequest):
-    """DPO (Direct Preference Optimization) training on preference pairs."""
-    if training_status["running"]:
-        return {"error": "Training already in progress"}, 409
-
-    # Background task: run_dpo_training(req)
-    threading.Thread(target=run_dpo_training, args=(req,), daemon=True).start()
-    return TrainResponse(
-        status="started",
-        message=f"DPO Training started: {req.epochs} epochs, lr={req.lr}, "
-                f"batch_size={req.batch_size}, dpo_beta={req.dpo_beta}",
-    )
-
-
-@app.route("/train/combined_dpo", methods=["POST"])
-def train_combined_dpo(req: TrainCombinedDPORequest):
-    """Combined QA + DPO training (two-phase approach)."""
-    if training_status["running"]:
-        return {"error": "Training already in progress"}, 409
-
-    # Background task: run_combined_dpo_training(req)
-    threading.Thread(target=run_combined_dpo_training, args=(req,), daemon=True).start()
-    return TrainResponse(
-        status="started",
-        message=f"Combined QA+DPO Training started: QA={req.qa_epochs}ep lr={req.qa_lr}, "
-                f"DPO={req.dpo_epochs}ep lr={req.dpo_lr}, beta={req.dpo_beta}",
-    )
-
-
-@app.route("/train/status")
+    return jsonify({
+        "prompt": prompt,
+        "generated_text": text,
+        "tokens_generated": tokens_count,
+    })
+
+@app.route("/train/status", methods=["GET"])
 def train_status():
-    return TrainStatusResponse(**training_status)
-
-
-@app.route("/reload", methods=["POST"])
-def reload_model():
-    """Reload model from latest checkpoint (re-checks network volume)."""
-    try:
-        ckpt_path = _resolve_checkpoint_path()
-        load_model()
-        return {"status": "reloaded", "message": f"Model reloaded from {ckpt_path}"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ========================================
-# RunPod HuggingFace Dataset Training
-# ========================================
-
-@app.route("/train/runpod", methods=["POST"])
-def train_runpod(req: RunPodTrainRequest):
-    """RunPod経由でHuggingFaceデータセットの学習を実行。
-
-    RunPodサーバーレスエンドポイントにトレーニングジョブを送信し、
-    HuggingFaceデータセットを使用してモデルを学習させます。
-
-    対応アクション:
-      - train:             一般的なHFデータセット学習
-      - train_qa_dataset:  QA形式HFデータセット学習
-      - train_split:       分割データセット学習（全チャンク）
-      - train_split_next:  次のチャンクのみ学習
-    """
-    import runpod as rp
-
-    endpoint_id = req.runpod_endpoint_id or os.environ.get("RUNPOD_ENDPOINT_ID")
-    api_key = os.environ.get("RUNPOD_API_KEY")
-
-    if not endpoint_id:
-        raise HTTPException(
-            status_code=400,
-            detail="RunPod endpoint ID required. Set RUNPOD_ENDPOINT_ID env var or pass runpod_endpoint_id.",
-        )
-    if not api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="RUNPOD_API_KEY environment variable not set.",
-        )
-
-    rp.api_key = api_key
-
-    # Build payload for RunPod handler
-    payload = {
-        "action": req.action,
-        "parameters": {
-            "epochs": req.epochs,
-            "lr": req.lr,
-            "batch_size": req.batch_size,
-            "grad_accum_steps": req.grad_accum_steps,
-            "warmup_steps": req.warmup_steps,
-            "max_samples_per_dataset": req.max_samples_per_dataset,
-        },
-    }
-
-    if req.dataset_ids:
-        payload["parameters"]["dataset_ids"] = req.dataset_ids
-    if req.dataset_id:
-        payload["parameters"]["dataset_id"] = req.dataset_id
-
-    # Split training parameters
-    if req.action in ("train_split", "train_split_next"):
-        payload["parameters"].update({
-            "mode": req.mode,
-            "num_chunks": req.num_chunks,
-            "epochs_per_chunk": req.epochs_per_chunk,
-            "crafted_repeat": req.crafted_repeat,
-        })
-        if req.samples_per_batch:
-            payload["parameters"]["samples_per_batch"] = req.samples_per_batch
-        if req.max_minutes_per_chunk:
-            payload["parameters"]["max_minutes_per_chunk"] = req.max_minutes_per_chunk
-
-    # Submit async job to RunPod
-    try:
-        endpoint = rp.Endpoint(endpoint_id)
-        run_request = endpoint.run(payload)
-        job_id = run_request.job_id
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to submit RunPod job: {e}")
-
-    return {
-        "status": "submitted",
-        "job_id": job_id,
-        "endpoint_id": endpoint_id,
-        "action": req.action,
-        "message": f"Training job submitted to RunPod. Use GET /train/runpod/status/{job_id} to check progress.",
-    }
-
-
-@app.route("/train/runpod/status/{job_id}", methods=["GET"])
-def train_runpod_status(job_id: str, endpoint_id: Optional[str] = None):
-    """RunPodトレーニングジョブのステータスを確認。"""
-    import runpod as rp
-
-    eid = endpoint_id or os.environ.get("RUNPOD_ENDPOINT_ID")
-    api_key = os.environ.get("RUNPOD_API_KEY")
-
-    if not eid or not api_key:
-        return {"error": "RUNPOD_ENDPOINT_ID and RUNPOD_API_KEY required."}, 400
-
-    rp.api_key = api_key
-
-    try:
-        endpoint = rp.Endpoint(eid)
-        status = endpoint.status(job_id)
-        result = {"job_id": job_id, "status": status}
-
-        if status == "COMPLETED":
-            output = endpoint.output(job_id)
-            result["output"] = output
-        elif status == "FAILED":
-            try:
-                output = endpoint.output(job_id)
-                result["output"] = output
-            except Exception:
-                pass
-
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to check RunPod job status: {e}")
-
-
-@app.route("/train/runpod/cancel/{job_id}", methods=["POST"])
-def train_runpod_cancel(job_id: str, endpoint_id: Optional[str] = None):
-    """RunPodトレーニングジョブをキャンセル。"""
-    import runpod as rp
-
-    eid = endpoint_id or os.environ.get("RUNPOD_ENDPOINT_ID")
-    api_key = os.environ.get("RUNPOD_API_KEY")
-
-    if not eid or not api_key:
-        return {"error": "RUNPOD_ENDPOINT_ID and RUNPOD_API_KEY required."}, 400
-
-    rp.api_key = api_key
-
-    try:
-        endpoint = rp.Endpoint(eid)
-        endpoint.cancel(job_id)
-        return {"job_id": job_id, "status": "cancelled"}
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to cancel RunPod job: {e}")
-
-
-# ========================================
-# TTS (Text-to-Speech) via Replicate
-# ========================================
-
-class TTSRequest:
-    """Request/Response model"""
-    text: str
-    voice_id: str = "Ashley"
-
-
-@app.route("/generate/gguf", methods=["POST"])
-def generate_gguf_models(req: GGUFGenerationRequest):
-    """Generate GGUF models for specified architectures and sizes.
-
-    This endpoint generates GGUF format models for different model sizes
-    (small, medium, large) and architectures (neuroquantum, qbnn).
-    Generation runs in the background.
-    """
-    try:
-        def _run_generation():
-            generator = GGUFModelGenerator(
-                output_dir=req.output_dir,
-                device=req.device
-            )
-            results = generator.generate_all(
-                architectures=req.architectures,
-                sizes=req.sizes
-            )
-            generator.print_summary()
-            generator.save_manifest()
-
-            if not req.skip_checkpoint_cleanup:
-                import pathlib
-                output_path = pathlib.Path(req.output_dir)
-                for f in output_path.glob("*_checkpoint.pt"):
-                    f.unlink()
-
-        background_tasks.add_task(_run_generation)
-
-        return GGUFGenerationResponse(
-            status="started",
-            message=f"GGUF generation started for {len(req.architectures)} architectures and {len(req.sizes)} sizes",
-            output_dir=req.output_dir
-        )
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"GGUF generation failed: {str(e)}")
-
-
-@app.route("/tts", methods=["POST"])
-def tts_generate(req: TTSRequest):
-    """Generate speech audio from text using Replicate's Inworld TTS model."""
-    try:
-        from tts_replicate import text_to_speech
-        output = text_to_speech(text=req.text, voice_id=req.voice_id)
-        return {"status": "ok", "output": output}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+    return jsonify({
+        "running": training_status["running"],
+        "log": training_status["log"],
+        "message": training_status["message"],
+    })
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    app.run(host="0.0.0.0", port=8000, debug=False)
+

@@ -7,3 +7,5 @@ accelerate>=1.1.0
 runpod>=1.6.0
 replicate>=0.25.0
 modal>=0.73.0
+flask>=2.3.0
+werkzeug>=2.3.0
