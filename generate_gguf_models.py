@@ -21,11 +21,11 @@ from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, get_model_con
 from qbnn_layered import EQBNNGenerativeAI
 
 try:
-    from gguf import GGUFWriter, GGUFQuantizationType
+    from gguf import GGUFWriter, GGMLQuantizationType
 except ImportError:
     print("WARNING: gguf module not available. Install with: pip install gguf")
     GGUFWriter = None
-    GGUFQuantizationType = None
+    GGMLQuantizationType = None
 
 
 class GGUFModelGenerator:
@@ -126,16 +126,16 @@ class GGUFModelGenerator:
             count = 0
             total_params = 0
 
-            # Map quantization strings to GGUFQuantizationType
+            # Map quantization strings to GGMLQuantizationType
             quantization_map = {
-                "Q4_K_M": GGUFQuantizationType.Q4_K_M if GGUFQuantizationType else None,
-                "Q4_K_S": GGUFQuantizationType.Q4_K_S if GGUFQuantizationType else None,
-                "Q5_K_M": GGUFQuantizationType.Q5_K_M if GGUFQuantizationType else None,
-                "Q5_K_S": GGUFQuantizationType.Q5_K_S if GGUFQuantizationType else None,
-                "Q6_K": GGUFQuantizationType.Q6_K if GGUFQuantizationType else None,
-                "Q8_0": GGUFQuantizationType.Q8_0 if GGUFQuantizationType else None,
+                "Q4_K_M": GGMLQuantizationType.Q4_K if GGMLQuantizationType else None,
+                "Q4_K_S": GGMLQuantizationType.Q4_K if GGMLQuantizationType else None,
+                "Q5_K_M": GGMLQuantizationType.Q5_K if GGMLQuantizationType else None,
+                "Q5_K_S": GGMLQuantizationType.Q5_K if GGMLQuantizationType else None,
+                "Q6_K": GGMLQuantizationType.Q6_K if GGMLQuantizationType else None,
+                "Q8_0": GGMLQuantizationType.Q8_0 if GGMLQuantizationType else None,
                 "F32": None,  # No quantization
-                "F16": GGUFQuantizationType.F16 if GGUFQuantizationType else None,
+                "F16": None,  # Not directly available
             }
 
             quant_type = quantization_map.get(quantization)
@@ -143,13 +143,16 @@ class GGUFModelGenerator:
             for name, tensor in state_dict.items():
                 data = np.ascontiguousarray(tensor.float().detach().cpu().numpy())
 
-                # Skip quantization for embeddings, layer norms, and other special tensors
-                should_quantize = quant_type is not None and not any(
-                    pattern in name for pattern in ["embed", "norm", "bias"]
+                # Only quantize large weight matrices (skip embeddings, norms, biases, and small tensors)
+                should_quantize = (
+                    quant_type is not None
+                    and not any(pattern in name for pattern in ["embed", "norm", "bias"])
+                    and len(data.shape) >= 2  # At least 2D tensor
+                    and data.shape[-1] >= 256  # Last dimension large enough for quantization block
                 )
 
                 if should_quantize:
-                    writer.add_tensor(name, data, quantization_type=quant_type)
+                    writer.add_tensor(name, data, raw_dtype=quant_type)
                 else:
                     writer.add_tensor(name, data)
 
