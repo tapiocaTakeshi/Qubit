@@ -72,14 +72,6 @@ jobs:
             fi
           done
 
-      - name: 📊 Upload artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gguf-models-${{ github.event.inputs.quantization }}
-          path: gguf_models/
-          retention-days: 30
-
       - name: 📝 Create summary
         if: success()
         run: |
