@@ -91,12 +91,12 @@ class BinaryGGUFExporter:
         print(f"📝 Writing GGUF to {output_file}...")
 
         try:
-            writer = GGUFWriter(output_file, "neuroquantum")
+            writer = GGUFWriter(output_file, "gemma")
 
             # メタデータを追加
             writer.add_name(f"{model_name} {model_size.capitalize()}")
             writer.add_description(
-                f"1-bit Binary Quantized {model_name} for Mobile/Edge Devices"
+                f"Gemma 1-bit Binary Quantized {model_name} for Mobile/Edge Devices"
             )
             writer.add_version("1.0")
             writer.add_author("tapiocaTakeshi - Qubit Project")
@@ -104,7 +104,7 @@ class BinaryGGUFExporter:
 
             # モデル固有のメタデータ
             writer.add_string("model.size", model_size)
-            writer.add_string("model.architecture", "neuroquantum_1bit")
+            writer.add_string("model.architecture", "gemma")
             writer.add_string("model.quantization", "binary_1bit")
             writer.add_string("model.created", datetime.now().isoformat())
 
