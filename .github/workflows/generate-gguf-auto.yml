@@ -1,0 +1,90 @@
+name: Auto-Generate GGUF Models
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'neuroquantum_layered.py'
+      - 'qbnn_layered.py'
+      - 'generate_gguf_models.py'
+  workflow_dispatch:
+    inputs:
+      quantization:
+        description: "Quantization format"
+        required: true
+        default: "Q4_K_M"
+        type: choice
+        options:
+          - Q4_K_M
+          - Q4_K_S
+          - Q5_K_M
+          - Q5_K_S
+          - Q6_K
+          - Q8_0
+          - F32
+      sizes:
+        description: "Model sizes (comma-separated)"
+        required: true
+        default: "small,medium,large,xlarge"
+
+jobs:
+  generate-gguf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch numpy gguf sentencepiece
+
+      - name: 🔨 Generate GGUF models
+        run: |
+          QUANTIZATION="${{ github.event.inputs.quantization || 'Q4_K_M' }}"
+          SIZES="${{ github.event.inputs.sizes || 'small,medium,large,xlarge' }}"
+
+          python generate_gguf_models.py \
+            --quantization "$QUANTIZATION" \
+            --sizes $SIZES \
+            --device cpu \
+            --output-dir gguf_models
+
+      - name: 📊 Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gguf-models-${{ github.event.inputs.quantization || 'Q4_K_M' }}
+          path: gguf_models/
+          retention-days: 90
+
+      - name: 📝 Create summary
+        if: success()
+        run: |
+          echo "## ✅ GGUF Models Generated Successfully" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Generation Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Quantization**: ${{ github.event.inputs.quantization || 'Q4_K_M' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Sizes**: ${{ github.event.inputs.sizes || 'small,medium,large,xlarge' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f "gguf_models/manifest.json" ]; then
+            echo "### 📋 Manifest" >> $GITHUB_STEP_SUMMARY
+            cat gguf_models/manifest.json >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Generated Files" >> $GITHUB_STEP_SUMMARY
+          ls -lh gguf_models/*.gguf 2>/dev/null | awk '{print "- " $9 " (" $5 ")"}' >> $GITHUB_STEP_SUMMARY
+
+      - name: ❌ Failure summary
+        if: failure()
+        run: |
+          echo "## ❌ GGUF Model Generation Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Please check the logs above for details." >> $GITHUB_STEP_SUMMARY
