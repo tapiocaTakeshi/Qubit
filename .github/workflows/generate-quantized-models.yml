@@ -183,7 +183,7 @@ jobs:
 
       - name: Upload artifacts
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: quantized-models-${{ matrix.quantization }}bit-${{ matrix.model_size }}
           path: |
