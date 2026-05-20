@@ -311,7 +311,7 @@ class GGUFModelGenerator:
         """Generate and save a model checkpoint.
 
         Args:
-            architecture: "neuroquantum" or "qbnn"
+            architecture: "gemma", "neuroquantum", or "qbnn"
             size: Model size (small/medium/large)
 
         Returns:
@@ -321,7 +321,9 @@ class GGUFModelGenerator:
             print(f"\n🔨 Creating {architecture} {size} model...")
 
             model = None
-            if architecture.lower() == "neuroquantum":
+            if architecture.lower() == "gemma":
+                model = self.create_neuroquantum_model(size)
+            elif architecture.lower() == "neuroquantum":
                 model = self.create_neuroquantum_model(size)
             elif architecture.lower() == "qbnn":
                 model = self.create_qbnn_model(size)
@@ -363,7 +365,7 @@ class GGUFModelGenerator:
         """Generate GGUF models for all specified architectures and sizes.
 
         Args:
-            architectures: List of architectures to generate (default: ["neuroquantum", "qbnn"])
+            architectures: List of architectures to generate (default: ["gemma"])
             sizes: List of sizes to generate (default: ["small", "medium", "large"])
             quantization: Quantization type (default: "Q4_K_M")
             gguf_params: GGUF runtime parameters (uses defaults if not provided)
@@ -374,7 +376,7 @@ class GGUFModelGenerator:
         if gguf_params:
             self.gguf_params = gguf_params
         if architectures is None:
-            architectures = ["neuroquantum", "qbnn"]
+            architectures = ["gemma"]
         if sizes is None:
             sizes = self.MODEL_SIZES
 

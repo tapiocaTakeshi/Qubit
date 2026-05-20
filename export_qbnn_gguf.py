@@ -238,13 +238,13 @@ class QBNNToGGUFConverter:
             quantum_features, filtered_state = self.extract_quantum_characteristics(state_dict)
 
             print(f"📝 Writing GGUF to {gguf_file}...")
-            writer = GGUFWriter(gguf_file, "qbnn")
+            writer = GGUFWriter(gguf_file, "gemma")
 
             # メタデータを追加
             writer.add_name(f"{model_name} {model_size.capitalize()}")
             writer.add_description(
                 f"{model_name} {model_size.capitalize()} with Quantum Characteristics "
-                f"(QBNN) by tapiocaTakeshi"
+                f"(Gemma) by tapiocaTakeshi"
             )
             writer.add_version("1.0")
             writer.add_author("tapiocaTakeshi")
@@ -253,7 +253,7 @@ class QBNNToGGUFConverter:
 
             # モデル固有のメタデータ
             writer.add_string("model.size", model_size)
-            writer.add_string("model.architecture", "qbnn")
+            writer.add_string("model.architecture", "gemma")
             writer.add_string("model.quantization", quantization)
             writer.add_string("model.created", datetime.now().isoformat())
 
