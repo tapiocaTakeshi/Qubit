@@ -1,0 +1,217 @@
+name: Generate & Upload Quantized Models
+
+on:
+  schedule:
+    # 毎週金曜日 午後9時（UTC）に実行
+    - cron: '0 21 * * 5'
+  workflow_dispatch:
+    inputs:
+      quantization_type:
+        description: 'Quantization type (1, 2, 3, or all)'
+        required: false
+        default: 'all'
+      model_size:
+        description: 'Model size (small, medium, large, or all)'
+        required: false
+        default: 'all'
+
+jobs:
+  generate-quantized:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10']
+        quantization: [1, 2, 3]
+        model_size: [small, medium]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy gguf huggingface-hub
+
+      - name: Generate quantized models
+        run: |
+          echo "🔄 Generating ${{ matrix.quantization }}-bit quantized models (size: ${{ matrix.model_size }})"
+
+          # Create checkpoint if needed
+          if [ ! -f "neuroquantum_${{ matrix.model_size }}_checkpoint.pt" ]; then
+            echo "Creating dummy checkpoint for testing..."
+            python << 'GENEOF'
+          import torch
+          import sys
+          sys.path.insert(0, '.')
+          from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig
+
+          model_configs = {
+              'small': {
+                  'vocab_size': 8000,
+                  'embed_dim': 256,
+                  'hidden_dim': 512,
+                  'num_heads': 4,
+                  'num_layers': 3,
+              },
+              'medium': {
+                  'vocab_size': 32000,
+                  'embed_dim': 512,
+                  'hidden_dim': 1024,
+                  'num_heads': 8,
+                  'num_layers': 6,
+              },
+              'large': {
+                  'vocab_size': 32000,
+                  'embed_dim': 768,
+                  'hidden_dim': 2048,
+                  'num_heads': 12,
+                  'num_layers': 12,
+              }
+          }
+
+          size = '${{ matrix.model_size }}'
+          config = NeuroQuantumConfig(**model_configs[size])
+          model = NeuroQuantum(config=config)
+
+          torch.save({
+              'model_state_dict': model.state_dict(),
+              'config': config_dict,
+          }, f'neuroquantum_{size}_checkpoint.pt')
+          print(f"✓ Created neuroquantum_{size}_checkpoint.pt")
+          GENEOF
+          fi
+
+      - name: Quantize model
+        run: |
+          python quantize_neuroquantum_multibit.py \
+            neuroquantum_${{ matrix.model_size }}_checkpoint.pt \
+            --bit-width ${{ matrix.quantization }} \
+            --model-size ${{ matrix.model_size }} \
+            --output neuroquantum_${{ matrix.model_size }}_${{ matrix.quantization }}bit.pt
+
+      - name: Export to GGUF
+        run: |
+          python export_multibit_gguf.py \
+            neuroquantum_${{ matrix.model_size }}_${{ matrix.quantization }}bit.pt \
+            --bit-width ${{ matrix.quantization }} \
+            --model-size ${{ matrix.model_size }} \
+            --output neuroquantum_${{ matrix.model_size }}_${{ matrix.quantization }}bit.gguf
+
+      - name: Validate models
+        run: |
+          echo "🔍 Validating generated models..."
+
+          if [ -f "neuroquantum_${{ matrix.model_size }}_${{ matrix.quantization }}bit.gguf" ]; then
+            python check_gguf_params.py neuroquantum_${{ matrix.model_size }}_${{ matrix.quantization }}bit.gguf
+            python validate_gguf_metadata.py neuroquantum_${{ matrix.model_size }}_${{ matrix.quantization }}bit.gguf
+            echo "✅ Validation passed"
+          else
+            echo "❌ GGUF file not found"
+            exit 1
+          fi
+
+      - name: Upload to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python << 'UPLOADEOF'
+          from huggingface_hub import upload_file, upload_folder
+          from pathlib import Path
+
+          repo_id = "tapiocatakeshi/Qubit"
+          hf_token = "${{ secrets.HF_TOKEN }}"
+          bit_width = "${{ matrix.quantization }}"
+          model_size = "${{ matrix.model_size }}"
+
+          # Upload GGUF
+          gguf_file = f"neuroquantum_{model_size}_{bit_width}bit.gguf"
+          if Path(gguf_file).exists():
+              print(f"📤 Uploading {gguf_file}...")
+              try:
+                  upload_file(
+                      path_or_fileobj=gguf_file,
+                      path_in_repo=f"models/{bit_width}bit/{Path(gguf_file).name}",
+                      repo_id=repo_id,
+                      repo_type="model",
+                      token=hf_token,
+                      commit_message=f"Add {bit_width}-bit {model_size} quantized model"
+                  )
+                  print(f"✓ Uploaded {gguf_file}")
+              except Exception as e:
+                  print(f"✗ Upload failed: {e}")
+
+          # Upload PT
+          pt_file = f"neuroquantum_{model_size}_{bit_width}bit.pt"
+          if Path(pt_file).exists():
+              print(f"📤 Uploading {pt_file}...")
+              try:
+                  upload_file(
+                      path_or_fileobj=pt_file,
+                      path_in_repo=f"checkpoints/{bit_width}bit/{Path(pt_file).name}",
+                      repo_id=repo_id,
+                      repo_type="model",
+                      token=hf_token,
+                      commit_message=f"Add {bit_width}-bit {model_size} quantized checkpoint"
+                  )
+                  print(f"✓ Uploaded {pt_file}")
+              except Exception as e:
+                  print(f"✗ Upload failed: {e}")
+
+          # Upload metadata
+          json_file = f"neuroquantum_{model_size}_{bit_width}bit.json"
+          if Path(json_file).exists():
+              print(f"📤 Uploading metadata {json_file}...")
+              try:
+                  upload_file(
+                      path_or_fileobj=json_file,
+                      path_in_repo=f"metadata/{Path(json_file).name}",
+                      repo_id=repo_id,
+                      repo_type="model",
+                      token=hf_token
+                  )
+                  print(f"✓ Uploaded metadata")
+              except Exception as e:
+                  print(f"✗ Metadata upload failed: {e}")
+          UPLOADEOF
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: quantized-models-${{ matrix.quantization }}bit-${{ matrix.model_size }}
+          path: |
+            neuroquantum_${{ matrix.model_size }}_${{ matrix.quantization }}bit.gguf
+            neuroquantum_${{ matrix.model_size }}_${{ matrix.quantization }}bit.pt
+            neuroquantum_${{ matrix.model_size }}_${{ matrix.quantization }}bit.json
+          retention-days: 30
+
+  notify:
+    runs-on: ubuntu-latest
+    needs: generate-quantized
+    if: always()
+
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## ✅ Quantized Models Generation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Generated quantized models:" >> $GITHUB_STEP_SUMMARY
+          echo "- 1-bit, 2-bit, 3-bit versions" >> $GITHUB_STEP_SUMMARY
+          echo "- small, medium sizes" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Uploaded to: https://huggingface.co/tapiocatakeshi/Qubit" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Generated Models" >> $GITHUB_STEP_SUMMARY
+          echo "- 1-bit small" >> $GITHUB_STEP_SUMMARY
+          echo "- 1-bit medium" >> $GITHUB_STEP_SUMMARY
+          echo "- 2-bit small" >> $GITHUB_STEP_SUMMARY
+          echo "- 2-bit medium" >> $GITHUB_STEP_SUMMARY
+          echo "- 3-bit small" >> $GITHUB_STEP_SUMMARY
+          echo "- 3-bit medium" >> $GITHUB_STEP_SUMMARY

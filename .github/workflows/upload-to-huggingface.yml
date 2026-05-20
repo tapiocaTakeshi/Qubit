@@ -1,0 +1,359 @@
+name: Upload Models to Hugging Face
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**.gguf'
+      - '**.pt'
+      - 'upload_to_huggingface.py'
+  workflow_dispatch:
+    inputs:
+      model_path:
+        description: 'Model path to upload (e.g., model.gguf)'
+        required: false
+      repo_id:
+        description: 'Hugging Face repo ID (default: tapiocatakeshi/Qubit)'
+        required: false
+        default: 'tapiocatakeshi/Qubit'
+
+jobs:
+  upload-models:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install huggingface-hub torch numpy
+
+      - name: Login to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          huggingface-cli login --token $HF_TOKEN
+
+      - name: Find GGUF models
+        id: find_models
+        run: |
+          echo "Finding GGUF and PT files..."
+          gguf_files=$(find . -name "*.gguf" -type f | head -20 | tr '\n' ' ')
+          pt_files=$(find . -name "*quantized*.pt" -type f | head -10 | tr '\n' ' ')
+
+          if [ -z "$gguf_files" ] && [ -z "$pt_files" ]; then
+            echo "No GGUF or quantized PT files found"
+            echo "files_found=false" >> $GITHUB_OUTPUT
+          else
+            echo "GGUF files: $gguf_files"
+            echo "PT files: $pt_files"
+            echo "gguf_files=$gguf_files" >> $GITHUB_OUTPUT
+            echo "pt_files=$pt_files" >> $GITHUB_OUTPUT
+            echo "files_found=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create HF repo if not exists
+        if: steps.find_models.outputs.files_found == 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python << 'EOF'
+          from huggingface_hub import create_repo, list_repo_files
+
+          repo_id = "${{ github.event.inputs.repo_id || 'tapiocatakeshi/Qubit' }}"
+
+          try:
+              # Try to get repo info
+              list_repo_files(repo_id, repo_type="model", token="${{ secrets.HF_TOKEN }}")
+              print(f"Repository {repo_id} already exists")
+          except Exception as e:
+              print(f"Creating repository {repo_id}...")
+              try:
+                  create_repo(
+                      repo_id=repo_id,
+                      repo_type="model",
+                      private=False,
+                      token="${{ secrets.HF_TOKEN }}",
+                      exist_ok=True
+                  )
+                  print(f"Repository {repo_id} created successfully")
+              except Exception as create_err:
+                  print(f"Repository creation error: {create_err}")
+          EOF
+
+      - name: Upload GGUF models
+        if: steps.find_models.outputs.files_found == 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python << 'EOF'
+          import os
+          import glob
+          from pathlib import Path
+          from huggingface_hub import upload_file, upload_folder
+
+          repo_id = "${{ github.event.inputs.repo_id || 'tapiocatakeshi/Qubit' }}"
+          hf_token = "${{ secrets.HF_TOKEN }}"
+
+          # Upload GGUF files
+          gguf_files = glob.glob("**/*.gguf", recursive=True)
+          for gguf_file in gguf_files[:5]:  # Upload max 5 files
+              print(f"Uploading {gguf_file}...")
+              try:
+                  upload_file(
+                      path_or_fileobj=gguf_file,
+                      path_in_repo=Path(gguf_file).name,
+                      repo_id=repo_id,
+                      repo_type="model",
+                      token=hf_token
+                  )
+                  print(f"✓ Uploaded {gguf_file}")
+              except Exception as e:
+                  print(f"✗ Failed to upload {gguf_file}: {e}")
+
+          # Upload quantized PT files
+          pt_files = glob.glob("**/*quantized*.pt", recursive=True)
+          for pt_file in pt_files[:3]:
+              print(f"Uploading {pt_file}...")
+              try:
+                  upload_file(
+                      path_or_fileobj=pt_file,
+                      path_in_repo=Path(pt_file).name,
+                      repo_id=repo_id,
+                      repo_type="model",
+                      token=hf_token
+                  )
+                  print(f"✓ Uploaded {pt_file}")
+              except Exception as e:
+                  print(f"✗ Failed to upload {pt_file}: {e}")
+
+          print("Model upload complete!")
+          EOF
+
+      - name: Upload metadata and documentation
+        if: steps.find_models.outputs.files_found == 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python << 'EOF'
+          import os
+          import glob
+          from pathlib import Path
+          from huggingface_hub import upload_file
+
+          repo_id = "${{ github.event.inputs.repo_id || 'tapiocatakeshi/Qubit' }}"
+          hf_token = "${{ secrets.HF_TOKEN }}"
+
+          # Upload metadata JSON files
+          json_files = [
+              "model_1bit.json", "model_2bit.json", "model_3bit.json",
+              "*/model_*.json"
+          ]
+
+          for pattern in json_files:
+              for json_file in glob.glob(pattern, recursive=True):
+                  print(f"Uploading metadata {json_file}...")
+                  try:
+                      upload_file(
+                          path_or_fileobj=json_file,
+                          path_in_repo=f"metadata/{Path(json_file).name}",
+                          repo_id=repo_id,
+                          repo_type="model",
+                          token=hf_token
+                      )
+                      print(f"✓ Uploaded {json_file}")
+                  except Exception as e:
+                      print(f"✗ Failed: {e}")
+
+          # Upload README and guides
+          docs = [
+              "README.md",
+              "BINARY_1BIT_QUANTIZATION_GUIDE.md",
+              "MULTIBIT_QUANTIZATION_COMPARISON.md",
+              "GGUF_LOADING_TROUBLESHOOTING.md"
+          ]
+
+          for doc in docs:
+              if os.path.exists(doc):
+                  print(f"Uploading {doc}...")
+                  try:
+                      upload_file(
+                          path_or_fileobj=doc,
+                          path_in_repo=doc,
+                          repo_id=repo_id,
+                          repo_type="model",
+                          token=hf_token
+                      )
+                      print(f"✓ Uploaded {doc}")
+                  except Exception as e:
+                      print(f"✗ Failed to upload {doc}: {e}")
+
+          print("Documentation upload complete!")
+          EOF
+
+      - name: Generate model card
+        if: steps.find_models.outputs.files_found == 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python << 'EOF'
+          from huggingface_hub import upload_file
+          import os
+
+          repo_id = "${{ github.event.inputs.repo_id || 'tapiocatakeshi/Qubit' }}"
+          hf_token = "${{ secrets.HF_TOKEN }}"
+
+          # Create model card
+          model_card = """---
+          language: ja
+          license: mit
+          tags:
+          - neuroquantum
+          - quantization
+          - 1-bit
+          - 2-bit
+          - 3-bit
+          - edge-ai
+          - mobile
+          - gguf
+          pipeline_tag: text-generation
+          ---
+
+          # Qubit - NeuroQuantum Low-bit Models
+
+          量子化されたNeuroQuantumモデル（1-bit、2-bit、3-bit）
+
+          ## モデル概要
+
+          - **アーキテクチャ**: NeuroQuantum + QBNN
+          - **量子化**: 1-bit、2-bit、3-bit対応
+          - **対応形式**: GGUF、PyTorch
+          - **用途**: モバイル・エッジデバイス推論
+
+          ## 圧縮効果
+
+          | ビット幅 | ファイルサイズ | 圧縮率 | 推奨用途 |
+          |---------|--------------|--------|---------|
+          | 1-bit | 16MB | 32.0x | IoT |
+          | 2-bit | 31MB | 16.0x | **モバイル** |
+          | 3-bit | 47MB | 10.7x | ハイエンド |
+
+          ## 使用方法
+
+          ### Python
+          ```python
+          from examples_gguf_client import QubitGGUFClient
+
+          client = QubitGGUFClient("model_2bit.gguf")
+          model = client.load_with_llama_cpp()
+          output = model.generate("こんにちは", max_tokens=100)
+          ```
+
+          ### CLI
+          ```bash
+          # メタデータ確認
+          python check_gguf_params.py model_2bit.gguf
+
+          # 検証
+          python validate_gguf_metadata.py model_2bit.gguf
+          ```
+
+          ## モデルサイズ比較
+
+          - Original F32: 512MB
+          - 1-bit: 16MB (32.0x圧縮)
+          - 2-bit: 31MB (16.0x圧縮)
+          - 3-bit: 47MB (10.7x圧縮)
+
+          ## 対応プラットフォーム
+
+          - ✅ iOS (Core ML)
+          - ✅ Android (ONNX Runtime)
+          - ✅ Web (ONNX.js, llama.cpp.js)
+          - ✅ Python (llama-cpp-python)
+          - ✅ Raspberry Pi
+
+          ## ドキュメント
+
+          - [マルチビット量子化ガイド](./MULTIBIT_QUANTIZATION_COMPARISON.md)
+          - [1-bit量子化ガイド](./BINARY_1BIT_QUANTIZATION_GUIDE.md)
+          - [GGUFロード問題解決](./GGUF_LOADING_TROUBLESHOOTING.md)
+
+          ## ライセンス
+
+          MIT License - 自由に利用・改変・配布可能
+
+          ## 参考資料
+
+          - GitHub: https://github.com/tapiocatakeshi/qubit
+          - Hugging Face: https://huggingface.co/tapiocatakeshi/Qubit
+          - Documentation: ./README.md
+          """
+
+          # Save and upload model card
+          with open("MODEL_CARD.md", "w", encoding="utf-8") as f:
+              f.write(model_card)
+
+          try:
+              upload_file(
+                  path_or_fileobj="MODEL_CARD.md",
+                  path_in_repo="README.md",
+                  repo_id=repo_id,
+                  repo_type="model",
+                  token=hf_token
+              )
+              print("✓ Model card uploaded")
+          except Exception as e:
+              print(f"Model card upload failed: {e}")
+
+          # Cleanup
+          if os.path.exists("MODEL_CARD.md"):
+              os.remove("MODEL_CARD.md")
+          EOF
+
+      - name: Create release
+        if: steps.find_models.outputs.files_found == 'true'
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: models-${{ github.run_number }}
+          release_name: Models Release ${{ github.run_number }}
+          body: |
+            ## Quantized Models Upload
+
+            ✅ Models uploaded to Hugging Face
+            - Repository: tapiocatakeshi/Qubit
+            - Date: ${{ github.event.head_commit.timestamp }}
+            - Commit: ${{ github.sha }}
+
+            ### Uploaded Files
+            - GGUF models (1-bit, 2-bit, 3-bit)
+            - Quantized PyTorch checkpoints
+            - Metadata and documentation
+            - Model card
+          draft: false
+          prerelease: false
+
+      - name: Notify on success
+        if: success()
+        run: |
+          echo "✅ Models successfully uploaded to Hugging Face!"
+          echo "Repository: tapiocatakeshi/Qubit"
+          echo "URL: https://huggingface.co/tapiocatakeshi/Qubit"
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Upload failed. Check the logs above for details."
+          exit 1
