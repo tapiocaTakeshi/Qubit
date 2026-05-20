@@ -67,7 +67,7 @@ class MultibitGGUFExporter:
         output_file: str,
         bit_width: int = 2,
         model_name: str = "NeuroQuantum",
-        model_size: str = "medium",
+        model_size: str = "2-bit",
         gguf_params: Optional[Dict] = None,
     ) -> bool:
         """マルチビット量子化チェックポイントをGGUFにエクスポート
@@ -77,7 +77,7 @@ class MultibitGGUFExporter:
             output_file: Output GGUF file path
             bit_width: Bit width (1, 2, or 3)
             model_name: Model name
-            model_size: Model size (small/medium/large)
+            model_size: Model size (1-bit/2-bit/3-bit)
             gguf_params: GGUF runtime parameters
 
         Returns:
@@ -259,8 +259,8 @@ def main():
     parser.add_argument(
         "--model-size",
         "-s",
-        default="medium",
-        choices=["small", "medium", "large"],
+        default="2-bit",
+        choices=["1-bit", "2-bit", "3-bit"],
         help="Model size",
     )
     parser.add_argument(

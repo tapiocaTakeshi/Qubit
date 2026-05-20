@@ -83,23 +83,23 @@ class SimpleQBNNDemo(nn.Module):
         return logits
 
 
-def create_demo_qbnn_checkpoint(output_file: str, size: str = "small"):
+def create_demo_qbnn_checkpoint(output_file: str, size: str = "1-bit"):
     """デモ用のQBNNチェックポイントを生成
 
     Args:
         output_file: 出力ファイルパス
-        size: モデルサイズ (small/medium/large)
+        size: モデルサイズ (1-bit/2-bit/3-bit)
     """
     print(f"🔨 Creating {size} QBNN checkpoint...")
 
     # サイズ別の設定
     configs = {
-        "small": {"embedding_dim": 128, "hidden_dim": 256, "num_layers": 4},
-        "medium": {"embedding_dim": 256, "hidden_dim": 512, "num_layers": 8},
-        "large": {"embedding_dim": 512, "hidden_dim": 1024, "num_layers": 12},
+        "1-bit": {"embedding_dim": 128, "hidden_dim": 256, "num_layers": 4},
+        "2-bit": {"embedding_dim": 256, "hidden_dim": 512, "num_layers": 8},
+        "3-bit": {"embedding_dim": 512, "hidden_dim": 1024, "num_layers": 12},
     }
 
-    config = configs.get(size, configs["small"])
+    config = configs.get(size, configs["1-bit"])
     model = SimpleQBNNDemo(**config)
 
     # ダミー入力で初期化
@@ -135,7 +135,7 @@ def test_single_conversion(checkpoint_file: str, output_dir: str = "test_gguf"):
         checkpoint_file,
         str(gguf_file),
         model_name="DemoQBNN",
-        model_size="small",
+        model_size="1-bit",
         quantization="Q4_K_M",
         preserve_quantum=True
     )
@@ -178,7 +178,7 @@ def test_multiple_quantizations(checkpoint_file: str, output_dir: str = "test_gg
             checkpoint_file,
             str(gguf_file),
             model_name="DemoQBNN",
-            model_size="small",
+            model_size="1-bit",
             quantization=quant,
             preserve_quantum=True
         )
@@ -274,7 +274,7 @@ def main():
 
     checkpoint_file = test_dir / "demo_qbnn_small.pt"
     if not checkpoint_file.exists():
-        create_demo_qbnn_checkpoint(str(checkpoint_file), size="small")
+        create_demo_qbnn_checkpoint(str(checkpoint_file), size="1-bit")
     else:
         print(f"✓ Checkpoint already exists: {checkpoint_file}")
 

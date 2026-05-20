@@ -227,9 +227,9 @@ def main():
     )
     parser.add_argument(
         "--model-size",
-        default="medium",
-        choices=["small", "medium", "large"],
-        help="Model size (default: medium)",
+        default="2-bit",
+        choices=["1-bit", "2-bit", "3-bit"],
+        help="Model size (default: 2-bit)",
     )
     parser.add_argument(
         "--device", default="cpu", choices=["cpu", "cuda"], help="Device to use"
@@ -244,7 +244,7 @@ def main():
 
     # モデル設定
     config_map = {
-        "small": {
+        "1-bit": {
             "vocab_size": 8000,
             "embed_dim": 256,
             "hidden_dim": 512,
@@ -252,7 +252,7 @@ def main():
             "num_layers": 3,
             "max_seq_len": 512,
         },
-        "medium": {
+        "2-bit": {
             "vocab_size": 32000,
             "embed_dim": 512,
             "hidden_dim": 1024,
@@ -260,7 +260,7 @@ def main():
             "num_layers": 6,
             "max_seq_len": 2048,
         },
-        "large": {
+        "3-bit": {
             "vocab_size": 32000,
             "embed_dim": 768,
             "hidden_dim": 2048,

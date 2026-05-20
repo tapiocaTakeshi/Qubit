@@ -400,19 +400,19 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
     return config
 
 
-def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> dict:
+def get_model_config_by_size(size: str = "2-bit", vocab_size: int = 32000) -> dict:
     """
-    モデルサイズ（xlarge, large, medium, small）に基づいて最適なニューロン数・モデル設定を返す。
+    モデルサイズ（4-bit, 3-bit, 2-bit, 1-bit）に基づいて最適なニューロン数・モデル設定を返す。
 
     Args:
-        size: モデルサイズ ("xlarge" | "large" | "medium" | "small")
+        size: モデルサイズ ("4-bit" | "3-bit" | "2-bit" | "1-bit")
         vocab_size: 語彙サイズ
 
     Returns:
         dict: モデル設定パラメータを含む辞書
     """
     SIZE_CONFIGS = {
-        "xlarge": {
+        "4-bit": {
             "embed_dim": 768,
             "hidden_dim": 2048,
             "num_heads": 12,
@@ -423,7 +423,7 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "batch_size": 16,
             "vocab_size": vocab_size,
         },
-        "large": {
+        "3-bit": {
             "embed_dim": 512,
             "hidden_dim": 1024,
             "num_heads": 8,
@@ -434,7 +434,7 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "batch_size": 8,
             "vocab_size": vocab_size,
         },
-        "medium": {
+        "2-bit": {
             "embed_dim": 128,
             "hidden_dim": 256,
             "num_heads": 4,
@@ -445,7 +445,7 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "batch_size": 1,
             "vocab_size": vocab_size,
         },
-        "small": {
+        "1-bit": {
             "embed_dim": 256,
             "hidden_dim": 512,
             "num_heads": 8,

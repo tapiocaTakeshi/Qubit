@@ -107,7 +107,7 @@ class TrainRequest(BaseModel):
     grad_accum_steps: int = 8
     warmup_steps: int = 100
     max_samples_per_dataset: int = 5000
-    model_size: str = "medium"  # "large" | "medium" | "small"
+    model_size: str = "2-bit"  # "3-bit" | "2-bit" | "1-bit"
 
 
 class TrainQARequest(BaseModel):
@@ -118,7 +118,7 @@ class TrainQARequest(BaseModel):
     grad_accum_steps: int = 4
     warmup_steps: int = 30
     max_samples_per_dataset: int = 1500
-    model_size: str = "medium"  # "large" | "medium" | "small"
+    model_size: str = "2-bit"  # "3-bit" | "2-bit" | "1-bit"
 
 
 class TrainMarkdownRequest(BaseModel):
@@ -127,7 +127,7 @@ class TrainMarkdownRequest(BaseModel):
     batch_size: int = 4
     grad_accum_steps: int = 4
     warmup_steps: int = 20
-    model_size: str = "medium"  # "large" | "medium" | "small"
+    model_size: str = "2-bit"  # "3-bit" | "2-bit" | "1-bit"
 
 
 class TrainSplitRequest(BaseModel):
@@ -147,7 +147,7 @@ class TrainSplitRequest(BaseModel):
     max_samples_per_dataset: int = 2000
     crafted_repeat: int = 20
     resume: bool = False
-    model_size: str = "medium"  # "large" | "medium" | "small"
+    model_size: str = "2-bit"  # "3-bit" | "2-bit" | "1-bit"
 
 
 class TrainDPORequest(BaseModel):
@@ -160,7 +160,7 @@ class TrainDPORequest(BaseModel):
     dpo_beta: float = 0.5
     grad_clip: float = 1.0
     max_samples_hf: int = 2000
-    model_size: str = "medium"  # "large" | "medium" | "small"
+    model_size: str = "2-bit"  # "3-bit" | "2-bit" | "1-bit"
 
 
 class TrainCombinedDPORequest(BaseModel):
@@ -177,7 +177,7 @@ class TrainCombinedDPORequest(BaseModel):
     dpo_grad_accum: int = 4
     dpo_beta: float = 0.5
     warmup_steps: int = 20
-    model_size: str = "medium"  # "large" | "medium" | "small"
+    model_size: str = "2-bit"  # "3-bit" | "2-bit" | "1-bit"
     grad_clip: float = 1.0
 
 
@@ -200,7 +200,7 @@ class RunPodTrainRequest(BaseModel):
     max_minutes_per_chunk: Optional[float] = None
     runpod_endpoint_id: Optional[str] = None  # override env var
     timeout: int = 86400
-    model_size: str = "medium"  # "large" | "medium" | "small"
+    model_size: str = "2-bit"  # "3-bit" | "2-bit" | "1-bit"
 
 
 class TrainSplitNextRequest(BaseModel):
@@ -216,7 +216,7 @@ class TrainSplitNextRequest(BaseModel):
     warmup_steps: int = 20
     max_samples_per_dataset: int = 2000
     crafted_repeat: int = 20
-    model_size: str = "medium"  # "large" | "medium" | "small"
+    model_size: str = "2-bit"  # "3-bit" | "2-bit" | "1-bit"
 
 
 class TrainSplitLearningRequest(BaseModel):
@@ -230,7 +230,7 @@ class TrainSplitLearningRequest(BaseModel):
     grad_accum_steps: int = 4
     warmup_steps: int = 20
     grad_clip: float = 1.0
-    model_size: str = "medium"  # "large" | "medium" | "small"
+    model_size: str = "2-bit"  # "3-bit" | "2-bit" | "1-bit"
     max_samples: int = 2000
     crafted_repeat: int = 10
     max_minutes: Optional[float] = None  # 最大学習時間（分）
@@ -249,7 +249,7 @@ class TrainStatusResponse(BaseModel):
 
 class GGUFGenerationRequest(BaseModel):
     architectures: list = ["neuroquantum", "qbnn"]
-    sizes: list = ["small", "medium", "large"]
+    sizes: list = ["1-bit", "2-bit", "3-bit"]
     output_dir: str = "gguf_models"
     device: str = "cpu"
     skip_checkpoint_cleanup: bool = False
@@ -265,7 +265,7 @@ class GGUFGenerationResponse(BaseModel):
 # Model loading
 # ========================================
 
-def apply_model_size_config(model_size: str = "medium"):
+def apply_model_size_config(model_size: str = "2-bit"):
     """Apply model size configuration to the global config dictionary."""
     global config
     size_config = get_model_config_by_size(model_size, vocab_size=config.get("vocab_size", 8000))
