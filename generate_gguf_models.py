@@ -31,7 +31,7 @@ except ImportError:
 class GGUFModelGenerator:
     """Generate GGUF format models for multiple sizes."""
 
-    MODEL_SIZES = ["small", "medium", "large"]
+    MODEL_SIZES = ["small", "medium", "large", "xlarge"]
     VOCAB_SIZE = 32000
     OUTPUT_DIR = "gguf_models"
 
@@ -74,25 +74,33 @@ class GGUFModelGenerator:
                     "vocab_size": self.VOCAB_SIZE,
                     "embedding_dim": 256,
                     "hidden_dim": 512,
-                    "num_layers": 6,
-                    "num_heads": 4,
-                    "max_seq_len": 512,
+                    "num_layers": 4,
+                    "num_heads": 8,
+                    "max_seq_len": 4096,
                 },
                 "medium": {
                     "vocab_size": self.VOCAB_SIZE,
-                    "embedding_dim": 512,
-                    "hidden_dim": 1024,
-                    "num_layers": 12,
-                    "num_heads": 8,
+                    "embedding_dim": 128,
+                    "hidden_dim": 256,
+                    "num_layers": 2,
+                    "num_heads": 4,
                     "max_seq_len": 1024,
                 },
                 "large": {
                     "vocab_size": self.VOCAB_SIZE,
+                    "embedding_dim": 512,
+                    "hidden_dim": 1024,
+                    "num_layers": 6,
+                    "num_heads": 8,
+                    "max_seq_len": 10000,
+                },
+                "xlarge": {
+                    "vocab_size": self.VOCAB_SIZE,
                     "embedding_dim": 768,
                     "hidden_dim": 2048,
-                    "num_layers": 24,
-                    "num_heads": 16,
-                    "max_seq_len": 2048,
+                    "num_layers": 12,
+                    "num_heads": 12,
+                    "max_seq_len": 16384,
                 },
             }
 
@@ -438,8 +446,8 @@ def main():
     parser.add_argument(
         "--sizes",
         nargs="+",
-        default=["small", "medium", "large"],
-        help="Model sizes to generate (default: small medium large)"
+        default=["small", "medium", "large", "xlarge"],
+        help="Model sizes to generate (default: small medium large xlarge)"
     )
     parser.add_argument(
         "--device",
