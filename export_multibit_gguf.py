@@ -19,6 +19,18 @@ except ImportError:
     GGUFWriter = None
 
 
+def get_bit_width_from_model_size(model_size: str) -> int:
+    """モデルサイズ名からビット幅を取得"""
+    size_to_bitwidth = {
+        "1-bit": 1,
+        "2-bit": 2,
+        "3-bit": 3,
+    }
+    if model_size not in size_to_bitwidth:
+        raise ValueError(f"Unknown model size: {model_size}. Choose from {list(size_to_bitwidth.keys())}")
+    return size_to_bitwidth[model_size]
+
+
 class MultibitGGUFExporter:
     """マルチビット量子化モデルをGGUF形式でエクスポート"""
 
@@ -86,6 +98,13 @@ class MultibitGGUFExporter:
         if not GGUFWriter:
             print("ERROR: gguf module not available")
             return False
+
+        # モデルサイズからビット幅を自動取得（デフォルト値の場合）
+        if bit_width == 2:  # default value
+            try:
+                bit_width = get_bit_width_from_model_size(model_size)
+            except ValueError:
+                pass  # model_sizeが無効な場合は元のbit_widthを使用
 
         if bit_width not in [1, 2, 3]:
             print(f"ERROR: Unsupported bit_width: {bit_width}")

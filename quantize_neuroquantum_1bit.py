@@ -21,6 +21,18 @@ from binary_quantization_1bit import (
 )
 
 
+def get_bit_width_from_model_size(model_size: str) -> int:
+    """モデルサイズ名からビット幅を取得"""
+    size_to_bitwidth = {
+        "1-bit": 1,
+        "2-bit": 2,
+        "3-bit": 3,
+    }
+    if model_size not in size_to_bitwidth:
+        raise ValueError(f"Unknown model size: {model_size}. Choose from {list(size_to_bitwidth.keys())}")
+    return size_to_bitwidth[model_size]
+
+
 class NeuroQuantum1BitQuantizer:
     """NeuroQuantumモデルを1-bit量子化する"""
 

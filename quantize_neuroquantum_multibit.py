@@ -20,6 +20,18 @@ from ternary_quantization_2bit import TernaryQuantizer
 from quaternary_quantization_3bit import QuaternaryQuantizer
 
 
+def get_bit_width_from_model_size(model_size: str) -> int:
+    """モデルサイズ名からビット幅を取得"""
+    size_to_bitwidth = {
+        "1-bit": 1,
+        "2-bit": 2,
+        "3-bit": 3,
+    }
+    if model_size not in size_to_bitwidth:
+        raise ValueError(f"Unknown model size: {model_size}. Choose from {list(size_to_bitwidth.keys())}")
+    return size_to_bitwidth[model_size]
+
+
 class NeuroQuantumMultiBitQuantizer:
     """NeuroQuantumをマルチビット量子化する"""
 
@@ -249,14 +261,6 @@ def main():
     )
     parser.add_argument("input_checkpoint", help="Input PyTorch checkpoint (.pt)")
     parser.add_argument(
-        "--bit-width",
-        "-b",
-        type=int,
-        default=2,
-        choices=[1, 2, 3],
-        help="Bit width for quantization (default: 2)",
-    )
-    parser.add_argument(
         "--output",
         "-o",
         help="Output checkpoint (default: auto-generated)",
@@ -280,6 +284,9 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # モデルサイズからビット幅を自動取得
+    args.bit_width = get_bit_width_from_model_size(args.model_size)
 
     # 比較モードの場合
     if args.compare:
