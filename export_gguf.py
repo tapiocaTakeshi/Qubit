@@ -3,6 +3,7 @@ import struct
 import numpy as np
 import sys
 import json
+from datetime import datetime
 from gguf import GGUFWriter, GGMLQuantizationType
 
 # Default GGUF runtime parameters
@@ -36,10 +37,14 @@ def pt_to_gguf(pt_file, out_file, quantization="Q4_K_M", gguf_params=None):
     # Initialize GGUFWriter with architecture name
     writer = GGUFWriter(out_file, "qbnn")
 
-    # Optional metadata
+    # Required metadata
     writer.add_name("QBNN Model")
     writer.add_description("Quantum Bit Neural Network Model by tapiocaTakeshi")
     writer.add_string("model.quantization", quantization)
+    writer.add_string("model.architecture", "qbnn")
+    writer.add_string("model.size", "unknown")
+    writer.add_string("model.created", datetime.now().isoformat())
+    writer.add_bool("model.is_quantum", True)
 
     # Add GGUF runtime parameters
     writer.add_int32("llm.context_length", gguf_params.get("n_ctx", 512))
