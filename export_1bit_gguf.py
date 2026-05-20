@@ -47,7 +47,7 @@ class BinaryGGUFExporter:
         checkpoint_path: str,
         output_file: str,
         model_name: str = "NeuroQuantum-1bit",
-        model_size: str = "2-bit",
+        model_size: str = "2B",
         gguf_params: Optional[Dict] = None,
     ) -> bool:
         """1-bit量子化チェックポイントをGGUFにエクスポート
@@ -56,7 +56,7 @@ class BinaryGGUFExporter:
             checkpoint_path: Input .pt checkpoint path
             output_file: Output GGUF file path
             model_name: Model name
-            model_size: Model size (1-bit/2-bit/3-bit)
+            model_size: Model size (1B/2B/3B)
             gguf_params: GGUF runtime parameters
 
         Returns:
@@ -222,8 +222,8 @@ def main():
     parser.add_argument(
         "--model-size",
         "-s",
-        default="2-bit",
-        choices=["1-bit", "2-bit", "3-bit"],
+        default="2B",
+        choices=["1B", "2B", "3B"],
         help="Model size",
     )
     parser.add_argument(

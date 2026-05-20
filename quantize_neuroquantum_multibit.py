@@ -23,9 +23,9 @@ from quaternary_quantization_3bit import QuaternaryQuantizer
 def get_bit_width_from_model_size(model_size: str) -> int:
     """モデルサイズ名からビット幅を取得"""
     size_to_bitwidth = {
-        "1-bit": 1,
-        "2-bit": 2,
-        "3-bit": 3,
+        "1B": 1,
+        "2B": 2,
+        "3B": 3,
     }
     if model_size not in size_to_bitwidth:
         raise ValueError(f"Unknown model size: {model_size}. Choose from {list(size_to_bitwidth.keys())}")
@@ -180,7 +180,7 @@ class NeuroQuantumMultiBitQuantizer:
         print(f"   Metadata: {metadata_path}")
 
 
-def compare_quantizations(model_path: str, model_size: str = "2-bit"):
+def compare_quantizations(model_path: str, model_size: str = "2B"):
     """異なるビット幅の量子化を比較"""
     print("\n" + "=" * 70)
     print("MULTI-BIT QUANTIZATION COMPARISON")
@@ -188,7 +188,7 @@ def compare_quantizations(model_path: str, model_size: str = "2-bit"):
 
     # モデルをロード
     config_map = {
-        "1-bit": {
+        "1B": {
             "vocab_size": 8000,
             "embed_dim": 256,
             "hidden_dim": 512,
@@ -196,7 +196,7 @@ def compare_quantizations(model_path: str, model_size: str = "2-bit"):
             "num_layers": 3,
             "max_seq_len": 512,
         },
-        "2-bit": {
+        "2B": {
             "vocab_size": 32000,
             "embed_dim": 512,
             "hidden_dim": 1024,
@@ -204,7 +204,7 @@ def compare_quantizations(model_path: str, model_size: str = "2-bit"):
             "num_layers": 6,
             "max_seq_len": 2048,
         },
-        "3-bit": {
+        "3B": {
             "vocab_size": 32000,
             "embed_dim": 768,
             "hidden_dim": 2048,
@@ -267,8 +267,8 @@ def main():
     )
     parser.add_argument(
         "--model-size",
-        default="2-bit",
-        choices=["1-bit", "2-bit", "3-bit"],
+        default="2B",
+        choices=["1B", "2B", "3B"],
         help="Model size (default: 2-bit)",
     )
     parser.add_argument(
@@ -295,7 +295,7 @@ def main():
 
     # モデル設定
     config_map = {
-        "1-bit": {
+        "1B": {
             "vocab_size": 8000,
             "embed_dim": 256,
             "hidden_dim": 512,
@@ -303,7 +303,7 @@ def main():
             "num_layers": 3,
             "max_seq_len": 512,
         },
-        "2-bit": {
+        "2B": {
             "vocab_size": 32000,
             "embed_dim": 512,
             "hidden_dim": 1024,
@@ -311,7 +311,7 @@ def main():
             "num_layers": 6,
             "max_seq_len": 2048,
         },
-        "3-bit": {
+        "3B": {
             "vocab_size": 32000,
             "embed_dim": 768,
             "hidden_dim": 2048,

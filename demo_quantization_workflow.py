@@ -115,7 +115,7 @@ class QuantizationDemo:
         self.log("📱 Use Cases & Recommendations:", "info")
 
         use_cases = {
-            "1-bit": {
+            "1B": {
                 "environments": ["IoT devices", "Embedded systems", "Raspberry Pi"],
                 "file_size": "16 MB",
                 "accuracy": "75-90%",
@@ -129,7 +129,7 @@ class QuantizationDemo:
                 "speed": "5x faster",
                 "example": "python quantize_neuroquantum_multibit.py checkpoint.pt --bit-width 2"
             },
-            "3-bit": {
+            "3B": {
                 "environments": ["High-end phones", "Tablets", "Better accuracy"],
                 "file_size": "47 MB",
                 "accuracy": "95-98%",

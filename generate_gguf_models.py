@@ -31,7 +31,7 @@ except ImportError:
 class GGUFModelGenerator:
     """Generate GGUF format models for multiple sizes."""
 
-    MODEL_SIZES = ["1-bit", "2-bit", "3-bit", "4-bit"]
+    MODEL_SIZES = ["1B", "2B", "3B", "4B"]
     VOCAB_SIZE = 32000
     OUTPUT_DIR = "gguf_models"
 
@@ -83,7 +83,7 @@ class GGUFModelGenerator:
 
             # Size configurations
             size_configs = {
-                "1-bit": {
+                "1B": {
                     "vocab_size": self.VOCAB_SIZE,
                     "embedding_dim": 256,
                     "hidden_dim": 512,
@@ -91,7 +91,7 @@ class GGUFModelGenerator:
                     "num_heads": 8,
                     "max_seq_len": 4096,
                 },
-                "2-bit": {
+                "2B": {
                     "vocab_size": self.VOCAB_SIZE,
                     "embedding_dim": 128,
                     "hidden_dim": 256,
@@ -99,7 +99,7 @@ class GGUFModelGenerator:
                     "num_heads": 4,
                     "max_seq_len": 1024,
                 },
-                "3-bit": {
+                "3B": {
                     "vocab_size": self.VOCAB_SIZE,
                     "embedding_dim": 512,
                     "hidden_dim": 1024,
@@ -107,7 +107,7 @@ class GGUFModelGenerator:
                     "num_heads": 8,
                     "max_seq_len": 10000,
                 },
-                "4-bit": {
+                "4B": {
                     "vocab_size": self.VOCAB_SIZE,
                     "embedding_dim": 768,
                     "hidden_dim": 2048,
@@ -117,7 +117,7 @@ class GGUFModelGenerator:
                 },
             }
 
-            config = size_configs.get(size, size_configs["1-bit"])
+            config = size_configs.get(size, size_configs["1B"])
             model = EQBNNGenerativeAI(**config)
             return model.to(self.device)
         except ImportError:
@@ -364,7 +364,7 @@ class GGUFModelGenerator:
 
         Args:
             architectures: List of architectures to generate (default: ["neuroquantum", "qbnn"])
-            sizes: List of sizes to generate (default: ["1-bit", "2-bit", "3-bit"])
+            sizes: List of sizes to generate (default: ["1B", "2B", "3B"])
             quantization: Quantization type (default: "Q4_K_M")
             gguf_params: GGUF runtime parameters (uses defaults if not provided)
 
@@ -476,7 +476,7 @@ def main():
     parser.add_argument(
         "--sizes",
         nargs="+",
-        default=["1-bit", "2-bit", "3-bit", "4-bit"],
+        default=["1B", "2B", "3B", "4B"],
         help="Model sizes to generate (default: 1-bit 2-bit 3-bit 4-bit)"
     )
     parser.add_argument(

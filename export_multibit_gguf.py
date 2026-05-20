@@ -22,9 +22,9 @@ except ImportError:
 def get_bit_width_from_model_size(model_size: str) -> int:
     """モデルサイズ名からビット幅を取得"""
     size_to_bitwidth = {
-        "1-bit": 1,
-        "2-bit": 2,
-        "3-bit": 3,
+        "1B": 1,
+        "2B": 2,
+        "3B": 3,
     }
     if model_size not in size_to_bitwidth:
         raise ValueError(f"Unknown model size: {model_size}. Choose from {list(size_to_bitwidth.keys())}")
@@ -79,7 +79,7 @@ class MultibitGGUFExporter:
         output_file: str,
         bit_width: int = 2,
         model_name: str = "NeuroQuantum",
-        model_size: str = "2-bit",
+        model_size: str = "2B",
         gguf_params: Optional[Dict] = None,
     ) -> bool:
         """マルチビット量子化チェックポイントをGGUFにエクスポート
@@ -278,8 +278,8 @@ def main():
     parser.add_argument(
         "--model-size",
         "-s",
-        default="2-bit",
-        choices=["1-bit", "2-bit", "3-bit"],
+        default="2B",
+        choices=["1B", "2B", "3B"],
         help="Model size",
     )
     parser.add_argument(

@@ -206,7 +206,7 @@ class QBNNToGGUFConverter:
             pt_file: 入力 .pt ファイル
             gguf_file: 出力 .gguf ファイル
             model_name: モデル名
-            model_size: モデルサイズ (1-bit/2-bit/3-bit)
+            model_size: モデルサイズ (1B/2B/3B)
             quantization: 量子化タイプ (Q4_K_M/Q5_K_M/F32 など)
             preserve_quantum: 量子特性を保持するか
             gguf_params: GGUF runtime parameters (uses defaults if not provided)
@@ -388,7 +388,7 @@ def main():
     parser.add_argument("--model-name", "-n", default="Qubit-QBNN",
                        help="Model name (default: Qubit-QBNN)")
     parser.add_argument("--model-size", "-s", default="unknown",
-                       choices=["1-bit", "2-bit", "3-bit", "unknown"],
+                       choices=["1B", "2B", "3B", "unknown"],
                        help="Model size (default: unknown)")
     parser.add_argument("--quantization", "-q", default="Q4_K_M",
                        choices=["Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S",
