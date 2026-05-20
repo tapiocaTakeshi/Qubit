@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Dict, Optional
 from datetime import datetime
 
+import neuroquantum_layered
+
 try:
     from gguf import GGUFWriter
 except ImportError:
@@ -94,10 +96,8 @@ class MultibitGGUFExporter:
 
         print(f"📥 Loading checkpoint from {checkpoint_path}...")
 
-        try:
-            checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-        except Exception:
-            checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        torch.serialization.add_safe_globals([neuroquantum_layered.NeuroQuantumConfig])
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
 
         # 状態辞書を抽出
         if isinstance(checkpoint, dict):
