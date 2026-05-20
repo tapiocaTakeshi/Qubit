@@ -202,9 +202,6 @@ def compare_quantizations(model_path: str, model_size: str = "medium"):
         },
     }
 
-    config_dict = config_map[model_size]
-    config = NeuroQuantumConfig(**config_dict)
-
     checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
     if isinstance(checkpoint, dict):
         if "model_state_dict" in checkpoint:
@@ -213,6 +210,14 @@ def compare_quantizations(model_path: str, model_size: str = "medium"):
             state_dict = checkpoint
     else:
         state_dict = checkpoint
+
+    # チェックポイントから実際の max_seq_len を推論
+    config_dict = config_map[model_size]
+    if "position_embedding.weight" in state_dict:
+        actual_max_seq_len = state_dict["position_embedding.weight"].shape[0]
+        config_dict["max_seq_len"] = actual_max_seq_len
+
+    config = NeuroQuantumConfig(**config_dict)
 
     # 比較テーブルのヘッダー
     print("\n📊 Quantization Comparison:")
@@ -309,9 +314,6 @@ def main():
         },
     }
 
-    config_dict = config_map[args.model_size]
-    config = NeuroQuantumConfig(**config_dict)
-
     # チェックポイントをロード
     print(f"📥 Loading model from {args.input_checkpoint}...")
     checkpoint = torch.load(args.input_checkpoint, map_location=args.device)
@@ -323,6 +325,14 @@ def main():
             state_dict = checkpoint
     else:
         state_dict = checkpoint
+
+    # チェックポイントから実際の max_seq_len を推論
+    config_dict = config_map[args.model_size]
+    if "position_embedding.weight" in state_dict:
+        actual_max_seq_len = state_dict["position_embedding.weight"].shape[0]
+        config_dict["max_seq_len"] = actual_max_seq_len
+
+    config = NeuroQuantumConfig(**config_dict)
 
     # モデルを初期化
     model = NeuroQuantum(config=config).to(args.device)
