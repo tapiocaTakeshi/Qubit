@@ -225,9 +225,11 @@ class GGUFModelGenerator:
             # Save all GGUF parameters as JSON for reference
             writer.add_string("model.gguf_params", json.dumps(self.gguf_params))
 
-            # Add quantum metadata if QBNN
+            # Add quantum metadata flag
+            writer.add_bool("model.is_quantum", bool(quantum_info))
+
+            # Add detailed quantum metadata if QBNN
             if quantum_info:
-                writer.add_bool("model.is_quantum", True)
                 if quantum_info["has_quantum_correlation"]:
                     writer.add_bool("model.has_quantum_correlation", True)
                 if quantum_info["has_entanglement"]:

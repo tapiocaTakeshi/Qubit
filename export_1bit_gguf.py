@@ -110,6 +110,7 @@ class BinaryGGUFExporter:
 
             # 量子化情報
             writer.add_bool("model.is_quantized", True)
+            writer.add_bool("model.is_quantum", False)
             writer.add_bool("model.is_binary", True)
             writer.add_int32("model.bit_width", 1)
 
