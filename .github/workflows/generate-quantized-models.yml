@@ -82,7 +82,7 @@ jobs:
 
           torch.save({
               'model_state_dict': model.state_dict(),
-              'config': config_dict,
+              'config': model_configs[size],
           }, f'neuroquantum_{size}_checkpoint.pt')
           print(f"✓ Created neuroquantum_{size}_checkpoint.pt")
           GENEOF
