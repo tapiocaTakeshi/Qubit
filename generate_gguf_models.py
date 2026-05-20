@@ -212,6 +212,7 @@ class GGUFModelGenerator:
             writer.add_string("model.architecture", architecture)
             writer.add_string("model.created", datetime.now().isoformat())
             writer.add_string("model.quantization", quantization)
+            writer.add_bool("model.is_quantum", architecture.lower() == "qbnn")
 
             # Add GGUF runtime parameters
             writer.add_int32("llm.context_length", self.gguf_params.get("n_ctx", 512))

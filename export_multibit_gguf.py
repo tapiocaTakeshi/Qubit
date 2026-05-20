@@ -142,6 +142,7 @@ class MultibitGGUFExporter:
 
             # 量子化情報
             writer.add_bool("model.is_quantized", True)
+            writer.add_bool("model.is_quantum", False)
             writer.add_int32("model.bit_width", bit_width)
 
             # ビット幅別の量子化レベル
