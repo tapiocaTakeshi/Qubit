@@ -17,9 +17,9 @@ on:
           - Q8_0
           - F32
       sizes:
-        description: "Model sizes (comma-separated: small,medium,large)"
+        description: "Model sizes (comma-separated: small,medium,large,xlarge)"
         required: true
-        default: "small"
+        default: "medium"
       repo_name:
         description: "Hugging Face repository name (e.g., username/qubit-q4-k-m)"
         required: true
