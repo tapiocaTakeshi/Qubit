@@ -35,17 +35,30 @@ class GGUFModelGenerator:
     VOCAB_SIZE = 32000
     OUTPUT_DIR = "gguf_models"
 
-    def __init__(self, output_dir: str = OUTPUT_DIR, device: str = "cpu"):
+    # Default GGUF runtime parameters
+    DEFAULT_GGUF_PARAMS = {
+        "n_ctx": 512,
+        "n_batch": 64,
+        "n_ubatch": 64,
+        "n_threads": 4,
+        "n_gpu_layers": 0,
+        "cache_type_k": "f16",
+        "cache_type_v": "f16"
+    }
+
+    def __init__(self, output_dir: str = OUTPUT_DIR, device: str = "cpu", gguf_params: Dict = None):
         """Initialize the GGUF generator.
 
         Args:
             output_dir: Directory to save GGUF models
             device: Device to use for model creation (cpu/cuda)
+            gguf_params: GGUF runtime parameters (uses defaults if not provided)
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
         self.device = device
         self.results = {}
+        self.gguf_params = gguf_params or self.DEFAULT_GGUF_PARAMS.copy()
 
     def create_neuroquantum_model(self, size: str) -> torch.nn.Module:
         """Create a NeuroQuantum model of specified size."""
@@ -200,6 +213,18 @@ class GGUFModelGenerator:
             writer.add_string("model.created", datetime.now().isoformat())
             writer.add_string("model.quantization", quantization)
 
+            # Add GGUF runtime parameters
+            writer.add_int32("llm.context_length", self.gguf_params.get("n_ctx", 512))
+            writer.add_int32("llm.batch_size", self.gguf_params.get("n_batch", 64))
+            writer.add_int32("llm.ubatch_size", self.gguf_params.get("n_ubatch", 64))
+            writer.add_int32("llm.threads", self.gguf_params.get("n_threads", 4))
+            writer.add_int32("llm.gpu_layers", self.gguf_params.get("n_gpu_layers", 0))
+            writer.add_string("llm.cache_type_k", self.gguf_params.get("cache_type_k", "f16"))
+            writer.add_string("llm.cache_type_v", self.gguf_params.get("cache_type_v", "f16"))
+
+            # Save all GGUF parameters as JSON for reference
+            writer.add_string("model.gguf_params", json.dumps(self.gguf_params))
+
             # Add quantum metadata if QBNN
             if quantum_info:
                 writer.add_bool("model.is_quantum", True)
@@ -332,17 +357,20 @@ class GGUFModelGenerator:
             return None
 
     def generate_all(self, architectures: list = None, sizes: list = None,
-                     quantization: str = "Q4_K_M") -> Dict:
+                     quantization: str = "Q4_K_M", gguf_params: Dict = None) -> Dict:
         """Generate GGUF models for all specified architectures and sizes.
 
         Args:
             architectures: List of architectures to generate (default: ["neuroquantum", "qbnn"])
             sizes: List of sizes to generate (default: ["small", "medium", "large"])
             quantization: Quantization type (default: "Q4_K_M")
+            gguf_params: GGUF runtime parameters (uses defaults if not provided)
 
         Returns:
             Dictionary with generation results
         """
+        if gguf_params:
+            self.gguf_params = gguf_params
         if architectures is None:
             architectures = ["neuroquantum", "qbnn"]
         if sizes is None:
@@ -465,8 +493,23 @@ def main():
         choices=["Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q6_K", "Q8_0", "F32", "F16"],
         help="Quantization type (default: Q4_K_M)"
     )
+    parser.add_argument(
+        "--gguf-params",
+        type=str,
+        help="GGUF runtime parameters as JSON (e.g., '{\"n_ctx\": 512, \"n_batch\": 64}')"
+    )
 
     args = parser.parse_args()
+
+    # Parse GGUF parameters if provided
+    gguf_params = None
+    if args.gguf_params:
+        try:
+            gguf_params = json.loads(args.gguf_params)
+            print(f"📋 Using custom GGUF parameters: {gguf_params}")
+        except json.JSONDecodeError as e:
+            print(f"❌ Error parsing GGUF parameters: {e}")
+            sys.exit(1)
 
     print("🚀 Qubit GGUF Model Generator")
     print(f"   Output: {args.output_dir}")
@@ -477,14 +520,16 @@ def main():
 
     generator = GGUFModelGenerator(
         output_dir=args.output_dir,
-        device=args.device
+        device=args.device,
+        gguf_params=gguf_params
     )
 
     # Generate all models
     generator.generate_all(
         architectures=args.architectures,
         sizes=args.sizes,
-        quantization=args.quantization
+        quantization=args.quantization,
+        gguf_params=gguf_params
     )
 
     # Print summary
