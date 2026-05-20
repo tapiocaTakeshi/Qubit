@@ -67,17 +67,30 @@ class QBNNQuantumMetadata:
 class QBNNToGGUFConverter:
     """QBNN から GGUF への変換"""
 
-    def __init__(self, output_dir: str = "gguf_models", device: str = "cpu"):
+    # Default GGUF runtime parameters
+    DEFAULT_GGUF_PARAMS = {
+        "n_ctx": 512,
+        "n_batch": 64,
+        "n_ubatch": 64,
+        "n_threads": 4,
+        "n_gpu_layers": 0,
+        "cache_type_k": "f16",
+        "cache_type_v": "f16"
+    }
+
+    def __init__(self, output_dir: str = "gguf_models", device: str = "cpu", gguf_params: Dict = None):
         """初期化
 
         Args:
             output_dir: 出力ディレクトリ
             device: 計算デバイス (cpu/cuda)
+            gguf_params: GGUF runtime parameters (uses defaults if not provided)
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True, parents=True)
         self.device = device
         self.quantum_metadata = QBNNQuantumMetadata()
+        self.gguf_params = gguf_params or self.DEFAULT_GGUF_PARAMS.copy()
 
     def extract_quantum_characteristics(
         self,
@@ -184,7 +197,8 @@ class QBNNToGGUFConverter:
         model_name: str = "Qubit-QBNN",
         model_size: str = "unknown",
         quantization: str = "Q4_K_M",
-        preserve_quantum: bool = True
+        preserve_quantum: bool = True,
+        gguf_params: Dict = None
     ) -> bool:
         """PyTorch モデルを GGUF 形式に変換
 
@@ -195,10 +209,13 @@ class QBNNToGGUFConverter:
             model_size: モデルサイズ (small/medium/large)
             quantization: 量子化タイプ (Q4_K_M/Q5_K_M/F32 など)
             preserve_quantum: 量子特性を保持するか
+            gguf_params: GGUF runtime parameters (uses defaults if not provided)
 
         Returns:
             成功したら True、失敗したら False
         """
+        if gguf_params:
+            self.gguf_params = gguf_params
         if not GGUFWriter:
             print("ERROR: gguf module not available")
             return False
@@ -239,6 +256,18 @@ class QBNNToGGUFConverter:
             writer.add_string("model.architecture", "qbnn")
             writer.add_string("model.quantization", quantization)
             writer.add_string("model.created", datetime.now().isoformat())
+
+            # Add GGUF runtime parameters (used by llama.cpp and compatible loaders)
+            writer.add_int32("llm.context_length", self.gguf_params.get("n_ctx", 512))
+            writer.add_int32("llm.batch_size", self.gguf_params.get("n_batch", 64))
+            writer.add_int32("llm.ubatch_size", self.gguf_params.get("n_ubatch", 64))
+            writer.add_int32("llm.threads", self.gguf_params.get("n_threads", 4))
+            writer.add_int32("llm.gpu_layers", self.gguf_params.get("n_gpu_layers", 0))
+            writer.add_string("llm.cache_type_k", self.gguf_params.get("cache_type_k", "f16"))
+            writer.add_string("llm.cache_type_v", self.gguf_params.get("cache_type_v", "f16"))
+
+            # Save all GGUF parameters as JSON for reference
+            writer.add_string("model.gguf_params", json.dumps(self.gguf_params))
 
             # 量子特性メタデータを追加
             if preserve_quantum:
