@@ -774,9 +774,45 @@ python export_gguf.py
 
 ### 9.7. Hugging Faceへのアップロード (Upload to Hugging Face Hub)
 
+#### 9.7.1 GitHub Actions での自動アップロード
+
+GGUFモデルはGitHub Actionsで自動生成および Hugging Face にアップロードできます。
+
+**事前設定（初回のみ）:**
+
+1. GitHub リポジトリの Settings に移動
+2. **Secrets and variables** → **Actions** をクリック
+3. **New repository secret** をクリック
+4. 以下のシークレットを追加：
+   - **Name**: `HF_TOKEN`
+   - **Value**: Hugging Face API トークン（[Settings → Access Tokens](https://huggingface.co/settings/tokens)で取得）
+
+**自動アップロード方法:**
+
 生成したGGUFモデルをHugging Face Hubに直接アップロードできます。
 
-#### 前提条件
+**ワークフロー実行方法:**
+
+GitHub Actions ページから手動実行：
+
+1. リポジトリの **Actions** タブをクリック
+2. **"Generate and Upload GGUF to Hugging Face"** をクリック
+3. **Run workflow** をクリック
+4. 以下のオプションを指定：
+   - **Quantization**: Q4_K_M (推奨), Q5_K_M など
+   - **Sizes**: `small,medium,large,xlarge` など
+   - **Skip upload**: チェックなし（アップロードを実行）
+
+**自動トリガー:**
+
+- `main` ブランチにプッシュされ、モデルファイルが変更された場合
+- 自動的にGGUFを生成して Hugging Face にアップロード
+
+#### 9.7.2 ローカルコマンドでのアップロード
+
+ローカル環境から手動でアップロード（Python スクリプト使用）
+
+**前提条件:**
 
 1. Hugging Faceアカウント作成（https://huggingface.co）
 2. APIトークン取得（Settings → Access Tokens）
@@ -786,30 +822,33 @@ python export_gguf.py
 pip install huggingface-hub
 ```
 
-#### アップロード手順
-
-**1. Hugging Faceトークンを設定:**
+**ステップ1: Hugging Faceトークンを設定**
 
 ```bash
 # 環境変数で設定（推奨）
-export HF_TOKEN="your_huggingface_token"
-
-# または、スクリプト実行時に指定
+export HF_TOKEN="hf_your_token_here"
 ```
 
-**2. GGUFモデルをアップロード:**
+**ステップ2: GGUFモデルを生成**
 
 ```bash
-# デフォルト（公開リポジトリ）
+python generate_gguf_models.py --quantization Q4_K_M --sizes small,medium,large,xlarge
+```
+
+**ステップ3: Hugging Face にアップロード**
+
+```bash
+# tapiocaTakeshi/Qubit リポジトリにアップロード
 python upload_to_huggingface.py \
-    --repo-name "username/qubit-q4-k-m" \
+    --repo-name "tapiocaTakeshi/Qubit" \
     --gguf-path "gguf_models/neuroquantum_small_Q4_K_M.gguf"
 
-# プライベートリポジトリで作成
-python upload_to_huggingface.py \
-    --repo-name "username/qubit-q4-k-m" \
-    --gguf-path "gguf_models/neuroquantum_small_Q4_K_M.gguf" \
-    --private
+# すべてのGGUFファイルをアップロード
+for file in gguf_models/*.gguf; do
+    python upload_to_huggingface.py \
+        --repo-name "tapiocaTakeshi/Qubit" \
+        --gguf-path "$file"
+done
 ```
 
 #### アップロードスクリプトの機能
