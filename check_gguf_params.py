@@ -60,7 +60,8 @@ def check_gguf_file(gguf_path: str, verbose: bool = True) -> Optional[Dict[str, 
 
     for field_name, label in fields:
         try:
-            value = reader.get_field(field_name).strings[0]
+            field = reader.get_field(field_name)
+            value = field.contents() if hasattr(field, 'contents') and callable(field.contents) else field.strings[0]
             model_info[label.lower()] = value
             if verbose:
                 print(f"   {label}: {value}")
@@ -82,7 +83,8 @@ def check_gguf_file(gguf_path: str, verbose: bool = True) -> Optional[Dict[str, 
 
     for field_name, label, key in params:
         try:
-            value = reader.get_field(field_name).ints[0]
+            field = reader.get_field(field_name)
+            value = field.contents() if hasattr(field, 'contents') and callable(field.contents) else field.ints[0]
             runtime_params[key] = value
             if verbose:
                 print(f"   {label}: {value}")
@@ -99,7 +101,8 @@ def check_gguf_file(gguf_path: str, verbose: bool = True) -> Optional[Dict[str, 
 
     for field_name, label in cache_fields:
         try:
-            value = reader.get_field(field_name).strings[0]
+            field = reader.get_field(field_name)
+            value = field.contents() if hasattr(field, 'contents') and callable(field.contents) else field.strings[0]
             cache_types[label.lower()] = value
             if verbose:
                 print(f"   {label}: {value}")
@@ -123,12 +126,12 @@ def check_gguf_file(gguf_path: str, verbose: bool = True) -> Optional[Dict[str, 
     for field_name, label, field_type in quantum_fields:
         try:
             field = reader.get_field(field_name)
-            if field_type == "bools" and hasattr(field, 'bools'):
-                value = field.bools[0]
+            if field_type == "bools" and (hasattr(field, 'bools') or hasattr(field, 'contents')):
+                value = field.contents() if hasattr(field, 'contents') and callable(field.contents) else field.bools[0]
                 if value:
                     has_quantum = True
-            elif field_type == "ints" and hasattr(field, 'ints'):
-                value = field.ints[0]
+            elif field_type == "ints" and (hasattr(field, 'ints') or hasattr(field, 'contents')):
+                value = field.contents() if hasattr(field, 'contents') and callable(field.contents) else field.ints[0]
                 has_quantum = True
             else:
                 continue
@@ -147,7 +150,8 @@ def check_gguf_file(gguf_path: str, verbose: bool = True) -> Optional[Dict[str, 
         print("\n📊 Detailed Parameters (JSON):")
 
     try:
-        gguf_params_str = reader.get_field("model.gguf_params").strings[0]
+        field = reader.get_field("model.gguf_params")
+        gguf_params_str = field.contents() if hasattr(field, 'contents') and callable(field.contents) else field.strings[0]
         gguf_params_json = json.loads(gguf_params_str)
         if verbose:
             print(json.dumps(gguf_params_json, indent=2))
@@ -161,7 +165,8 @@ def check_gguf_file(gguf_path: str, verbose: bool = True) -> Optional[Dict[str, 
         print("\n⚛️  Quantum Metadata (JSON):")
 
     try:
-        quantum_meta_str = reader.get_field("model.quantum_metadata").strings[0]
+        field = reader.get_field("model.quantum_metadata")
+        quantum_meta_str = field.contents() if hasattr(field, 'contents') and callable(field.contents) else field.strings[0]
         quantum_metadata = json.loads(quantum_meta_str)
         if verbose:
             print(json.dumps(quantum_metadata, indent=2))
@@ -202,7 +207,8 @@ def diagnose_gguf_compatibility(gguf_path: str) -> None:
 
     # アーキテクチャ確認
     try:
-        arch = reader.get_field("model.architecture").strings[0]
+        field = reader.get_field("model.architecture")
+        arch = field.contents() if hasattr(field, 'contents') and callable(field.contents) else field.strings[0]
         print(f"\n📦 Architecture: {arch}")
 
         supported_archs = ["llama", "mistral", "gemma", "phi", "qwen"]
@@ -216,7 +222,8 @@ def diagnose_gguf_compatibility(gguf_path: str) -> None:
 
     # GPU レイヤー確認
     try:
-        n_gpu_layers = reader.get_field("llm.gpu_layers").ints[0]
+        field = reader.get_field("llm.gpu_layers")
+        n_gpu_layers = field.contents() if hasattr(field, 'contents') and callable(field.contents) else field.ints[0]
         print(f"\n🎮 GPU Configuration:")
         print(f"   GPU Layers: {n_gpu_layers}")
 
@@ -243,7 +250,8 @@ def diagnose_gguf_compatibility(gguf_path: str) -> None:
 
     # コンテキスト長確認
     try:
-        n_ctx = reader.get_field("llm.context_length").ints[0]
+        field = reader.get_field("llm.context_length")
+        n_ctx = field.contents() if hasattr(field, 'contents') and callable(field.contents) else field.ints[0]
         print(f"\n📝 Context Configuration:")
         print(f"   Max Context Length: {n_ctx}")
 

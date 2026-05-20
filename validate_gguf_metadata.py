@@ -117,7 +117,8 @@ class GGUFMetadataValidator:
         """Check consistency between fields"""
         # Check if n_gpu_layers makes sense
         try:
-            n_gpu_layers = self.reader.get_field("llm.gpu_layers").ints[0]
+            field = self.reader.get_field("llm.gpu_layers")
+            n_gpu_layers = field.contents() if hasattr(field, 'contents') else field.ints[0]
             if n_gpu_layers < 0:
                 self.errors.append(f"❌ Invalid value for llm.gpu_layers: {n_gpu_layers} (should be >= 0)")
             elif n_gpu_layers == 0:
@@ -129,7 +130,8 @@ class GGUFMetadataValidator:
 
         # Check context length
         try:
-            n_ctx = self.reader.get_field("llm.context_length").ints[0]
+            field = self.reader.get_field("llm.context_length")
+            n_ctx = field.contents() if hasattr(field, 'contents') else field.ints[0]
             if n_ctx < 128:
                 self.warnings.append(f"⚠️  Small context length: {n_ctx} tokens")
             elif n_ctx > 32768:
@@ -139,8 +141,10 @@ class GGUFMetadataValidator:
 
         # Check batch size consistency
         try:
-            n_batch = self.reader.get_field("llm.batch_size").ints[0]
-            n_ubatch = self.reader.get_field("llm.ubatch_size").ints[0]
+            field_batch = self.reader.get_field("llm.batch_size")
+            field_ubatch = self.reader.get_field("llm.ubatch_size")
+            n_batch = field_batch.contents() if hasattr(field_batch, 'contents') else field_batch.ints[0]
+            n_ubatch = field_ubatch.contents() if hasattr(field_ubatch, 'contents') else field_ubatch.ints[0]
             if n_ubatch > n_batch:
                 self.warnings.append(
                     f"⚠️  ubatch_size ({n_ubatch}) > batch_size ({n_batch})"
@@ -153,17 +157,39 @@ class GGUFMetadataValidator:
         for field_name, (expected_type, _) in self.REQUIRED_FIELDS.items():
             try:
                 field = self.reader.get_field(field_name)
-                if expected_type == str and not hasattr(field, 'strings'):
-                    self.errors.append(f"❌ {field_name} should be string but isn't")
-                elif expected_type == int and not hasattr(field, 'ints'):
-                    self.errors.append(f"❌ {field_name} should be int but isn't")
-                elif expected_type == bool and not hasattr(field, 'bools'):
-                    self.errors.append(f"❌ {field_name} should be bool but isn't")
+
+                # Check using new API (types attribute)
+                if hasattr(field, 'types') and field.types:
+                    from gguf import GGUFValueType
+                    field_type = field.types[0]
+
+                    if expected_type == str and field_type != GGUFValueType.STRING:
+                        self.errors.append(f"❌ {field_name} should be string but isn't")
+                    elif expected_type == int and field_type not in (GGUFValueType.INT32, GGUFValueType.INT64, GGUFValueType.UINT32, GGUFValueType.UINT64):
+                        self.errors.append(f"❌ {field_name} should be int but isn't")
+                    elif expected_type == bool and field_type != GGUFValueType.BOOL:
+                        self.errors.append(f"❌ {field_name} should be bool but isn't")
+                else:
+                    # Fallback to old API
+                    if expected_type == str and not hasattr(field, 'strings'):
+                        self.errors.append(f"❌ {field_name} should be string but isn't")
+                    elif expected_type == int and not hasattr(field, 'ints'):
+                        self.errors.append(f"❌ {field_name} should be int but isn't")
+                    elif expected_type == bool and not hasattr(field, 'bools'):
+                        self.errors.append(f"❌ {field_name} should be bool but isn't")
             except:
                 pass
 
     def _get_field_value(self, field):
         """Extract value from GGUF field"""
+        try:
+            # Try new GGUF API (v0.x+)
+            if hasattr(field, 'contents') and callable(field.contents):
+                return field.contents()
+        except:
+            pass
+
+        # Fallback to old GGUF API
         if hasattr(field, 'strings') and field.strings:
             return field.strings[0]
         elif hasattr(field, 'ints') and field.ints:
