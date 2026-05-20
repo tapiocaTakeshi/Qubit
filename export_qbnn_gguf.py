@@ -401,8 +401,21 @@ def main():
                        help="Device for processing (default: cpu)")
     parser.add_argument("--preserve-quantum", action="store_true", default=True,
                        help="Preserve quantum characteristics (default: True)")
+    parser.add_argument("--gguf-params",
+                       type=str,
+                       help="GGUF runtime parameters as JSON (e.g., '{\"n_ctx\": 2048, \"n_gpu_layers\": 10}')")
 
     args = parser.parse_args()
+
+    # Parse GGUF parameters if provided
+    gguf_params = None
+    if args.gguf_params:
+        try:
+            gguf_params = json.loads(args.gguf_params)
+            print(f"   Custom GGUF Parameters: {gguf_params}")
+        except json.JSONDecodeError as e:
+            print(f"❌ Error parsing GGUF parameters: {e}")
+            exit(1)
 
     # 出力ファイル名を自動生成
     if not args.output_file:
@@ -416,14 +429,15 @@ def main():
     print(f"   Quantization: {args.quantization}")
     print(f"   Preserve Quantum: {args.preserve_quantum}\n")
 
-    converter = QBNNToGGUFConverter(output_dir=args.output_dir, device=args.device)
+    converter = QBNNToGGUFConverter(output_dir=args.output_dir, device=args.device, gguf_params=gguf_params)
     success = converter.convert_to_gguf(
         args.input_file,
         args.output_file,
         model_name=args.model_name,
         model_size=args.model_size,
         quantization=args.quantization,
-        preserve_quantum=args.preserve_quantum
+        preserve_quantum=args.preserve_quantum,
+        gguf_params=gguf_params
     )
 
     if success:
