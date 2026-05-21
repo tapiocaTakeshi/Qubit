@@ -123,12 +123,12 @@ class MultibitGGUFExporter:
         print(f"📝 Writing {bit_width}-bit GGUF to {output_file}...")
 
         try:
-            writer = GGUFWriter(output_file, "gemma")
+            writer = GGUFWriter(output_file, "qbnn")
 
             # メタデータを追加
             writer.add_name(f"{model_name} {model_size.capitalize()} ({bit_width}-bit)")
             writer.add_description(
-                f"Gemma {bit_width}-bit Quantized {model_name} for Edge/Mobile Devices"
+                f"QBNN {bit_width}-bit Quantized {model_name} for Edge/Mobile Devices"
             )
             writer.add_version("1.0")
             writer.add_author("tapiocaTakeshi - Qubit Project")
@@ -136,7 +136,7 @@ class MultibitGGUFExporter:
 
             # モデル固有のメタデータ
             writer.add_string("model.size", model_size)
-            writer.add_string("model.architecture", "gemma")
+            writer.add_string("model.architecture", "qbnn")
             writer.add_string("model.quantization", f"{bit_width}bit_lowbit")
             writer.add_string("model.created", datetime.now().isoformat())
 
