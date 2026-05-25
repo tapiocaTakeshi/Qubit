@@ -4,15 +4,14 @@ NeuroQuantum "small" モデルを日本語 OASST (kunishou/oasst1-chat-44k-ja)
 のみで学習し、チェックポイントを Hugging Face Hub にアップロードする。
 
 使い方:
-    # 1. 学習のみ (ローカル保存):
-    python train_small_oasst_ja.py --max-samples 3000 --epochs 3
+    # 1. 全サンプル学習 (デフォルト, 約 44k 件):
+    python train_small_oasst_ja.py --epochs 3
 
-    # 2. 学習 + HF アップロード:
+    # 2. 全サンプル学習 + HF アップロード:
     HF_TOKEN=hf_xxx python train_small_oasst_ja.py \
-        --max-samples 3000 --epochs 3 --upload \
-        --repo-id tapiocatakeshi/Qubit
+        --epochs 3 --upload --repo-id tapiocatakeshi/Qubit
 
-    # 3. 動作確認 (CPU でも数分):
+    # 3. 一部のみで動作確認 (CPU でも数分):
     python train_small_oasst_ja.py --max-samples 200 --epochs 1 --vocab-size 4000
 """
 import argparse
@@ -42,9 +41,12 @@ progress = ProgressLogger("train_small_oasst_ja")
 
 
 def extract_oasst_texts(ds, max_samples: int):
-    """oasst1-chat-44k-ja の `conversations` 列から会話テキストを取り出す。"""
+    """oasst1-chat-44k-ja の `conversations` 列から会話テキストを取り出す。
+
+    `max_samples <= 0` の場合はデータセット全件を使用する。
+    """
     texts = []
-    n = min(max_samples, len(ds))
+    n = len(ds) if max_samples is None or max_samples <= 0 else min(max_samples, len(ds))
     for row in ds.select(range(n)):
         conv = row.get("conversations")
         if not isinstance(conv, list):
@@ -177,7 +179,12 @@ def upload_checkpoint_to_hf(ckpt_path: str, repo_id: str, hf_token: str, tokeniz
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--max-samples", type=int, default=3000, help="OASST から使う最大サンプル数")
+    p.add_argument(
+        "--max-samples",
+        type=int,
+        default=0,
+        help="OASST から使う最大サンプル数。0 または負値で全件 (約 44k) を使用",
+    )
     p.add_argument("--epochs", type=int, default=3)
     p.add_argument("--lr", type=float, default=5e-4)
     p.add_argument("--vocab-size", type=int, default=32000)
@@ -204,6 +211,12 @@ def main():
     # ---- データセット読み込み ----
     progress.info(f"=== Loading {DATASET_ID} ===")
     ds = safe_load_dataset(DATASET_ID, split="train")
+    use_all = args.max_samples is None or args.max_samples <= 0
+    effective_max_samples = len(ds) if use_all else min(args.max_samples, len(ds))
+    progress.info(
+        f"Dataset size: {len(ds)} / using "
+        f"{'ALL ' + str(effective_max_samples) if use_all else effective_max_samples} samples"
+    )
     texts = extract_oasst_texts(ds, args.max_samples)
     progress.log_dataset_loaded(DATASET_ID, len(texts))
     if not texts:
@@ -276,7 +289,7 @@ def main():
         "training_log": training_log,
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "datasets": [DATASET_ID],
-        "max_samples": args.max_samples,
+        "max_samples": effective_max_samples,
         "epochs": args.epochs,
         "lr": args.lr,
     }
@@ -300,7 +313,7 @@ def main():
         "total_sequences": len(sequences),
         "parameters": n_params,
         "training_log": training_log,
-        "max_samples": args.max_samples,
+        "max_samples": effective_max_samples,
         "epochs": args.epochs,
         "lr": args.lr,
         "trained_at": datetime.now(timezone.utc).isoformat(),
