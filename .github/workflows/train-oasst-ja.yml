@@ -1,0 +1,112 @@
+name: Train NeuroQuantum small on OASST-ja
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_samples:
+        description: 'Max samples to use (0 = all ~44k)'
+        required: false
+        default: '0'
+      epochs:
+        description: 'Number of training epochs'
+        required: false
+        default: '1'
+      vocab_size:
+        description: 'SentencePiece vocab size'
+        required: false
+        default: '16000'
+      max_seq_len:
+        description: 'Max sequence length (override small default 4096)'
+        required: false
+        default: '1024'
+      batch_size:
+        description: 'Batch size (override small default 4)'
+        required: false
+        default: '4'
+      upload:
+        description: 'Upload checkpoint to Hugging Face Hub'
+        required: false
+        default: 'true'
+      repo_id:
+        description: 'Hugging Face repo ID'
+        required: false
+        default: 'tapiocatakeshi/Qubit'
+  push:
+    branches:
+      - 'claude/oasst-sample-training-**'
+    paths:
+      - 'train_small_oasst_ja.py'
+      - '.github/workflows/train-oasst-ja.yml'
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    # GitHub Actions hosted runners cap at 6h; training 44k samples on CPU may
+    # exceed this. Tune the workflow inputs (max_samples / epochs / max_seq_len)
+    # if you hit the limit.
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies (CPU PyTorch)
+        run: |
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip install numpy sentencepiece huggingface-hub datasets accelerate
+
+      - name: Validate HF token (if uploading)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          UPLOAD: ${{ inputs.upload || 'true' }}
+        run: |
+          if [ "$UPLOAD" = "true" ] && [ -z "$HF_TOKEN" ]; then
+            echo "::error::HF_TOKEN secret is not set. Add it under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - name: Train
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PYTHONUNBUFFERED: '1'
+          MAX_SAMPLES: ${{ inputs.max_samples || '0' }}
+          EPOCHS: ${{ inputs.epochs || '1' }}
+          VOCAB_SIZE: ${{ inputs.vocab_size || '16000' }}
+          MAX_SEQ_LEN: ${{ inputs.max_seq_len || '1024' }}
+          BATCH_SIZE: ${{ inputs.batch_size || '4' }}
+          UPLOAD: ${{ inputs.upload || 'true' }}
+          REPO_ID: ${{ inputs.repo_id || 'tapiocatakeshi/Qubit' }}
+        run: |
+          set -euo pipefail
+          ARGS=(
+            --max-samples "$MAX_SAMPLES"
+            --epochs "$EPOCHS"
+            --vocab-size "$VOCAB_SIZE"
+            --max-seq-len "$MAX_SEQ_LEN"
+            --batch-size "$BATCH_SIZE"
+            --repo-id "$REPO_ID"
+          )
+          if [ "$UPLOAD" = "true" ]; then
+            ARGS+=(--upload)
+          fi
+          echo "Running: python train_small_oasst_ja.py ${ARGS[*]}"
+          python train_small_oasst_ja.py "${ARGS[@]}"
+
+      - name: Upload checkpoint as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: neuroq-small-oasst-ja-checkpoint
+          path: |
+            neuroq_small_oasst_ja_checkpoint.pt
+            neuroq_small_oasst_ja_tokenizer.model
+            training_history_small_oasst_ja.json
+          if-no-files-found: warn
+          retention-days: 14
