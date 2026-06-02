@@ -1,0 +1,152 @@
+name: Generate and Upload GGUF to Hugging Face
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'neuroquantum_layered.py'
+      - 'qbnn_layered.py'
+      - 'generate_gguf_models.py'
+  workflow_dispatch:
+    inputs:
+      quantization:
+        description: "Quantization format"
+        required: true
+        default: "Q4_K_M"
+        type: choice
+        options:
+          - Q4_K_M
+          - Q4_K_S
+          - Q5_K_M
+          - Q5_K_S
+          - Q6_K
+          - Q8_0
+          - F32
+      sizes:
+        description: "Model sizes (comma-separated)"
+        required: true
+        default: "small,medium,large,xlarge"
+      skip_upload:
+        description: "Skip Hugging Face upload"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  generate-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch numpy gguf sentencepiece huggingface-hub
+
+      - name: 🔨 Generate GGUF models
+        run: |
+          QUANTIZATION="${{ github.event.inputs.quantization || 'Q4_K_M' }}"
+          SIZES="${{ github.event.inputs.sizes || 'small,medium,large,xlarge' }}"
+
+          echo "🚀 Generating GGUF models with quantization: $QUANTIZATION"
+          echo "📏 Sizes: $SIZES"
+
+          python generate_gguf_models.py \
+            --quantization "$QUANTIZATION" \
+            --sizes $SIZES \
+            --device cpu \
+            --output-dir gguf_models
+
+      - name: 📤 Upload to Hugging Face
+        if: ${{ !github.event.inputs.skip_upload }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          QUANTIZATION="${{ github.event.inputs.quantization || 'Q4_K_M' }}"
+          SIZES="${{ github.event.inputs.sizes || 'small,medium,large,xlarge' }}"
+          REPO_NAME="tapiocaTakeshi/Qubit"
+
+          if [ -z "$HF_TOKEN" ]; then
+            echo "⚠️  HF_TOKEN not configured. Skipping upload."
+            exit 0
+          fi
+
+          echo "📤 Uploading GGUF models to Hugging Face: $REPO_NAME"
+
+          # Upload each GGUF file
+          for gguf_file in gguf_models/*.gguf; do
+            if [ -f "$gguf_file" ]; then
+              filename=$(basename "$gguf_file")
+              echo "📤 Uploading: $filename"
+
+              huggingface-cli upload "$REPO_NAME" "$gguf_file" \
+                --repo-type model \
+                --commit-message "Add $filename [skip ci]"
+
+              if [ $? -eq 0 ]; then
+                echo "✅ Successfully uploaded: $filename"
+              else
+                echo "⚠️  Failed to upload: $filename"
+              fi
+            fi
+          done
+
+          # Upload manifest.json
+          if [ -f "gguf_models/manifest.json" ]; then
+            echo "📤 Uploading manifest.json..."
+            huggingface-cli upload "$REPO_NAME" "gguf_models/manifest.json" \
+              --repo-type model \
+              --commit-message "Update manifest.json [skip ci]"
+          fi
+
+          echo "✅ Upload complete!"
+
+      - name: 📊 Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gguf-models-${{ github.event.inputs.quantization || 'Q4_K_M' }}
+          path: gguf_models/
+          retention-days: 30
+
+      - name: 📝 Create summary
+        if: success()
+        run: |
+          QUANTIZATION="${{ github.event.inputs.quantization || 'Q4_K_M' }}"
+          SIZES="${{ github.event.inputs.sizes || 'small,medium,large,xlarge' }}"
+
+          echo "## ✅ GGUF Models Generated and Uploaded" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Generation Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Quantization**: \`$QUANTIZATION\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Sizes**: \`$SIZES\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Repository" >> $GITHUB_STEP_SUMMARY
+          echo "[tapiocaTakeshi/Qubit on Hugging Face](https://huggingface.co/tapiocaTakeshi/Qubit)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Generated Files" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          ls -lh gguf_models/*.gguf 2>/dev/null | awk '{print $9 " (" $5 ")"}' >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f "gguf_models/manifest.json" ]; then
+            echo "### 📋 Manifest" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+            cat gguf_models/manifest.json >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: ❌ Failure summary
+        if: failure()
+        run: |
+          echo "## ❌ GGUF Generation/Upload Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Please check the logs above for details." >> $GITHUB_STEP_SUMMARY
