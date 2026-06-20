@@ -123,7 +123,7 @@ class MultibitGGUFExporter:
         print(f"📝 Writing {bit_width}-bit GGUF to {output_file}...")
 
         try:
-            writer = GGUFWriter(output_file, "qbnn")
+            writer = GGUFWriter(output_file, "llama")
 
             # メタデータを追加
             writer.add_name(f"{model_name} {model_size.capitalize()} ({bit_width}-bit)")
@@ -136,7 +136,7 @@ class MultibitGGUFExporter:
 
             # モデル固有のメタデータ
             writer.add_string("model.size", model_size)
-            writer.add_string("model.architecture", "qbnn")
+            writer.add_string("model.architecture", "llama")
             writer.add_string("model.quantization", f"{bit_width}bit_lowbit")
             writer.add_string("model.created", datetime.now().isoformat())
 

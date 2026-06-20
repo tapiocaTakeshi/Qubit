@@ -35,13 +35,13 @@ def pt_to_gguf(pt_file, out_file, quantization="Q4_K_M", gguf_params=None):
 
     print(f"Writing GGUF to {out_file} with {quantization} quantization...")
     # Initialize GGUFWriter with architecture name
-    writer = GGUFWriter(out_file, "qbnn")
+    writer = GGUFWriter(out_file, "llama")
 
     # Required metadata
     writer.add_name("Qubit QBNN Model")
     writer.add_description("Quantum Binary Neural Network (QBNN) by tapiocaTakeshi")
     writer.add_string("model.quantization", quantization)
-    writer.add_string("model.architecture", "qbnn")
+    writer.add_string("model.architecture", "llama")
     writer.add_string("model.size", "unknown")
     writer.add_string("model.created", datetime.now().isoformat())
     writer.add_bool("model.is_quantum", True)

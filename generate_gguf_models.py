@@ -158,7 +158,7 @@ class GGUFModelGenerator:
         return quantum_info
 
     def pt_to_gguf(self, pt_file: str, gguf_file: str, model_name: str = "Qubit",
-                   model_size: str = "unknown", architecture: str = "neuroquantum",
+                   model_size: str = "unknown", architecture: str = "llama",
                    quantization: str = "Q4_K_M") -> bool:
         """Convert PyTorch model to GGUF format.
 
@@ -376,7 +376,7 @@ class GGUFModelGenerator:
         if gguf_params:
             self.gguf_params = gguf_params
         if architectures is None:
-            architectures = ["gemma"]
+            architectures = ["llama"]
         if sizes is None:
             sizes = self.MODEL_SIZES
 
@@ -472,8 +472,8 @@ def main():
     parser.add_argument(
         "--architectures",
         nargs="+",
-        default=["neuroquantum"],
-        help="Architectures to generate (default: neuroquantum). Use --architectures neuroquantum qbnn for both"
+        default=["llama"],
+        help="Architectures to generate (default: llama). Use --architectures llama qbnn for both"
     )
     parser.add_argument(
         "--sizes",
