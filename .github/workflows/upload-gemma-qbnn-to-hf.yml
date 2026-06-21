@@ -37,12 +37,66 @@ jobs:
 
       - name: 📥 Download GGUF artifacts
         if: github.event_name == 'workflow_run'
-        uses: actions/download-artifact@v4
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ github.event.workflow_run.id }}
-          name: gemma-qbnn-gguf-Q4_K_M
-          path: gguf_artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python << 'EOF'
+          import os
+          import json
+          import urllib.request
+          from pathlib import Path
+
+          # Get the workflow run ID
+          run_id = ${{ github.event.workflow_run.id }}
+          repo = "${{ github.repository }}"
+          token = os.getenv("GITHUB_TOKEN")
+
+          print(f"Downloading artifacts from run {run_id}...")
+
+          # Get artifacts for the run
+          url = f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/artifacts"
+          req = urllib.request.Request(url)
+          req.add_header("Authorization", f"token {token}")
+          req.add_header("Accept", "application/vnd.github.v3+json")
+
+          try:
+              with urllib.request.urlopen(req) as response:
+                  data = json.loads(response.read().decode())
+                  artifacts = data.get("artifacts", [])
+                  print(f"Found {len(artifacts)} artifact(s)")
+
+                  for artifact in artifacts:
+                      if "gemma" in artifact["name"].lower() and "gguf" in artifact["name"].lower():
+                          artifact_id = artifact["id"]
+                          artifact_name = artifact["name"]
+                          print(f"\n📥 Downloading {artifact_name} (ID: {artifact_id})...")
+
+                          # Download artifact
+                          download_url = f"https://api.github.com/repos/{repo}/actions/artifacts/{artifact_id}/zip"
+                          download_req = urllib.request.Request(download_url)
+                          download_req.add_header("Authorization", f"token {token}")
+                          download_req.add_header("Accept", "application/vnd.github.v3+json")
+
+                          Path("gguf_artifacts").mkdir(exist_ok=True)
+                          zip_path = f"gguf_artifacts/{artifact_name}.zip"
+
+                          with urllib.request.urlopen(download_req) as response:
+                              with open(zip_path, "wb") as f:
+                                  f.write(response.read())
+                          print(f"✓ Downloaded to {zip_path}")
+
+                          # Extract zip
+                          import zipfile
+                          with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                              zip_ref.extractall("gguf_artifacts")
+                          print(f"✓ Extracted {zip_path}")
+
+          except Exception as e:
+              print(f"✗ Error: {e}")
+              raise
+
+          print("\n✓ Artifact download complete")
+          EOF
 
       - name: 🔍 Find and list GGUF files
         run: |
