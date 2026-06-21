@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, get_model_config_by_size, NeuroQuantumTokenizer
 from qbnn_layered import EQBNNGenerativeAI
+from gemma_qbnn import GemmaQBNN, create_gemma_qbnn_model
 
 try:
     from gguf import GGUFWriter, GGMLQuantizationType
@@ -124,6 +125,20 @@ class GGUFModelGenerator:
             print(f"WARNING: EQBNNGenerativeAI not available for {size} model")
             return None
 
+    def create_gemma_qbnn_model(self, size: str) -> Optional[torch.nn.Module]:
+        """Create a Gemma-based model with an inserted QBNN layer.
+
+        The backbone is the Gemma-style NeuroQuantum transformer; a single
+        entangled QBNN layer (quantum correlation + entanglement) is inserted
+        before the final norm so the model genuinely carries quantum tensors.
+        """
+        try:
+            model = create_gemma_qbnn_model(size=size, vocab_size=self.VOCAB_SIZE)
+            return model.to(self.device)
+        except Exception as e:
+            print(f"WARNING: GemmaQBNN not available for {size} model: {e}")
+            return None
+
     def extract_quantum_characteristics_if_qbnn(self, state_dict: Dict, architecture: str) -> Dict:
         """Extract quantum characteristics for QBNN models.
 
@@ -134,7 +149,9 @@ class GGUFModelGenerator:
         Returns:
             Dictionary with quantum characteristics
         """
-        if architecture.lower() != "qbnn":
+        # Architectures that carry quantum tensors: pure QBNN and the
+        # Gemma+QBNN hybrid (Gemma backbone with an inserted QBNN layer).
+        if architecture.lower() not in ("qbnn", "gemma", "gemma_qbnn"):
             return {}
 
         quantum_info = {
@@ -154,6 +171,14 @@ class GGUFModelGenerator:
             if "theta" in name:
                 quantum_info["apqb_theta_count"] += 1
                 quantum_info["quantum_tensors"].append(name)
+
+        # No quantum tensors actually present -> not a quantum model.
+        if not (
+            quantum_info["has_quantum_correlation"]
+            or quantum_info["has_entanglement"]
+            or quantum_info["apqb_theta_count"] > 0
+        ):
+            return {}
 
         return quantum_info
 
@@ -194,8 +219,14 @@ class GGUFModelGenerator:
             # Extract quantum characteristics if QBNN
             quantum_info = self.extract_quantum_characteristics_if_qbnn(state_dict, architecture)
 
+            # The Gemma+QBNN hybrid is exported under the loadable "gemma"
+            # architecture string (llama.cpp compatible), while the inserted
+            # QBNN layer is recorded via dedicated metadata below.
+            is_gemma_qbnn = architecture.lower() in ("gemma", "gemma_qbnn")
+            gguf_arch = "gemma" if is_gemma_qbnn else architecture
+
             print(f"Writing GGUF to {gguf_file}...")
-            writer = GGUFWriter(gguf_file, architecture)
+            writer = GGUFWriter(gguf_file, gguf_arch)
 
             # Add metadata
             writer.add_name(f"{model_name} {model_size.capitalize()}")
@@ -209,9 +240,15 @@ class GGUFModelGenerator:
 
             # Add custom metadata
             writer.add_string("model.size", model_size)
-            writer.add_string("model.architecture", architecture)
+            writer.add_string("model.architecture", gguf_arch)
             writer.add_string("model.created", datetime.now().isoformat())
             writer.add_string("model.quantization", quantization)
+
+            # Record the Gemma+QBNN hybrid lineage explicitly.
+            if is_gemma_qbnn:
+                writer.add_string("model.base_architecture", "gemma")
+                writer.add_bool("model.qbnn_layer_added", True)
+                writer.add_string("model.variant", "gemma-qbnn")
 
             # Add GGUF runtime parameters
             writer.add_int32("llm.context_length", self.gguf_params.get("n_ctx", 512))
@@ -311,7 +348,8 @@ class GGUFModelGenerator:
         """Generate and save a model checkpoint.
 
         Args:
-            architecture: "gemma", "neuroquantum", or "qbnn"
+            architecture: "gemma"/"gemma_qbnn" (Gemma base + QBNN layer),
+                "neuroquantum", or "qbnn"
             size: Model size (small/medium/large)
 
         Returns:
@@ -321,8 +359,12 @@ class GGUFModelGenerator:
             print(f"\n🔨 Creating {architecture} {size} model...")
 
             model = None
-            if architecture.lower() == "gemma":
-                model = self.create_neuroquantum_model(size)
+            if architecture.lower() in ("gemma", "gemma_qbnn"):
+                # Gemma base + inserted QBNN layer
+                model = self.create_gemma_qbnn_model(size)
+                if model is None:
+                    print(f"   ⏭️  GemmaQBNN architecture not available, skipping...")
+                    return None
             elif architecture.lower() == "neuroquantum":
                 model = self.create_neuroquantum_model(size)
             elif architecture.lower() == "qbnn":
@@ -376,7 +418,7 @@ class GGUFModelGenerator:
         if gguf_params:
             self.gguf_params = gguf_params
         if architectures is None:
-            architectures = ["llama"]
+            architectures = ["gemma"]
         if sizes is None:
             sizes = self.MODEL_SIZES
 
@@ -472,8 +514,9 @@ def main():
     parser.add_argument(
         "--architectures",
         nargs="+",
-        default=["llama"],
-        help="Architectures to generate (default: llama). Use --architectures llama qbnn for both"
+        default=["gemma"],
+        help="Architectures to generate (default: gemma = Gemma base + QBNN layer). "
+             "Options: gemma, gemma_qbnn, neuroquantum, qbnn, llama"
     )
     parser.add_argument(
         "--sizes",
