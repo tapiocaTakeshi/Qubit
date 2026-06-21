@@ -3,4 +3,6 @@ __pycache__/
 neuroq_checkpoint.pt
 logs/
 gguf_models/
+!gguf_models/gemma_*.gguf
+!gguf_models/manifest.json
 *_checkpoint.pt
