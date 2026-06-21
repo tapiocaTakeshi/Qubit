@@ -1,0 +1,191 @@
+name: Generate Gemma-QBNN and Upload to HF
+
+on:
+  workflow_dispatch:
+    inputs:
+      quantization:
+        description: "Quantization format"
+        required: true
+        default: "Q4_K_M"
+        type: choice
+        options:
+          - Q4_K_M
+          - Q4_K_S
+          - Q5_K_M
+          - Q5_K_S
+          - Q6_K
+          - Q8_0
+          - F32
+      sizes:
+        description: "Model sizes (space or comma separated)"
+        required: true
+        default: "small medium large"
+      hf_repo:
+        description: "Hugging Face repo"
+        required: false
+        default: "tapiocatakeshi/Qubit-Gemma-QBNN"
+
+jobs:
+  generate-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch numpy gguf sentencepiece huggingface-hub
+
+      - name: 🔨 Generate Gemma-QBNN GGUF models
+        run: |
+          QUANTIZATION="${{ github.event.inputs.quantization || 'Q4_K_M' }}"
+          SIZES="${{ github.event.inputs.sizes || 'small medium large' }}"
+          # Normalize commas to spaces
+          SIZES="${SIZES//,/ }"
+
+          python generate_gguf_models.py \
+            --architectures gemma \
+            --quantization "$QUANTIZATION" \
+            --sizes $SIZES \
+            --device cpu \
+            --output-dir gguf_models
+
+      - name: 📋 List generated files
+        run: |
+          echo "=== Generated GGUF Files ==="
+          find gguf_models -type f
+          echo ""
+          echo "Total size:"
+          du -sh gguf_models/
+
+      - name: 🔐 Login to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python << 'EOF'
+          from huggingface_hub import login
+          import os
+
+          hf_token = os.getenv("HF_TOKEN")
+          if not hf_token:
+              raise ValueError("HF_TOKEN not set")
+          login(token=hf_token)
+          print("✓ Logged in to Hugging Face")
+          EOF
+
+      - name: 📤 Upload to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python << 'EOF'
+          import os
+          import glob
+          from pathlib import Path
+          from huggingface_hub import upload_file, create_repo, list_repo_files
+
+          hf_repo = "${{ github.event.inputs.hf_repo || 'tapiocatakeshi/Qubit-Gemma-QBNN' }}"
+          hf_token = os.getenv("HF_TOKEN")
+          quantization = "${{ github.event.inputs.quantization || 'Q4_K_M' }}"
+
+          print(f"🎯 Target HF repo: {hf_repo}")
+          print(f"📊 Quantization: {quantization}")
+
+          # Create repo if it doesn't exist
+          try:
+              list_repo_files(hf_repo, repo_type="model", token=hf_token)
+              print(f"✓ Repo {hf_repo} already exists")
+          except Exception as e:
+              print(f"Creating repo {hf_repo}...")
+              try:
+                  create_repo(
+                      repo_id=hf_repo,
+                      repo_type="model",
+                      private=False,
+                      token=hf_token,
+                      exist_ok=True
+                  )
+                  print(f"✓ Repo {hf_repo} created")
+              except Exception as create_err:
+                  print(f"⚠ Repo creation error: {create_err}")
+
+          # Find GGUF files
+          gguf_files = glob.glob("gguf_models/**/*.gguf", recursive=True)
+
+          if not gguf_files:
+              print("❌ No GGUF files found!")
+              exit(1)
+
+          print(f"\n📦 Found {len(gguf_files)} GGUF file(s) to upload")
+
+          # Upload all GGUF files
+          for gguf_file in gguf_files:
+              file_size_mb = os.path.getsize(gguf_file) / (1024 * 1024)
+              filename = Path(gguf_file).name
+              print(f"\n📤 Uploading: {filename} ({file_size_mb:.2f}MB)")
+              try:
+                  upload_file(
+                      path_or_fileobj=gguf_file,
+                      path_in_repo=filename,
+                      repo_id=hf_repo,
+                      repo_type="model",
+                      token=hf_token,
+                      commit_message=f"Add {filename} - Gemma-QBNN ({quantization})"
+                  )
+                  print(f"✓ Successfully uploaded {filename}")
+              except Exception as e:
+                  print(f"✗ Failed to upload {filename}: {e}")
+                  raise
+
+          # Upload manifest.json if exists
+          manifest_file = Path("gguf_models/manifest.json")
+          if manifest_file.exists():
+              print(f"\n📄 Uploading manifest")
+              try:
+                  upload_file(
+                      path_or_fileobj=str(manifest_file),
+                      path_in_repo="manifest.json",
+                      repo_id=hf_repo,
+                      repo_type="model",
+                      token=hf_token,
+                      commit_message=f"Update manifest.json - {quantization}"
+                  )
+                  print(f"✓ Uploaded manifest.json")
+              except Exception as e:
+                  print(f"⚠ Failed to upload manifest: {e}")
+
+          print("\n✨ Upload complete!")
+          EOF
+
+      - name: 📝 Create summary
+        if: success()
+        run: |
+          echo "## ✅ Gemma-QBNN Generated and Uploaded to HF" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository**: ${{ github.event.inputs.hf_repo || 'tapiocatakeshi/Qubit-Gemma-QBNN' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Generation Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Quantization**: ${{ github.event.inputs.quantization || 'Q4_K_M' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Sizes**: ${{ github.event.inputs.sizes || 'small medium large' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Uploaded Files" >> $GITHUB_STEP_SUMMARY
+          ls -lh gguf_models/*.gguf 2>/dev/null | awk '{print "- " $NF " (" $(NF-4) ")"}' >> $GITHUB_STEP_SUMMARY || echo "- (see logs for details)" >> $GITHUB_STEP_SUMMARY
+
+      - name: ❌ Failure summary
+        if: failure()
+        run: |
+          echo "## ❌ Generation or Upload Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Check logs above for error details." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Possible issues:**" >> $GITHUB_STEP_SUMMARY
+          echo "- HF_TOKEN secret not configured" >> $GITHUB_STEP_SUMMARY
+          echo "- Generation script failed" >> $GITHUB_STEP_SUMMARY
+          echo "- Network error during upload" >> $GITHUB_STEP_SUMMARY
