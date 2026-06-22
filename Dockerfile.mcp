@@ -1,0 +1,56 @@
+# QBNN Frontal Engine MCP Server - Docker Image
+# Usage: docker build -f Dockerfile.mcp -t qbnn-frontal-engine:latest .
+#        docker run -it qbnn-frontal-engine:latest
+
+FROM pytorch/pytorch:2.4.0-cuda12.4-runtime-ubuntu22.04
+
+WORKDIR /app
+
+# システムパッケージ更新
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python 依存パッケージ
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# 要件をコピーしてインストール
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# SentencePiece トークナイザー学習（オプション）
+COPY train_tokenizer.py .
+RUN python train_tokenizer.py 8000 /app 20000 || echo "Tokenizer already exists"
+
+# トークナイザーモデルと語彙（既存の場合）
+COPY neuroq_tokenizer.model .
+COPY neuroq_tokenizer.vocab .
+
+# QBNN コアコンポーネント
+COPY neuroquantum_layered.py .
+COPY qbnn_layered.py .
+
+# MCP サーバーとテスト
+COPY frontal_engine_mcp_server.py .
+COPY frontal_engine.mcp.json .
+COPY test_frontal_engine_light.py .
+
+# ユーティリティ
+COPY progress_logger.py .
+
+# ドキュメント
+COPY FRONTAL_ENGINE_README.md .
+
+# 環境変数
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+ENV MODEL_DIR=/app
+
+# ヘルスチェック
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "from frontal_engine_mcp_server import judge; judge.judge({'context': 'test', 'judgment_request': 'test'})" || exit 1
+
+# MCP サーバーを起動
+CMD ["python", "-u", "frontal_engine_mcp_server.py"]
