@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "qbnn-frontal-engine": {
+      "command": "python",
+      "args": ["/path/to/Qubit/frontal_engine_mcp_server.py"],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}

@@ -908,3 +908,55 @@ print(response)
 | A1等 GPU環境 | small, medium | コスト効率的 |
 | H100等 高性能GPU | large | 最大限のモデル容量活用 |
 
+---
+
+## 10. QBNN Frontal Engine MCP (Model Context Protocol)
+
+Qubitプロジェクトには、脳の前頭葉をシミュレートする**QBNN Frontal Engine**というMCPサーバーが含まれています。
+
+### 機能
+
+- 🧠 **意思決定**: 複数の選択肢から最適な選択を判断
+- ⚖️ **リスク評価**: 状況のリスクを定量的に評価
+- ✅ **品質判定**: 成果物の品質を客観的に判断
+- 🎯 **優先順位付け**: タスク間の優先度を判定
+- 📋 **倫理的判断**: 行動の倫理性や適切性を評価
+
+### 統合方法
+
+Claude DesktopおよびCursor IDEに統合可能です。詳細は以下を参照してください：
+
+- **[MCP統合ガイド](./MCP_INTEGRATION_GUIDE.md)** - Claude DesktopとCursor IDEへの統合手順
+- **[Frontal Engine ドキュメント](./FRONTAL_ENGINE_README.md)** - 機能仕様と使用例
+
+### クイックスタート
+
+```python
+from frontal_engine_mcp_server import judge
+
+result = judge({
+    "context": "プロジェクトは予定通り進行しており、品質基準をすべて満たしています。",
+    "judgment_request": "このプロジェクトをリリースしても安全か？"
+})
+
+print(result)
+# {
+#   "decision": "Yes",
+#   "score": 82,
+#   "reasoning": "指定された基準と文脈に基づいて...",
+#   "confidence": "high",
+#   "key_factors": [...],
+#   "timestamp": "..."
+# }
+```
+
+### テスト
+
+```bash
+# 基本テスト
+python test_frontal_engine.py
+
+# MCP統合テスト
+python test_mcp_server.py
+```
+
