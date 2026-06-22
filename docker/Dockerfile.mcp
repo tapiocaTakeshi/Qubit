@@ -1,0 +1,35 @@
+# QBNN Frontal Engine MCP Server Dockerfile
+# MCPサーバーを軽量で効率的にデプロイするためのコンテナイメージ
+
+FROM python:3.11-slim
+
+# 作業ディレクトリの設定
+WORKDIR /app
+
+# 基本的なシステムパッケージをインストール
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python環境の設定
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+# 基本的な依存パッケージをインストール
+COPY requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install torch==2.4.0 && \
+    pip install numpy sentencepiece mcp
+
+# MCPサーバーのコアコンポーネントをコピー
+COPY neuroquantum_layered.py .
+COPY qbnn_layered.py .
+COPY frontal_engine_mcp_server.py .
+COPY frontal_engine.mcp.json .
+COPY neuroq_tokenizer.model .
+COPY neuroq_tokenizer.vocab .
+
+# MCPサーバーの起動コマンド
+ENTRYPOINT ["python", "-u", "frontal_engine_mcp_server.py"]
