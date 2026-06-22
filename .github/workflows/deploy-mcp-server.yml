@@ -64,7 +64,7 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     container:
-      image: ${{ env.REGISTRY }}/${{ github.repository }}/mcp-server:${{ github.sha }}
+      image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
 
     steps:
       - name: Test MCP Server startup
