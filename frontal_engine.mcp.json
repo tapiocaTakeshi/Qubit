@@ -1,0 +1,70 @@
+{
+  "name": "QBNN Frontal Engine",
+  "version": "1.0.0",
+  "description": "前頭葉の判断機能を提供するMCPサーバー。あらゆる判断タスク（意思決定、リスク評価、品質判定、倫理的判断など）に対応します。",
+  "author": "QBNN Research Team",
+  "license": "MIT",
+  "tools": [
+    {
+      "name": "judge",
+      "description": "前頭葉の判断機能: あらゆる判断タスクを処理。JSONデータで判断内容を指定し、Yes/No、スコア(0-100)、根拠説明を返します。",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "context": {
+            "type": "string",
+            "description": "判断の背景情報・文脈（必須）"
+          },
+          "judgment_request": {
+            "type": "string",
+            "description": "何を判断するか・判断内容（必須）"
+          },
+          "criteria": {
+            "type": "object",
+            "description": "判断基準（オプション）。キー: 基準名、値: 基準値"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "検討対象となる選択肢・オプション（オプション）"
+          },
+          "strict_mode": {
+            "type": "boolean",
+            "description": "厳密な判断モード。trueの場合スコア70以上でYes（デフォルト: false）",
+            "default": false
+          }
+        },
+        "required": [
+          "context",
+          "judgment_request"
+        ]
+      }
+    }
+  ],
+  "example_usage": {
+    "basic_judgment": {
+      "context": "プロジェクトは予定通り進行しており、品質基準をすべて満たしています。",
+      "judgment_request": "このプロジェクトをリリースしても安全か？"
+    },
+    "risk_assessment": {
+      "context": "新技術の導入には学習曲線が急、互換性問題の可能性があります。",
+      "judgment_request": "このリスクは許容可能か？",
+      "strict_mode": true
+    },
+    "decision_making": {
+      "context": "3つのベンダー候補を評価しました。ベンダーB: 価格中程度、サポート強い。",
+      "judgment_request": "ベンダーBを選択することが最適か？",
+      "options": ["ベンダーA", "ベンダーB", "ベンダーC"]
+    }
+  },
+  "response_format": {
+    "decision": "Yes or No",
+    "score": "0-100 (judgment strength score)",
+    "reasoning": "Explanation of the judgment",
+    "confidence": "high, medium, or low",
+    "key_factors": "List of important factors considered",
+    "timestamp": "ISO format timestamp"
+  }
+}
