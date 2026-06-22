@@ -183,45 +183,32 @@ class FrontalEngineJudge:
         options: list
     ) -> tuple:
         """
-        判断スコアを計算
+        判断スコアを計算（QBNN モデルベース）
         (score: 0-100, reasoning: str, key_factors: list)を返す
         """
 
-        score = 50  # デフォルト
         key_factors = []
-        reasoning_parts = []
 
-        # テキストの長さに基づくスコア調整
-        context_words = len(context.split())
-        if context_words > 100:
-            score += 5
-            key_factors.append("十分な背景情報がある")
+        # QBNN モデルがあれば推論スコアを取得
+        qbnn_score = self._get_qbnn_judgment_score(context, judgment_request)
 
-        # キーワード分析
-        positive_keywords = ["重要", "必須", "確認", "承認", "安全", "有効", "高い", "良い", "正しい"]
-        negative_keywords = ["危険", "リスク", "問題", "失敗", "低い", "悪い", "不正", "禁止"]
+        # ハイブリッドスコア計算：QBNN (70%) + 従来的分析 (30%)
+        traditional_score = self._compute_traditional_score(context, judgment_request)
 
-        for keyword in positive_keywords:
-            if keyword in context or keyword in judgment_request:
-                score += 3
-                key_factors.append(f"ポジティブ要因: {keyword}")
-
-        for keyword in negative_keywords:
-            if keyword in context or keyword in judgment_request:
-                score -= 3
-                key_factors.append(f"ネガティブ要因: {keyword}")
+        score = int(qbnn_score * 0.7 + traditional_score * 0.3)
+        key_factors.append("QBNN推論" if self.model else "従来的分析")
 
         # 基準に基づくスコア調整
         if criteria:
             criteria_score = self._evaluate_criteria(context, criteria)
             score = (score + criteria_score) / 2
-            key_factors.append(f"基準評価: {criteria_score}点")
+            key_factors.append(f"基準マッチ度: {criteria_score}%")
 
         # オプション/選択肢の評価
         if options:
             options_score = self._evaluate_options(context, options)
             score = (score + options_score) / 2
-            key_factors.append(f"選択肢評価: {options_score}点")
+            key_factors.append(f"選択肢マッチ度: {options_score}%")
 
         # スコアを0-100の範囲に制限
         score = max(0, min(100, int(score)))
@@ -236,9 +223,80 @@ class FrontalEngineJudge:
 
         # キーファクターから追加の根拠を構築
         if key_factors:
-            reasoning += f" 主要な要因: {', '.join(key_factors[:3])}"
+            reasoning += f" 分析手法: {', '.join(key_factors[:3])}"
 
         return score, reasoning, key_factors[:5]  # 最大5つの要因
+
+    def _get_qbnn_judgment_score(self, context: str, judgment_request: str) -> float:
+        """QBNN モデルを使った判断スコアを取得"""
+        if not self.model or not self.tokenizer:
+            return 50.0  # モデルがない場合は中立
+
+        try:
+            # テキストを結合して処理
+            full_text = f"{context} [SEP] {judgment_request}"
+
+            # テキストをトークナイズ
+            tokens = self._encode_text(full_text)
+            if not tokens:
+                return 50.0
+
+            # テンソルに変換
+            input_ids = torch.tensor([tokens[:512]], device=self.device)  # max_seq_len 対応
+
+            # QBNN モデルで推論
+            with torch.no_grad():
+                outputs = self.model(input_ids)
+
+            # 出力から判断スコアを抽出
+            if isinstance(outputs, torch.Tensor):
+                # ロジット or スコアから判断値を計算
+                logits = outputs[:, -1, :2] if outputs.shape[-1] > 2 else outputs[:, 0, :]
+                scores = torch.softmax(logits, dim=-1)
+                positive_score = scores[0, min(1, scores.shape[-1] - 1)].item()
+                return positive_score * 100
+
+            return 50.0
+        except Exception as e:
+            print(f"QBNN推論エラー: {e}", file=sys.stderr)
+            return 50.0
+
+    def _encode_text(self, text: str) -> list:
+        """テキストをトークン列に変換"""
+        try:
+            if self.tokenizer:
+                tokens = self.tokenizer.encode_as_ids(text)
+                return tokens if isinstance(tokens, list) else [tokens]
+            else:
+                # フォールバック: 簡単なトークナイズ
+                import hashlib
+                hash_val = int(hashlib.md5(text.encode()).hexdigest(), 16)
+                return [hash_val % 7999, (hash_val // 7999) % 7999]  # vocab_size: 8000
+        except Exception:
+            return []
+
+    def _compute_traditional_score(self, context: str, judgment_request: str) -> float:
+        """従来的な規則ベースの判断スコアを計算"""
+        score = 50
+
+        # テキストの長さに基づくスコア調整
+        context_words = len(context.split())
+        if context_words > 100:
+            score += 5
+
+        # キーワード分析
+        positive_keywords = ["重要", "必須", "確認", "承認", "安全", "有効", "高い", "良い", "正しい", "成功"]
+        negative_keywords = ["危険", "リスク", "問題", "失敗", "低い", "悪い", "不正", "禁止"]
+
+        for keyword in positive_keywords:
+            if keyword in context or keyword in judgment_request:
+                score += 3
+
+        for keyword in negative_keywords:
+            if keyword in context or keyword in judgment_request:
+                score -= 3
+
+        return max(0, min(100, score))
 
     def _evaluate_criteria(self, context: str, criteria: Dict[str, Any]) -> float:
         """基準に基づいてスコアを評価"""
@@ -247,18 +305,19 @@ class FrontalEngineJudge:
         for criterion_name, criterion_value in criteria.items():
             # 基準がテキストに含まれているかチェック
             if isinstance(criterion_value, str):
-                if criterion_value.lower() in context.lower():
-                    score += 10
+                criterion_lower = criterion_value.lower()
+                if criterion_lower in context.lower():
+                    score += 15  # マッチ時はより高く評価
                 else:
                     score -= 5
             elif isinstance(criterion_value, bool):
                 if criterion_value:
-                    score += 15
+                    score += 20
                 else:
-                    score -= 15
+                    score -= 20
             elif isinstance(criterion_value, (int, float)):
                 # 数値基準の場合
-                score += min(20, max(-20, criterion_value / 10))
+                score += min(25, max(-25, criterion_value / 5))
 
         return max(0, min(100, score))
 
@@ -271,9 +330,10 @@ class FrontalEngineJudge:
         matched = sum(1 for opt in options if isinstance(opt, str) and opt.lower() in context.lower())
 
         if matched > 0:
-            score = 50 + (matched / len(options)) * 30
+            match_ratio = matched / len(options)
+            score = 50 + match_ratio * 40  # より高く評価
 
-        return score
+        return min(100, score)
 
     def _error_response(self, error_msg: str) -> Dict[str, Any]:
         """エラーレスポンスを生成"""
