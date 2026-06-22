@@ -25,19 +25,13 @@ except ImportError:
     torch = None
     nn = None
 
-# MCP Server (optional)
-MCP_AVAILABLE = False
+# MCP Server
 try:
-    from mcp.server.stdio import stdio_server
-    from mcp.types import Tool, TextContent, ToolResult
-    import mcp.server.server as mcp_server
+    from mcp.server.fastmcp import FastMCP
     MCP_AVAILABLE = True
 except ImportError:
-    stdio_server = None
-    Tool = None
-    TextContent = None
-    ToolResult = None
-    mcp_server = None
+    MCP_AVAILABLE = False
+    FastMCP = None
 
 # Add project path
 sys.path.insert(0, os.path.dirname(__file__))
@@ -360,98 +354,64 @@ class FrontalEngineJudge:
 
 
 # ============================================================
-# MCP Server Implementation
+# MCP Server Implementation (FastMCP)
 # ============================================================
 
-judge = FrontalEngineJudge()
+if MCP_AVAILABLE and FastMCP is not None:
+    mcp = FastMCP("qbnn-frontal-engine")
+    judge = FrontalEngineJudge()
+
+    @mcp.tool()
+    def judge_tool(
+        context: str,
+        judgment_request: str,
+        criteria: Optional[Dict[str, Any]] = None,
+        options: Optional[list] = None,
+        strict_mode: bool = False
+    ) -> Dict[str, Any]:
+        """
+        前頭葉の判断機能: あらゆる判断タスクを処理
+        JSONデータで判断内容を指定し、Yes/No、スコア(0-100)、根拠説明を返します。
+        前頭葉が行うすべての判断（意思決定、リスク評価、品質判定、倫理的判断など）に対応します。
+
+        Args:
+            context: 判断の背景情報・文脈（必須）
+            judgment_request: 何を判断するか・判断内容（必須）
+            criteria: 判断基準（オプション）。キー: 基準名、値: 基準値
+            options: 検討対象となる選択肢・オプション（オプション）
+            strict_mode: 厳密な判断モード。trueの場合スコア70以上でYes（デフォルト: false）
+
+        Returns:
+            判断結果、スコア、根拠説明を含む辞書
+        """
+        task = {
+            "context": context,
+            "judgment_request": judgment_request,
+            "criteria": criteria or {},
+            "options": options or [],
+            "strict_mode": strict_mode
+        }
+        return judge.judge(task)
+
+else:
+    # Fallback when MCP is not available
+    judge = FrontalEngineJudge()
+    mcp = None
 
 
-def create_server():
-    """MCP Server を作成"""
-    if not MCP_AVAILABLE:
-        print("Error: MCP package is required to create the server.", file=sys.stderr)
-        print("Please install it: pip install mcp", file=sys.stderr)
-        return None
-
-    if mcp_server is None:
-        print("Error: MCP server module not available.", file=sys.stderr)
-        return None
-
-    server = mcp_server.Server("qbnn-frontal-engine")
-
-    @server.list_tools()
-    async def list_tools():
-        """利用可能なツールのリストを返す"""
-        return [
-            Tool(
-                name="judge",
-                description="""前頭葉の判断機能: あらゆる判断タスクを処理
-                JSONデータで判断内容を指定し、Yes/No、スコア(0-100)、根拠説明を返します。
-                前頭葉が行うすべての判断（意思決定、リスク評価、品質判定、倫理的判断など）に対応します。""",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "context": {
-                            "type": "string",
-                            "description": "判断の背景情報・文脈（必須）"
-                        },
-                        "judgment_request": {
-                            "type": "string",
-                            "description": "何を判断するか・判断内容（必須）"
-                        },
-                        "criteria": {
-                            "type": "object",
-                            "description": "判断基準（オプション）。キー: 基準名、値: 基準値"
-                        },
-                        "options": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "検討対象となる選択肢・オプション（オプション）"
-                        },
-                        "strict_mode": {
-                            "type": "boolean",
-                            "description": "厳密な判断モード。trueの場合スコア70以上でYes（デフォルト: false）",
-                            "default": False
-                        }
-                    },
-                    "required": ["context", "judgment_request"]
-                }
-            )
-        ]
-
-    @server.call_tool()
-    async def call_tool(name: str, arguments: dict):
-        """ツールを実行"""
-        if name == "judge":
-            result = judge.judge(arguments)
-            return [TextContent(
-                type="text",
-                text=json.dumps(result, ensure_ascii=False, indent=2)
-            )]
-        else:
-            return [TextContent(
-                type="text",
-                text=json.dumps({
-                    "error": f"Unknown tool: {name}"
-                })
-            )]
-
-    return server
-
-
-async def main():
+def main():
     """MCP Server を起動"""
-    if not MCP_AVAILABLE:
-        print("Warning: MCP package is not available. MCP Server cannot start.", file=sys.stderr)
-        print("Please install it: pip install mcp", file=sys.stderr)
-        return
-    server = create_server()
-    if server is None:
-        return
-    async with stdio_server(server):
-        pass
+    if not MCP_AVAILABLE or FastMCP is None:
+        print("Error: MCP package is required to run the server.", file=sys.stderr)
+        print("Please install it: pip install 'mcp>=0.5.0'", file=sys.stderr)
+        sys.exit(1)
+
+    if mcp is None:
+        print("Error: MCP server initialization failed.", file=sys.stderr)
+        sys.exit(1)
+
+    mcp.run()
 
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
