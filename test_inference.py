@@ -9,12 +9,25 @@
 import os
 import sys
 import unittest
-import torch
-import torch.nn.functional as F
+
+try:
+    import torch
+    import torch.nn.functional as F
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    torch = None
+    F = None
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, migrate_legacy_state_dict
+if TORCH_AVAILABLE:
+    from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, migrate_legacy_state_dict
+else:
+    NeuroQuantum = None
+    NeuroQuantumConfig = None
+    NeuroQuantumTokenizer = None
+    migrate_legacy_state_dict = None
 
 
 # ---------- 定数 ----------
@@ -365,4 +378,8 @@ class TestInference(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    if not TORCH_AVAILABLE:
+        print("⚠️  PyTorch is not installed. Skipping tests.")
+        print("   Install with: pip install torch")
+        sys.exit(0)
     unittest.main(verbosity=2)

@@ -3,39 +3,55 @@
 1-bit量子化テストスクリプト
 """
 
-import torch
-import torch.nn as nn
 import sys
 from pathlib import Path
 
+try:
+    import torch
+    import torch.nn as nn
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    torch = None
+    nn = None
+
 sys.path.insert(0, str(Path(__file__).parent))
 
-from binary_quantization_1bit import (
-    BinaryQuantizer,
-    Binary1BitLinear,
-    estimate_1bit_size,
-    compare_quantization_levels,
-)
+if TORCH_AVAILABLE:
+    from binary_quantization_1bit import (
+        BinaryQuantizer,
+        Binary1BitLinear,
+        estimate_1bit_size,
+        compare_quantization_levels,
+    )
+else:
+    BinaryQuantizer = None
+    Binary1BitLinear = None
+    estimate_1bit_size = None
+    compare_quantization_levels = None
 
 
-class SimpleTestModel(nn.Module):
-    """テスト用シンプルモデル"""
+if TORCH_AVAILABLE:
+    class SimpleTestModel(nn.Module):
+        """テスト用シンプルモデル"""
 
-    def __init__(self, vocab_size=1000, embed_dim=128, hidden_dim=256, num_layers=2):
-        super().__init__()
-        self.embedding = nn.Embedding(vocab_size, embed_dim)
-        self.layers = nn.ModuleList(
-            [nn.Linear(embed_dim if i == 0 else hidden_dim, hidden_dim) for i in range(num_layers)]
-        )
-        self.output = nn.Linear(hidden_dim, vocab_size)
+        def __init__(self, vocab_size=1000, embed_dim=128, hidden_dim=256, num_layers=2):
+            super().__init__()
+            self.embedding = nn.Embedding(vocab_size, embed_dim)
+            self.layers = nn.ModuleList(
+                [nn.Linear(embed_dim if i == 0 else hidden_dim, hidden_dim) for i in range(num_layers)]
+            )
+            self.output = nn.Linear(hidden_dim, vocab_size)
 
-    def forward(self, x):
-        x = self.embedding(x)
-        for layer in self.layers:
-            x = layer(x)
-            x = torch.relu(x)
-        x = self.output(x)
-        return x
+        def forward(self, x):
+            x = self.embedding(x)
+            for layer in self.layers:
+                x = layer(x)
+                x = torch.relu(x)
+            x = self.output(x)
+            return x
+else:
+    SimpleTestModel = None
 
 
 def test_binary_quantizer():
@@ -226,6 +242,11 @@ def main():
     print("\n" + "=" * 60)
     print("1-BIT BINARY QUANTIZATION TEST SUITE")
     print("=" * 60)
+
+    if not TORCH_AVAILABLE:
+        print("\n⚠️  PyTorch is not installed. Skipping tests.")
+        print("   Install with: pip install torch")
+        return 0
 
     try:
         test_binary_quantizer()
