@@ -1,0 +1,42 @@
+version: '3.8'
+
+# QBNN Frontal Engine MCP Server - Docker Compose Configuration
+# ローカルでMCPサーバーを実行するための設定
+
+services:
+  mcp-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mcp
+    container_name: frontal-engine-mcp
+    environment:
+      PYTHONUNBUFFERED: '1'
+      MODEL_DIR: /app
+      LOG_LEVEL: INFO
+    volumes:
+      # マウントポイント（必要に応じて追加）
+      # - ./logs:/app/logs
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - mcp-network
+    # リソース制限（本番環境では推奨）
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2'
+    #       memory: 4G
+    #     reservations:
+    #       cpus: '1'
+    #       memory: 2G
+
+networks:
+  mcp-network:
+    driver: bridge
