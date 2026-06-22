@@ -1,0 +1,33 @@
+[Unit]
+Description=QBNN Frontal Engine MCP Server
+Documentation=file:///app/FRONTAL_ENGINE_README.md
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/app
+ExecStart=/usr/bin/python3 /app/frontal_engine_mcp_server.py
+Restart=always
+RestartSec=10
+
+# 環境変数
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONPATH=/app"
+Environment="MODEL_DIR=/app"
+
+# リソース制限
+MemoryLimit=4G
+CPUQuota=200%
+
+# ロギング
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qbnn-frontal-engine
+
+# セキュリティ
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,21 @@
+{
+  "version": "1.0.0",
+  "mcp": {
+    "servers": {
+      "qbnn-frontal-engine": {
+        "command": "python",
+        "args": [
+          "${workspaceRoot}/frontal_engine_mcp_server.py"
+        ],
+        "env": {
+          "PYTHONUNBUFFERED": "1",
+          "PYTHONPATH": "${workspaceRoot}"
+        },
+        "disabled": false,
+        "alwaysAllow": [
+          "judge"
+        ]
+      }
+    }
+  }
+}
