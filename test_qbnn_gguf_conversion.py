@@ -9,78 +9,90 @@ QBNN to GGUF 変換のテストと使用例スクリプト
 3. 変換されたファイルの検証
 """
 
-import torch
-import torch.nn as nn
-import numpy as np
-from pathlib import Path
-import json
 import sys
 import os
+from pathlib import Path
+import json
+
+try:
+    import torch
+    import torch.nn as nn
+    import numpy as np
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    torch = None
+    nn = None
+    np = None
 
 # スクリプトディレクトリをパスに追加
 sys.path.insert(0, os.path.dirname(__file__))
 
-from export_qbnn_gguf import QBNNToGGUFConverter, QBNNQuantumMetadata
+if TORCH_AVAILABLE:
+    from export_qbnn_gguf import QBNNToGGUFConverter, QBNNQuantumMetadata
 
+    class SimpleQBNNDemo(nn.Module):
+        """デモ用の簡単なQBNNモデル"""
 
-class SimpleQBNNDemo(nn.Module):
-    """デモ用の簡単なQBNNモデル"""
+        def __init__(self, embedding_dim=128, hidden_dim=256, num_layers=4):
+            super().__init__()
+            self.embedding_dim = embedding_dim
+            self.hidden_dim = hidden_dim
+            self.num_layers = num_layers
 
-    def __init__(self, embedding_dim=128, hidden_dim=256, num_layers=4):
-        super().__init__()
-        self.embedding_dim = embedding_dim
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
+            # Embedding層
+            self.embedding = nn.Embedding(32000, embedding_dim)
 
-        # Embedding層
-        self.embedding = nn.Embedding(32000, embedding_dim)
+            # QBNN層をシミュレート
+            self.quantum_corr = nn.ModuleList([
+                nn.Linear(hidden_dim, hidden_dim) for _ in range(num_layers)
+            ])
 
-        # QBNN層をシミュレート
-        self.quantum_corr = nn.ModuleList([
-            nn.Linear(hidden_dim, hidden_dim) for _ in range(num_layers)
-        ])
+            self.entangle_ops = nn.ModuleList([
+                nn.Linear(hidden_dim, hidden_dim) for _ in range(num_layers)
+            ])
 
-        self.entangle_ops = nn.ModuleList([
-            nn.Linear(hidden_dim, hidden_dim) for _ in range(num_layers)
-        ])
+            # APQB theta パラメータ
+            self.theta = nn.ParameterList([
+                nn.Parameter(torch.randn(hidden_dim) * np.pi / 2)
+                for _ in range(num_layers)
+            ])
 
-        # APQB theta パラメータ
-        self.theta = nn.ParameterList([
-            nn.Parameter(torch.randn(hidden_dim) * np.pi / 2)
-            for _ in range(num_layers)
-        ])
+            # 通常の層
+            self.layers = nn.ModuleList([
+                nn.Linear(embedding_dim if i == 0 else hidden_dim, hidden_dim)
+                for i in range(num_layers)
+            ])
 
-        # 通常の層
-        self.layers = nn.ModuleList([
-            nn.Linear(embedding_dim if i == 0 else hidden_dim, hidden_dim)
-            for i in range(num_layers)
-        ])
+            self.output_layer = nn.Linear(hidden_dim, 32000)
 
-        self.output_layer = nn.Linear(hidden_dim, 32000)
+        def forward(self, input_ids):
+            """順伝播"""
+            x = self.embedding(input_ids)
+            x = x.mean(dim=1)  # 平均プーリング
 
-    def forward(self, input_ids):
-        """順伝播"""
-        x = self.embedding(input_ids)
-        x = x.mean(dim=1)  # 平均プーリング
+            for i in range(self.num_layers):
+                # 通常の線形変換
+                x = self.layers[i](x)
 
-        for i in range(self.num_layers):
-            # 通常の線形変換
-            x = self.layers[i](x)
+                # 量子相関（デモ）
+                quantum_effect = self.quantum_corr[i](x)
 
-            # 量子相関（デモ）
-            quantum_effect = self.quantum_corr[i](x)
+                # エンタングル（デモ）
+                entangle_effect = self.entangle_ops[i](quantum_effect)
 
-            # エンタングル（デモ）
-            entangle_effect = self.entangle_ops[i](quantum_effect)
+                # APQB theta効果（デモ）
+                theta_effect = torch.cos(self.theta[i]) * x
 
-            # APQB theta効果（デモ）
-            theta_effect = torch.cos(self.theta[i]) * x
+                # 結合
+                x = torch.tanh(x + entangle_effect * 0.1 + theta_effect * 0.05)
 
-            # 結合
-            x = torch.tanh(x + entangle_effect * 0.1 + theta_effect * 0.05)
-
-        logits = self.output_layer(x)
-        return logits
+            logits = self.output_layer(x)
+            return logits
+else:
+    QBNNToGGUFConverter = None
+    QBNNQuantumMetadata = None
+    SimpleQBNNDemo = None
 
 
 def create_demo_qbnn_checkpoint(output_file: str, size: str = "small"):
@@ -261,6 +273,11 @@ def test_quantum_characteristics_preservation(checkpoint_file: str, output_dir: 
 
 def main():
     """メインテスト関数"""
+    if not TORCH_AVAILABLE:
+        print("⚠️  PyTorch is not installed. Skipping tests.")
+        print("   Install with: pip install torch")
+        return 0
+
     print("🧠⚛️  QBNN to GGUF Conversion Test Suite")
     print(f"{'='*60}\n")
 
@@ -304,4 +321,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
