@@ -369,7 +369,13 @@ judge = FrontalEngineJudge()
 def create_server():
     """MCP Server を作成"""
     if not MCP_AVAILABLE:
-        raise RuntimeError("MCP package is not available. Please install it: pip install mcp")
+        print("Error: MCP package is required to create the server.", file=sys.stderr)
+        print("Please install it: pip install mcp", file=sys.stderr)
+        return None
+
+    if mcp_server is None:
+        print("Error: MCP server module not available.", file=sys.stderr)
+        return None
 
     server = mcp_server.Server("qbnn-frontal-engine")
 
@@ -436,8 +442,12 @@ def create_server():
 async def main():
     """MCP Server を起動"""
     if not MCP_AVAILABLE:
-        raise RuntimeError("MCP package is not available. Please install it: pip install mcp")
+        print("Warning: MCP package is not available. MCP Server cannot start.", file=sys.stderr)
+        print("Please install it: pip install mcp", file=sys.stderr)
+        return
     server = create_server()
+    if server is None:
+        return
     async with stdio_server(server):
         pass
 
