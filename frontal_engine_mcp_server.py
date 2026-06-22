@@ -11,24 +11,33 @@ QBNN Frontal Engine - MCP Server
 import os
 import sys
 import json
-import torch
-import torch.nn as nn
 from typing import Dict, Any, Optional
 from pathlib import Path
 from datetime import datetime
 
-# MCP Server
+# Optional torch import
+try:
+    import torch
+    import torch.nn as nn
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    torch = None
+    nn = None
+
+# MCP Server (optional)
+MCP_AVAILABLE = False
 try:
     from mcp.server.stdio import stdio_server
     from mcp.types import Tool, TextContent, ToolResult
     import mcp.server.server as mcp_server
+    MCP_AVAILABLE = True
 except ImportError:
-    print("Installing mcp package...")
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "mcp"])
-    from mcp.server.stdio import stdio_server
-    from mcp.types import Tool, TextContent, ToolResult
-    import mcp.server.server as mcp_server
+    stdio_server = None
+    Tool = None
+    TextContent = None
+    ToolResult = None
+    mcp_server = None
 
 # Add project path
 sys.path.insert(0, os.path.dirname(__file__))
@@ -51,7 +60,9 @@ class FrontalEngineJudge:
     """
 
     def __init__(self):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = None
+        if TORCH_AVAILABLE:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = None
         self.tokenizer = None
         self.config = None
@@ -357,6 +368,9 @@ judge = FrontalEngineJudge()
 
 def create_server():
     """MCP Server を作成"""
+    if not MCP_AVAILABLE:
+        raise RuntimeError("MCP package is not available. Please install it: pip install mcp")
+
     server = mcp_server.Server("qbnn-frontal-engine")
 
     @server.list_tools()
@@ -421,6 +435,8 @@ def create_server():
 
 async def main():
     """MCP Server を起動"""
+    if not MCP_AVAILABLE:
+        raise RuntimeError("MCP package is not available. Please install it: pip install mcp")
     server = create_server()
     async with stdio_server(server):
         pass
