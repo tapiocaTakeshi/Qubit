@@ -15,6 +15,10 @@ export class GemmaLanguageProcessor {
     ["学", "スキル習得"],
     ["改善", "プロセス改善"],
     ["リスク", "リスク評価"],
+    ["怪しい", "安全性・リスク評価"],
+    ["投資", "金融リスク評価"],
+    ["ハッキング", "サイバー安全性"],
+    ["不正アクセス", "サイバー安全性"],
     ["成長", "成長"],
     ["気分", "感情"],
     ["手伝", "支援"],
@@ -32,7 +36,7 @@ export class GemmaLanguageProcessor {
       is_request: ["教えて", "知りたい", "わかりません"].some((w) =>
         input_lower.includes(w)
       ),
-      is_decision: ["すべき", "判断", "選ぶ"].some((w) =>
+      is_decision: ["すべき", "判断", "選ぶ", "乗るべき", "やるべき"].some((w) =>
         input_lower.includes(w)
       ),
       is_emotional: ["困っ", "悩ん", "つらい", "嬉しい"].some((w) =>
@@ -141,6 +145,31 @@ export class GemmaLanguageProcessor {
   }
 
   /**
+   * 危険・不正・詐欺リスクがある相談への応答
+   */
+  private respondToSafetyRisk(userInput: string): string {
+    const inputLower = userInput.toLowerCase();
+
+    if (
+      ["ハッキング", "不正アクセス", "侵入", "乗っ取り", "マルウェア"].some((w) =>
+        inputLower.includes(w)
+      )
+    ) {
+      return "不正アクセスや他者への攻撃につながるハッキングは進めるべきではありません。学習目的であれば、CTF、検証用ラボ、自分が管理する環境など、明確に許可された範囲だけで防御・診断の観点から取り組んでください。";
+    }
+
+    if (
+      ["怪しい", "確実", "絶対儲", "元本保証", "投資話", "高配当"].some((w) =>
+        inputLower.includes(w)
+      )
+    ) {
+      return "その投資話には強い警戒が必要です。詳細説明がなく「確実」などと断言する勧誘は詐欺や高リスク商品の典型的なサインなので、すぐに送金・契約せず、相手の登録状況、契約書、手数料、解約条件、第三者の確認を取ってください。";
+    }
+
+    return "安全性や倫理面で懸念がある内容です。急いで実行せず、法令・規約・関係者への影響を確認し、必要に応じて専門家や公的窓口に相談してください。";
+  }
+
+  /**
    * 一般的な応答
    */
   private respondGeneric(
@@ -179,10 +208,36 @@ export class GemmaLanguageProcessor {
 
     // キーワード検出
     const keywords = new Set<string>();
-    for (const word of ["転職", "困", "悩", "判断", "学", "成長", "改善", "気分", "助け"]) {
+    for (const word of [
+      "転職",
+      "困",
+      "悩",
+      "判断",
+      "学",
+      "成長",
+      "改善",
+      "気分",
+      "助け",
+      "ハッキング",
+      "不正アクセス",
+      "怪しい",
+      "投資",
+      "確実",
+    ]) {
       if (raw_text.includes(word)) {
         keywords.add(word);
       }
+    }
+
+    // 安全性・倫理・金融リスクは量子スコアより優先して抑止的に回答する
+    if (
+      keywords.has("ハッキング") ||
+      keywords.has("不正アクセス") ||
+      keywords.has("怪しい") ||
+      keywords.has("投資") ||
+      keywords.has("確実")
+    ) {
+      return this.respondToSafetyRisk(raw_text);
     }
 
     // キーワードに基づいてルーティング
