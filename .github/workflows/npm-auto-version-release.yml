@@ -1,0 +1,111 @@
+name: npm auto-version release - gemma-qbnn-frontal
+
+on:
+  workflow_dispatch:
+    inputs:
+      version-type:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          registry-url: https://registry.npmjs.org/
+
+      - name: Configure git
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
+      - name: Update version and create tag
+        working-directory: gemma-qbnn-frontal
+        id: version
+        run: |
+          npm version ${{ github.event.inputs.version-type }}
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "tag=gemma-qbnn-frontal@$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Push changes and tag
+        run: |
+          git push origin HEAD:${{ github.ref }}
+          git push origin ${{ steps.version.outputs.tag }}
+
+      - name: Install dependencies
+        working-directory: gemma-qbnn-frontal
+        run: npm install
+
+      - name: Build
+        working-directory: gemma-qbnn-frontal
+        run: npm run build
+
+      - name: Run tests (if available)
+        working-directory: gemma-qbnn-frontal
+        run: npm test --if-present
+        continue-on-error: true
+
+      - name: Publish to npm
+        working-directory: gemma-qbnn-frontal
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          release_name: gemma-qbnn-frontal v${{ steps.version.outputs.new_version }}
+          body: |
+            ## Release Information
+
+            This release publishes **gemma-qbnn-frontal** to npm registry.
+
+            ### Version
+            **v${{ steps.version.outputs.new_version }}** (${{ github.event.inputs.version-type }} release)
+
+            ### Installation
+            ```bash
+            npm install gemma-qbnn-frontal@${{ steps.version.outputs.new_version }}
+            ```
+
+            ### Features
+            - Gemma + QBNN ハイブリッド推論システム
+            - Language understanding, issue discovery, quantum judgment
+            - Dynamic response generation (no templates)
+            - APQB quantum-based decision making
+
+            ### Documentation
+            - [README](https://github.com/${{ github.repository }}/blob/${{ steps.version.outputs.tag }}/gemma-qbnn-frontal/README.md)
+            - [Package on npm](https://www.npmjs.com/package/gemma-qbnn-frontal)
+
+            For more details, see the [full commit](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+          draft: false
+          prerelease: false
+
+      - name: Post Success Message
+        if: success()
+        run: |
+          echo "✓ Successfully released gemma-qbnn-frontal v${{ steps.version.outputs.new_version }}"
+          echo "Package: https://www.npmjs.com/package/gemma-qbnn-frontal"
+          echo "Release: https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.tag }}"
