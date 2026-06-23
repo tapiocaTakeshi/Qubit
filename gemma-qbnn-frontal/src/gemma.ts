@@ -5,6 +5,16 @@
 
 import { LanguageUnderstanding, DiscoveredIssue, QBNNJudgmentResult, ScoreExpressionRange } from "./types";
 
+type SafetyCategory = "self_harm" | "drugs" | "violence" | "cyber" | "financial_fraud";
+
+const SAFETY_KEYWORDS: Record<SafetyCategory, string[]> = {
+  self_harm: ["死にたい", "自殺", "自傷", "消えたい"],
+  drugs: ["覚醒剤", "麻薬", "大麻", "違法薬物"],
+  violence: ["殺す", "爆弾", "脅迫"],
+  cyber: ["ハッキング", "不正アクセス", "侵入", "乗っ取り", "マルウェア", "フィッシング"],
+  financial_fraud: ["怪しい", "元本保証", "絶対儲", "投資詐欺", "高配当", "投資話"],
+};
+
 export class GemmaLanguageProcessor {
   private issue_keywords: Map<string, string> = new Map([
     ["転職", "キャリア変更"],
@@ -16,9 +26,24 @@ export class GemmaLanguageProcessor {
     ["改善", "プロセス改善"],
     ["リスク", "リスク評価"],
     ["怪しい", "安全性・リスク評価"],
-    ["投資", "金融リスク評価"],
+    ["投資詐欺", "金融詐欺"],
+    ["元本保証", "金融詐欺"],
+    ["絶対儲", "金融詐欺"],
+    ["高配当", "金融詐欺"],
     ["ハッキング", "サイバー安全性"],
     ["不正アクセス", "サイバー安全性"],
+    ["侵入", "サイバー安全性"],
+    ["乗っ取り", "サイバー安全性"],
+    ["マルウェア", "サイバー安全性"],
+    ["フィッシング", "サイバー安全性"],
+    ["死にたい", "メンタル危機"],
+    ["自殺", "メンタル危機"],
+    ["自傷", "メンタル危機"],
+    ["覚醒剤", "薬物・違法行為"],
+    ["麻薬", "薬物・違法行為"],
+    ["大麻", "薬物・違法行為"],
+    ["殺す", "暴力・脅迫"],
+    ["脅迫", "暴力・脅迫"],
     ["成長", "成長"],
     ["気分", "感情"],
     ["手伝", "支援"],
@@ -145,28 +170,42 @@ export class GemmaLanguageProcessor {
   }
 
   /**
+   * 危険カテゴリを検知して返す。安全な入力なら null。
+   * 検査順序: 緊急度の高いものを先に。
+   */
+  detectSafetyCategory(text: string): SafetyCategory | null {
+    for (const category of ["self_harm", "drugs", "violence", "cyber", "financial_fraud"] as SafetyCategory[]) {
+      if (SAFETY_KEYWORDS[category].some((w) => text.includes(w))) {
+        return category;
+      }
+    }
+    return null;
+  }
+
+  private respondToMentalCrisis(): string {
+    return "今とてもつらい気持ちでいるようです。一人で抱え込まないでください。いのちの電話（0120-783-556、毎日16時〜21時・毎月10日は8時〜翌8時）やよりそいホットライン（0120-279-338、24時間）に無料で相談できます。";
+  }
+
+  private respondToDrugs(): string {
+    return "違法薬物に関する情報の提供はできません。覚醒剤・麻薬・大麻等の所持・使用・売買は重大な犯罪であり、心身に深刻な影響を与えます。薬物問題で困っている場合は、よりそいホットライン（0120-279-338）や地域の保健センターへご相談ください。";
+  }
+
+  private respondToViolence(): string {
+    return "暴力・脅迫・危険物の製造につながる内容にはお答えできません。他者への危害や脅迫は犯罪です。緊急の場合は110番へ通報してください。";
+  }
+
+  /**
    * 危険・不正・詐欺リスクがある相談への応答
    */
-  private respondToSafetyRisk(userInput: string): string {
-    const inputLower = userInput.toLowerCase();
-
-    if (
-      ["ハッキング", "不正アクセス", "侵入", "乗っ取り", "マルウェア"].some((w) =>
-        inputLower.includes(w)
-      )
-    ) {
+  private respondToSafetyRisk(category: SafetyCategory): string {
+    if (category === "self_harm") return this.respondToMentalCrisis();
+    if (category === "drugs") return this.respondToDrugs();
+    if (category === "violence") return this.respondToViolence();
+    if (category === "cyber") {
       return "不正アクセスや他者への攻撃につながるハッキングは進めるべきではありません。学習目的であれば、CTF、検証用ラボ、自分が管理する環境など、明確に許可された範囲だけで防御・診断の観点から取り組んでください。";
     }
-
-    if (
-      ["怪しい", "確実", "絶対儲", "元本保証", "投資話", "高配当"].some((w) =>
-        inputLower.includes(w)
-      )
-    ) {
-      return "その投資話には強い警戒が必要です。詳細説明がなく「確実」などと断言する勧誘は詐欺や高リスク商品の典型的なサインなので、すぐに送金・契約せず、相手の登録状況、契約書、手数料、解約条件、第三者の確認を取ってください。";
-    }
-
-    return "安全性や倫理面で懸念がある内容です。急いで実行せず、法令・規約・関係者への影響を確認し、必要に応じて専門家や公的窓口に相談してください。";
+    // financial_fraud
+    return "その投資話には強い警戒が必要です。詳細説明がなく「確実」などと断言する勧誘は詐欺や高リスク商品の典型的なサインなので、すぐに送金・契約せず、相手の登録状況、契約書、手数料、解約条件、第三者の確認を取ってください。";
   }
 
   /**
@@ -202,52 +241,21 @@ export class GemmaLanguageProcessor {
   ): string {
     const { raw_text } = understanding;
     const { score, decision, tendency, issues } = judgment;
-
-    // スコア表現を取得
     const expr = this.scoreToExpression(score);
 
-    // キーワード検出
-    const keywords = new Set<string>();
-    for (const word of [
-      "転職",
-      "困",
-      "悩",
-      "判断",
-      "学",
-      "成長",
-      "改善",
-      "気分",
-      "助け",
-      "ハッキング",
-      "不正アクセス",
-      "怪しい",
-      "投資",
-      "確実",
-    ]) {
-      if (raw_text.includes(word)) {
-        keywords.add(word);
-      }
+    // 安全性・倫理リスクはスコアより優先して専用応答を返す
+    const safetyCategory = this.detectSafetyCategory(raw_text);
+    if (safetyCategory !== null) {
+      return this.respondToSafetyRisk(safetyCategory);
     }
 
-    // 安全性・倫理・金融リスクは量子スコアより優先して抑止的に回答する
-    if (
-      keywords.has("ハッキング") ||
-      keywords.has("不正アクセス") ||
-      keywords.has("怪しい") ||
-      keywords.has("投資") ||
-      keywords.has("確実")
-    ) {
-      return this.respondToSafetyRisk(raw_text);
-    }
-
-    // キーワードに基づいてルーティング
-    if (keywords.has("転職")) {
+    if (raw_text.includes("転職")) {
       return this.respondToCareerChange(raw_text, score, decision, expr);
-    } else if (keywords.has("困") || keywords.has("悩")) {
+    } else if (raw_text.includes("困") || raw_text.includes("悩")) {
       return this.respondToTrouble(raw_text, issues, expr);
-    } else if (keywords.has("学")) {
+    } else if (raw_text.includes("学")) {
       return this.respondToLearning(raw_text, score, expr);
-    } else if (keywords.has("気分")) {
+    } else if (raw_text.includes("気分")) {
       return this.respondToEmotion(raw_text, tendency, expr);
     } else {
       return this.respondGeneric(raw_text, score, decision, tendency);
