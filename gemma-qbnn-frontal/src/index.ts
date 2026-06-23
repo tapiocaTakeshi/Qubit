@@ -6,6 +6,7 @@
 export { GemmaLanguageProcessor } from "./gemma";
 export { QBNNJudgment } from "./qbnn";
 export { GemmaQBNNEngine } from "./engine";
+export { QuantumTextGenerator } from "./generator";
 
 export type {
   LanguageUnderstanding,
