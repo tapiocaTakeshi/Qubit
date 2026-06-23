@@ -8,6 +8,7 @@ export { QBNNJudgment } from "./qbnn";
 export { GemmaQBNNEngine } from "./engine";
 export { QuantumTextGenerator } from "./generator";
 export { GemmaQBNNChatbot } from "./chatbot";
+export { GemmaQBNNFrontal, FrontalEngineJudge } from "./frontal";
 
 export type {
   LanguageUnderstanding,
@@ -19,4 +20,7 @@ export type {
   ChatbotConfig,
   ChatbotTurn,
   ScoreExpressionRange,
+  FrontalJudgmentTask,
+  FrontalJudgmentResult,
+  FrontalEngineConfig,
 } from "./types";
