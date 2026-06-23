@@ -253,16 +253,227 @@ class GemmaSummarizer:
         return "\n".join(parts)
 
 
+class KnowledgeLibrary:
+    """推論結果を知識ライブラリーに蓄積"""
+
+    def __init__(self):
+        """初期化"""
+        self.entries = []
+        self.task_type_index = {}
+        self.judgment_patterns = {}
+
+    def add_entry(self, task: Dict[str, Any], judgment: Dict[str, Any]) -> None:
+        """エントリーをライブラリーに追加"""
+        entry = {
+            "task": task,
+            "judgment": judgment,
+            "timestamp": len(self.entries) + 1
+        }
+        self.entries.append(entry)
+
+        # タスクタイプ別インデックス
+        task_type = task["task_type"]
+        if task_type not in self.task_type_index:
+            self.task_type_index[task_type] = []
+        self.task_type_index[task_type].append(len(self.entries) - 1)
+
+        # 判断パターン学習
+        decision = judgment["decision"]
+        score = judgment["final_score"]
+        pattern_key = f"{task_type}_{decision}_{int(score/10)*10}"
+        if pattern_key not in self.judgment_patterns:
+            self.judgment_patterns[pattern_key] = []
+        self.judgment_patterns[pattern_key].append(entry)
+
+    def get_similar_cases(self, task_type: str, limit: int = 3) -> List[Dict[str, Any]]:
+        """類似ケースを検索"""
+        if task_type in self.task_type_index:
+            indices = self.task_type_index[task_type][:limit]
+            return [self.entries[i] for i in indices]
+        return []
+
+    def get_library_summary(self) -> Dict[str, Any]:
+        """ライブラリーの概要を返す"""
+        return {
+            "total_entries": len(self.entries),
+            "task_types": list(self.task_type_index.keys()),
+            "judgment_patterns": list(self.judgment_patterns.keys()),
+            "yes_count": sum(1 for e in self.entries if e["judgment"]["decision"] == "Yes"),
+            "no_count": sum(1 for e in self.entries if e["judgment"]["decision"] == "No"),
+        }
+
+    def format_for_context(self) -> str:
+        """生成用のコンテキストフォーマット"""
+        if not self.entries:
+            return "利用可能なライブラリーエントリーはありません。"
+
+        lines = []
+        lines.append("【知識ライブラリー】")
+        lines.append(f"蓄積データ: {len(self.entries)}件")
+        lines.append("")
+
+        # タスク別サマリー
+        for task_type in set(task_type for e in self.entries for task_type in [e["task"]["task_type"]]):
+            cases = [e for e in self.entries if e["task"]["task_type"] == task_type]
+            yes_count = sum(1 for c in cases if c["judgment"]["decision"] == "Yes")
+            no_count = len(cases) - yes_count
+            avg_score = sum(c["judgment"]["final_score"] for c in cases) / len(cases)
+
+            lines.append(f"【{task_type}】")
+            lines.append(f"  件数: {len(cases)} (Yes: {yes_count}, No: {no_count})")
+            lines.append(f"  平均スコア: {avg_score:.1f}/100")
+            lines.append("")
+
+        return "\n".join(lines)
+
+
+class GemmaTextGenerator:
+    """Gemma: 知識ライブラリーに基づいて文章を生成"""
+
+    def __init__(self, library: KnowledgeLibrary):
+        """初期化"""
+        self.library = library
+        try:
+            from generative_ai import QuantumTextGenerator
+            self.generator = QuantumTextGenerator()
+            self.has_quantum = True
+        except:
+            self.has_quantum = False
+
+    def generate_response(self, task: Dict[str, Any], judgment: Dict[str, Any]) -> str:
+        """知識ライブラリーに基づいて応答を生成"""
+
+        # ライブラリー内の類似ケースを取得
+        similar_cases = self.library.get_similar_cases(task["task_type"], limit=2)
+
+        # コンテキスト構築
+        context_parts = []
+
+        # 1. ライブラリー情報
+        context_parts.append(self.library.format_for_context())
+
+        # 2. 類似ケース
+        if similar_cases:
+            context_parts.append("【参考事例】")
+            for case in similar_cases:
+                similar_task = case["task"]
+                similar_judgment = case["judgment"]
+                context_parts.append(
+                    f"- {similar_task['task_type']}: "
+                    f"判定={similar_judgment['decision']}, "
+                    f"スコア={similar_judgment['final_score']:.0f}/100"
+                )
+            context_parts.append("")
+
+        # 3. 現在のタスク情報
+        context_parts.append("【現在の分析】")
+        context_parts.append(f"タイプ: {task['task_type']}")
+        context_parts.append(f"メリット: {', '.join(task['merits'])}")
+        context_parts.append(f"デメリット: {', '.join(task['demerits'])}")
+        context_parts.append(f"判定スコア: {judgment['final_score']:.0f}/100")
+        context_parts.append("")
+
+        context = "\n".join(context_parts)
+
+        # 推奨度に基づいた生成
+        recommendation = self._generate_recommendation(task, judgment, similar_cases)
+
+        return recommendation
+
+    def _generate_recommendation(self, task: Dict[str, Any], judgment: Dict[str, Any],
+                                 similar_cases: List[Dict[str, Any]]) -> str:
+        """推奨文を生成"""
+
+        decision = judgment['decision']
+        score = judgment['final_score']
+        task_type = task['task_type']
+        merits = task['merits']
+        demerits = task['demerits']
+
+        lines = []
+
+        # ヘッダー
+        if decision == "Yes":
+            recommendation_strength = (
+                "強く推奨" if score >= 75 else
+                "推奨" if score >= 60 else
+                "おおむね推奨"
+            )
+            lines.append(f"✓ この判断は【{recommendation_strength}】できます。")
+        else:
+            recommendation_strength = (
+                "強く非推奨" if score <= 25 else
+                "非推奨" if score <= 40 else
+                "慎重な検討が必要"
+            )
+            lines.append(f"✗ この判断は【{recommendation_strength}】です。")
+
+        lines.append("")
+
+        # メリット・デメリット分析
+        if merits:
+            lines.append("【利点】")
+            for merit in merits:
+                lines.append(f"  • {merit}")
+            lines.append("")
+
+        if demerits:
+            lines.append("【課題】")
+            for demerit in demerits:
+                lines.append(f"  • {demerit}")
+            lines.append("")
+
+        # スコア解釈
+        lines.append("【分析スコア】")
+        lines.append(f"  総合判定スコア: {score:.0f}/100")
+
+        if score >= 70:
+            interpretation = "メリットが明確で、リスクは限定的です。前向きに進めることができます。"
+        elif score >= 60:
+            interpretation = "メリットがやや上回っています。詳細な計画を立てることが重要です。"
+        elif score >= 50:
+            interpretation = "バランスが取れています。慎重に計画を進めることをお勧めします。"
+        elif score >= 40:
+            interpretation = "メリット・デメリットが拮抗しています。さらに情報収集が必要です。"
+        elif score >= 30:
+            interpretation = "デメリットが目立ちます。代替案を検討することをお勧めします。"
+        else:
+            interpretation = "リスクが非常に高いです。実行は慎重に、または中止を検討してください。"
+
+        lines.append(f"  解釈: {interpretation}")
+        lines.append("")
+
+        # 次のステップ
+        lines.append("【推奨アクション】")
+        if decision == "Yes":
+            if score >= 70:
+                lines.append("  1. 詳細な実行計画を立案する")
+                lines.append("  2. リスク対策を確認する")
+                lines.append("  3. 段階的に実行開始する")
+            else:
+                lines.append("  1. 追加の情報収集を行う")
+                lines.append("  2. メンターや専門家に相談する")
+                lines.append("  3. 小さなステップから試す")
+        else:
+            lines.append("  1. 代替案を複数検討する")
+            lines.append("  2. リスク要因の改善可能性を検討する")
+            lines.append("  3. 時間をおいて再評価する")
+
+        return "\n".join(lines)
+
+
 class PipelineInferenceSystem:
-    """完全なパイプラインシステム"""
+    """完全なパイプラインシステム（ライブラリー統合版）"""
 
     def __init__(self):
         """初期化"""
         self.task_generator = GemmaTaskGenerator()
         self.judgment_engine = QuantumJudgmentEngine()
         self.summarizer = GemmaSummarizer()
+        self.library = KnowledgeLibrary()
+        self.text_generator = GemmaTextGenerator(self.library)
 
-    def infer(self, user_input: str) -> str:
+    def infer(self, user_input: str, use_library_generation: bool = True) -> str:
         """ユーザー入力から出力まで完全パイプライン"""
 
         # ステップ1: Gemmaが課題を生成
@@ -271,19 +482,37 @@ class PipelineInferenceSystem:
         # ステップ2: QBNNが判断
         judgment = self.judgment_engine.judge(task)
 
-        # ステップ3: Gemmaが結果をまとめる
-        summary = self.summarizer.summarize(task, judgment)
+        # ステップ3: ライブラリーに追加
+        self.library.add_entry(task, judgment)
 
-        return summary
+        # ステップ4: Gemmaが結果をまとめる（従来版）
+        if not use_library_generation:
+            summary = self.summarizer.summarize(task, judgment)
+            return summary
+
+        # ステップ5: Gemmaが知識ライブラリーに基づいて文章を生成（新版）
+        generated_response = self.text_generator.generate_response(task, judgment)
+        return generated_response
+
+    def get_library_info(self) -> Dict[str, Any]:
+        """ライブラリー情報を取得"""
+        return self.library.get_library_summary()
 
 
 def main():
     """メイン処理"""
-    print("\n" + "="*70)
-    print("🧠 Gemma+QBNN パイプライン推論")
-    print("="*70)
-    print("input → 課題生成(Gemma) → 判断(QBNN) → まとめる(Gemma) → output")
-    print("="*70 + "\n")
+    print("\n" + "╔" + "="*68 + "╗")
+    print("║" + " "*68 + "║")
+    print("║" + "🧠 Gemma+QBNN パイプライン推論（ライブラリー統合版）".center(68) + "║")
+    print("║" + " "*68 + "║")
+    print("╚" + "="*68 + "╝\n")
+
+    print("【パイプライン構成】")
+    print("  ステップ1: Gemma → 課題生成")
+    print("  ステップ2: QBNN → 量子推論で判断")
+    print("  ステップ3: 知識ライブラリー → 結果を蓄積")
+    print("  ステップ4: Gemma → ライブラリーに基づいて文章生成")
+    print()
 
     system = PipelineInferenceSystem()
 
@@ -293,14 +522,50 @@ def main():
         "大学院に進学すべき？2年かかり学費200万円だが、給与は100万円上がる見込み。",
     ]
 
+    print("="*70)
+    print("【複数入力の推論＋ライブラリー蓄積】")
+    print("="*70 + "\n")
+
     for i, user_input in enumerate(test_cases, 1):
         print(f"【推論 {i}】")
         print(f"入力: {user_input}\n")
 
-        result = system.infer(user_input)
-        print(result)
+        # 従来版（詳細な分析）
+        result_traditional = system.infer(user_input, use_library_generation=False)
+        print("【従来版：詳細分析】")
+        print(result_traditional)
+        print()
 
-        print("\n" + "-"*70 + "\n")
+        print("-"*70 + "\n")
+
+    # ライブラリー統計
+    print("\n" + "="*70)
+    print("【ライブラリー統計】")
+    print("="*70 + "\n")
+
+    library_info = system.get_library_info()
+    print(f"蓄積エントリー数: {library_info['total_entries']}")
+    print(f"判断タイプ: {', '.join(library_info['task_types'])}")
+    print(f"Yes判定: {library_info['yes_count']}件")
+    print(f"No判定: {library_info['no_count']}件")
+    print()
+
+    # 新しい入力に対してライブラリーベースの生成
+    print("="*70)
+    print("【新規入力への対応（ライブラリーを活用）】")
+    print("="*70 + "\n")
+
+    new_input = "起業に挑戦すべきか？新規事業だが市場ニーズが明確で、給与は下がる。"
+    print(f"新規入力: {new_input}\n")
+
+    # ライブラリーベースの生成版
+    result_library = system.infer(new_input, use_library_generation=True)
+    print("【ライブラリー活用版：Gemma文章生成】")
+    print(result_library)
+
+    print("\n" + "="*70)
+    print("✓ パイプライン推論完了")
+    print("="*70)
 
 
 if __name__ == "__main__":
