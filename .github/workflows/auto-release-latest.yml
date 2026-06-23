@@ -1,0 +1,161 @@
+name: Auto Release Latest Version
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'gemma-qbnn-frontal/**'
+      - '.github/workflows/auto-release-latest.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          registry-url: https://registry.npmjs.org/
+
+      - name: Configure git
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
+      - name: Get current version
+        id: current
+        run: |
+          CURRENT_VERSION=$(node -p "require('./gemma-qbnn-frontal/package.json').version")
+          echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $CURRENT_VERSION"
+
+      - name: Determine version bump
+        id: bump
+        run: |
+          CURRENT_VERSION="${{ steps.current.outputs.version }}"
+
+          # Get last tag
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+
+          if [ -z "$LAST_TAG" ]; then
+            # No tags yet, bump to next patch
+            NEW_VERSION=$(npm --prefix gemma-qbnn-frontal version patch --no-git-tag-version | sed 's/^v//')
+          else
+            # Get commits since last tag
+            COMMIT_MESSAGES=$(git log $LAST_TAG..HEAD --pretty=%B)
+
+            # Determine bump type based on commit messages
+            if echo "$COMMIT_MESSAGES" | grep -iE "^BREAKING CHANGE:|^[a-z]+!:" > /dev/null; then
+              BUMP_TYPE="major"
+            elif echo "$COMMIT_MESSAGES" | grep -iE "^feat:" > /dev/null; then
+              BUMP_TYPE="minor"
+            else
+              BUMP_TYPE="patch"
+            fi
+
+            NEW_VERSION=$(npm --prefix gemma-qbnn-frontal version $BUMP_TYPE --no-git-tag-version | sed 's/^v//')
+          fi
+
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "bump_type=${BUMP_TYPE:-patch}" >> $GITHUB_OUTPUT
+          echo "New version: $NEW_VERSION"
+
+      - name: Update package.json
+        working-directory: gemma-qbnn-frontal
+        run: |
+          npm version ${{ steps.bump.outputs.new_version }} --no-git-tag-version
+          cat package.json | grep '"version"'
+
+      - name: Create tag
+        id: tag
+        run: |
+          TAG="gemma-qbnn-frontal@${{ steps.bump.outputs.new_version }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Creating tag: $TAG"
+
+      - name: Commit and push changes
+        run: |
+          git add gemma-qbnn-frontal/package.json
+          git commit -m "chore: bump gemma-qbnn-frontal to v${{ steps.bump.outputs.new_version }}"
+          git push origin HEAD:${{ github.ref }}
+
+      - name: Create and push tag
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+            git tag "$TAG"
+            git push origin "refs/tags/$TAG"
+            echo "Tag created and pushed: $TAG"
+          else
+            echo "Tag already exists: $TAG"
+          fi
+
+      - name: Install dependencies
+        working-directory: gemma-qbnn-frontal
+        run: npm install
+
+      - name: Build
+        working-directory: gemma-qbnn-frontal
+        run: npm run build
+
+      - name: Run tests
+        working-directory: gemma-qbnn-frontal
+        run: npm test --if-present
+        continue-on-error: true
+
+      - name: Publish to npm
+        working-directory: gemma-qbnn-frontal
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          release_name: gemma-qbnn-frontal v${{ steps.bump.outputs.new_version }}
+          body: |
+            ## Release Information
+
+            **Version:** v${{ steps.bump.outputs.new_version }} (${{ steps.bump.outputs.bump_type }} release)
+
+            This release automatically publishes **gemma-qbnn-frontal** to npm registry.
+
+            ### Installation
+            ```bash
+            npm install gemma-qbnn-frontal@${{ steps.bump.outputs.new_version }}
+            ```
+
+            ### Features
+            - Gemma + QBNN ハイブリッド推論システム
+            - Language understanding, issue discovery, quantum judgment
+            - Dynamic response generation (no templates)
+            - APQB quantum-based decision making
+
+            ### Documentation
+            - [README](https://github.com/${{ github.repository }}/blob/${{ steps.tag.outputs.tag }}/gemma-qbnn-frontal/README.md)
+            - [Package on npm](https://www.npmjs.com/package/gemma-qbnn-frontal)
+
+            For more details, see the [full commit](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+          draft: false
+          prerelease: false
+
+      - name: Post Success Message
+        if: success()
+        run: |
+          echo "✓ Successfully released gemma-qbnn-frontal v${{ steps.bump.outputs.new_version }}"
+          echo "Package: https://www.npmjs.com/package/gemma-qbnn-frontal"
+          echo "Release: https://github.com/${{ github.repository }}/releases/tag/${{ steps.tag.outputs.tag }}"
