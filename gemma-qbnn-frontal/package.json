@@ -27,7 +27,8 @@
     "test": "jest",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write src/**/*.ts",
-    "prepublish": "npm run build"
+    "prepublish": "npm run build",
+    "release": "node scripts/release.js"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",

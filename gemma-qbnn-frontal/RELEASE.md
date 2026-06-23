@@ -201,20 +201,50 @@ npm install gemma-qbnn-frontal@1.0.1
    npx tsc --noEmit
    ```
 
-## 手動リリース（オプション）
+## 手動リリース
 
-自動ワークフローを使わずに手動でリリースしたい場合：
+### オプション1: 自動化スクリプト（推奨）
+
+最も簡単な方法は付属のリリーススクリプトを使用することです：
+
+```bash
+cd gemma-qbnn-frontal
+npm run release
+```
+
+スクリプトは以下の処理を自動実行します：
+
+1. リリースタイプ（Patch/Minor/Major/Custom）を選択
+2. ビルドとテストを実行
+3. バージョンを更新
+4. npm に公開
+5. Gitタグを作成してプッシュ（オプション）
+
+**前提条件:**
+```bash
+npm login
+```
+
+### オプション2: 手動コマンド
+
+自動スクリプトを使わずに手動でリリースしたい場合：
 
 ```bash
 cd gemma-qbnn-frontal
 
-# ログイン
-npm login
+# 1. ビルドとテスト実行
+npm run build
+npm test
 
-# パッケージ公開
+# 2. バージョン更新（選択肢から1つ）
+npm version patch   # 1.0.0 → 1.0.1
+npm version minor   # 1.0.0 → 1.1.0
+npm version major   # 1.0.0 → 2.0.0
+
+# 3. npm に公開
 npm publish --access public
 
-# リリースノート作成（GitHub CLI使用）
+# 4. リリースノート作成（オプション、GitHub CLI使用）
 gh release create gemma-qbnn-frontal@1.0.1 \
   --title "gemma-qbnn-frontal v1.0.1" \
   --notes "Release notes here"
