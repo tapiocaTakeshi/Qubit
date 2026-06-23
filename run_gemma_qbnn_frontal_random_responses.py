@@ -45,12 +45,72 @@ except Exception as e:
     sys.exit(1)
 
 
+class EthicalConstraintLayer:
+    """倫理・安全性制約層 - 有害な行為を検出"""
+
+    def __init__(self):
+        """初期化"""
+        # 違法・有害なキーワード
+        self.harmful_keywords = {
+            "ハッキング": "違法な不正アクセス",
+            "不正": "違法行為",
+            "詐欺": "違法詐欺行為",
+            "侵入": "違法な侵入",
+            "盗難": "窃盗罪",
+            "泥棒": "窃盗罪",
+            "盗む": "窃盗罪",
+            "脅迫": "脅迫罪",
+            "脅す": "脅迫罪",
+            "違法": "違法行為",
+            "暴力": "暴力行為",
+            "犯罪": "犯罪行為",
+            "殺害": "殺人罪",
+            "殺す": "殺人罪",
+            "虐待": "虐待行為",
+            "いじめ": "いじめ行為",
+            "レイプ": "強制性交罪",
+            "強盗": "強盗罪",
+            "放火": "放火罪",
+            "違反": "法律違反",
+        }
+
+    def check_safety(self, user_input: str) -> tuple[bool, str]:
+        """安全性チェック
+
+        Returns:
+            (is_safe, reason) - (安全か, 理由)
+        """
+        input_lower = user_input.lower()
+
+        for keyword, reason in self.harmful_keywords.items():
+            # キーワードマッチング：完全一致または部分一致（柔軟なマッチング）
+            if keyword in user_input or keyword in input_lower:
+                return False, f"このリクエストは{reason}に該当する可能性があります"
+
+        # 特殊な危険パターンの検出
+        dangerous_patterns = [
+            ("殺", "殺人罪"),
+            ("強", "強制罪"),
+            ("盗", "窃盗罪"),
+            ("詐", "詐欺罪"),
+            ("脅", "脅迫罪"),
+            ("暴", "暴力罪"),
+        ]
+
+        for pattern, crime in dangerous_patterns:
+            if pattern in user_input:
+                return False, f"このリクエストは{crime}に該当する可能性があります"
+
+        return True, ""
+
+
 class GemmaLanguageProcessor:
     """Gemma言語処理エンジン - 理解→課題発見→生成"""
 
     def __init__(self):
         """初期化"""
         self.base_generator = QuantumTextGenerator()
+        self.ethical_constraint = EthicalConstraintLayer()
 
     def understand_language(self, user_input: str) -> Dict[str, Any]:
         """言語を理解"""
@@ -85,6 +145,22 @@ class GemmaLanguageProcessor:
             "成長": "成長",
             "気分": "感情",
             "手伝": "支援",
+            # 安全・倫理に関連する課題
+            "ハッキング": "セキュリティ・違法性の判断",
+            "不正": "違法性の判断",
+            "詐欺": "違法性・倫理の判断",
+            "侵入": "違法性・セキュリティの判断",
+            "盗難": "違法性の判断",
+            "泥棒": "違法性の判断",
+            "盗む": "違法性の判断",
+            "脅迫": "違法性・倫理の判断",
+            "脅す": "違法性・倫理の判断",
+            "違法": "違法性の判断",
+            "暴力": "倫理・安全性の判断",
+            "犯罪": "違法性・倫理の判断",
+            "殺す": "倫理・安全性の判断",
+            "虐待": "倫理・安全性の判断",
+            "いじめ": "倫理・安全性の判断",
         }
 
         for keyword, issue in issue_keywords.items():
@@ -96,6 +172,11 @@ class GemmaLanguageProcessor:
     def generate_dynamic_response(self, understanding: Dict[str, Any], judgment: Dict[str, Any]) -> str:
         """完全に動的な応答を生成（テンプレートなし）"""
         user_input = understanding["raw_text"]
+
+        # 安全性オーバーライドをチェック
+        if judgment.get("safety_override", False):
+            return self._respond_to_harmful_request(user_input, judgment)
+
         score = judgment["score"]
         decision = judgment["decision"]
         tendency = judgment["tendency"]
@@ -103,7 +184,8 @@ class GemmaLanguageProcessor:
 
         # キーワード抽出
         keywords = set()
-        for word in ["転職", "困", "悩", "判断", "学", "成長", "改善", "気分", "助け"]:
+        for word in ["転職", "困", "悩", "判断", "学", "成長", "改善", "気分", "助け",
+                     "ハッキング", "詐欺", "違法", "泥棒", "盗む", "脅迫", "暴力", "犯罪"]:
             if word in user_input:
                 keywords.add(word)
 
@@ -111,6 +193,18 @@ class GemmaLanguageProcessor:
             user_input, understanding, score, decision, tendency, issues, keywords
         )
         return response
+
+    def _respond_to_harmful_request(self, user_input: str, judgment: Dict[str, Any]) -> str:
+        """有害なリクエストへの応答"""
+        safety_reason = judgment.get("safety_reason", "このリクエストには対応できません")
+
+        harmful_responses = [
+            f"申し訳ございませんが、{safety_reason}。そのため、このリクエストにはお応えできません。",
+            f"このご質問は対応できません。理由: {safety_reason}。違法または倫理的に問題のある行為についてのアドバイスは提供できません。",
+            f"申し訳ありませんが、このリクエストには応じられません。{safety_reason}。法律や倫理に基づいたサポートを提供させていただきます。",
+        ]
+
+        return random.choice(harmful_responses)
 
     def _build_contextual_response(self, user_input: str, understanding: Dict[str, Any],
                                    score: float, decision: str, tendency: str,
@@ -129,8 +223,18 @@ class GemmaLanguageProcessor:
             return self._respond_to_learning(user_input, score, confidence_expr)
         elif "気分" in keywords:
             return self._respond_to_emotion(user_input, tendency, confidence_expr)
+        elif "ハッキング" in keywords or "詐欺" in keywords or "違法" in keywords:
+            # 安全性関連キーワード
+            return self._respond_to_safety_concern(user_input, decision, issues)
         else:
             return self._respond_generic(user_input, score, decision, tendency)
+
+    def _respond_to_safety_concern(self, user_input: str, decision: str, issues: List[str]) -> str:
+        """セキュリティ・倫理的懸念への応答"""
+        if decision == "No":
+            return "このご質問は倫理的・法的に対応できません。違法な行為やセキュリティリスクに関するアドバイスは提供できません。合法的で倫理的な選択肢についてのご相談があればお手伝いします。"
+        else:
+            return "この判断には慎重な検討が必要です。法的・倫理的な側面をしっかり理解した上で、専門家の助言を求めることをお強くお勧めします。"
 
     def _score_to_expression(self, score: float) -> str:
         """スコアを表現に変換"""
@@ -198,11 +302,33 @@ class QBNNJudgment:
         """QBNN判断層の初期化"""
         self.theta = [random.gauss(0, 0.1) for _ in range(256)]
         self.entangle_strength = 0.7
+        self.ethical_constraint = EthicalConstraintLayer()
 
     def judge_issues(self, understanding: Dict[str, Any], issues: List[str]) -> Dict[str, Any]:
         """課題に対して判断を実行"""
         user_input = understanding["raw_text"]
 
+        # ステップ1: 安全性チェック（倫理的制約の確認）
+        is_safe, safety_reason = self.ethical_constraint.check_safety(user_input)
+
+        if not is_safe:
+            # 安全性違反の場合は強制的にNoとする
+            return {
+                "score": 0,  # スコアは0（最低）
+                "decision": "No",  # 決定は「No」に強制
+                "tendency": "negative",
+                "confidence": 0.99,  # 確信度は最高
+                "issues": issues,
+                "safety_override": True,
+                "safety_reason": safety_reason,
+                "quantum_info": {
+                    "raw_score": -1.0,
+                    "quantum_correction_magnitude": 0,
+                    "entangle_strength": self.entangle_strength,
+                }
+            }
+
+        # ステップ2: 通常のAPQB計算（安全な入力の場合）
         # テキストを数値化
         tokens = [ord(c) % 256 for c in user_input[:256]]
 
@@ -236,6 +362,7 @@ class QBNNJudgment:
             "tendency": decision_tendency,
             "confidence": confidence,
             "issues": issues,
+            "safety_override": False,
             "quantum_info": {
                 "raw_score": judgment_score,
                 "quantum_correction_magnitude": sum(abs(x) for x in quantum_correction) / len(quantum_correction),
