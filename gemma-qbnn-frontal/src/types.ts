@@ -65,6 +65,34 @@ export interface EngineConfig {
 }
 
 /**
+ * チャットbot用の会話メッセージ
+ */
+export interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+  timestamp: string;
+}
+
+/**
+ * チャットbot設定
+ */
+export interface ChatbotConfig extends EngineConfig {
+  systemPrompt?: string;
+  maxHistory?: number;
+  showDiagnostics?: boolean;
+}
+
+/**
+ * チャットbotの1ターン分の結果
+ */
+export interface ChatbotTurn {
+  user: string;
+  assistant: string;
+  raw_response: HybridResponse;
+  history: ChatMessage[];
+}
+
+/**
  * スコア表現マップ
  */
 export type ScoreExpressionRange = {

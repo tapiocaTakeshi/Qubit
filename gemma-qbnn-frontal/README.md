@@ -53,6 +53,49 @@ console.log(response.response);
 //        学習曲線を考慮した計画を立てることが成功の鍵になります...
 ```
 
+
+### チャットbot CLI
+
+インストール後、ターミナルから対話型チャットbotを起動できます。
+
+```bash
+npm install gemma-qbnn-frontal
+npx gemma-qbnn-chatbot
+
+# 1回だけ推論して終了
+npx gemma-qbnn-chatbot "プログラミングを学ぶコツは？"
+
+# JSON形式で推論結果を確認
+npx gemma-qbnn-chatbot --json "転職すべきですか？"
+```
+
+このリポジトリ内で試す場合は、次のコマンドを使えます。
+
+```bash
+npm run chat
+```
+
+利用できるコマンド:
+
+- `/exit`: チャットbotを終了
+- `/reset`: 会話履歴をリセット
+- `--debug`: QBNN判定、スコア、検出課題を応答に表示
+- `--json`: ワンショット推論結果をJSONで表示
+
+### チャットbot API
+
+```typescript
+import { GemmaQBNNChatbot } from "gemma-qbnn-frontal";
+
+const bot = new GemmaQBNNChatbot({
+  maxHistory: 12,
+  showDiagnostics: true,
+});
+
+const turn = await bot.send("プログラミングを学ぶコツは？");
+console.log(turn.assistant);
+```
+
 ### 複数の応答を生成
 
 ```typescript
