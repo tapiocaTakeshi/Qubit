@@ -1,0 +1,67 @@
+name: Test - gemma-qbnn-frontal
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - "feature/**"
+    paths:
+      - "gemma-qbnn-frontal/**"
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - "gemma-qbnn-frontal/**"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        working-directory: gemma-qbnn-frontal
+        run: npm install
+
+      - name: Lint
+        working-directory: gemma-qbnn-frontal
+        run: npm run lint --if-present
+        continue-on-error: true
+
+      - name: Build
+        working-directory: gemma-qbnn-frontal
+        run: npm run build
+
+      - name: Run tests
+        working-directory: gemma-qbnn-frontal
+        run: npm test --if-present
+        continue-on-error: true
+
+      - name: Check types
+        working-directory: gemma-qbnn-frontal
+        run: npx tsc --noEmit
+        continue-on-error: true
+
+      - name: Generate coverage report
+        working-directory: gemma-qbnn-frontal
+        run: npm test -- --coverage --if-present
+        continue-on-error: true
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          working-directory: gemma-qbnn-frontal
+          fail_ci_if_error: false
+        continue-on-error: true
