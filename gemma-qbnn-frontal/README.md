@@ -24,6 +24,7 @@ Gemma: 言語生成 → 判断に基づいた動的応答生成
 - **課題発見**: テキストから複数の課題をキーワードベースで抽出
 - **量子判断**: APQB（Adjustable Pseudo Quantum Bit）を使用した判断処理
 - **動的応答**: テンプレートなしの完全に動的な応答生成
+- **前頭葉判断**: Gemma + QBNN as Frontal として意思決定、リスク評価、品質判定、倫理的判断に対応
 - **スコアベース**: 0-100のスコアに基づいた段階的な表現
 - **マルチコンテキスト**: キャリア、学習、感情など、複数のコンテキストに対応
 
@@ -53,6 +54,35 @@ console.log(response.response);
 //        学習曲線を考慮した計画を立てることが成功の鍵になります...
 ```
 
+
+
+### Gemma + QBNN as Frontal 判断エンジン
+
+`GemmaQBNNFrontal` は Python 版 `FrontalEngineJudge` と互換の入出力スキーマで、前頭葉のような意思決定・リスク評価・品質判定・倫理的判断を行います。
+
+```typescript
+import { GemmaQBNNFrontal } from "gemma-qbnn-frontal";
+
+const frontal = new GemmaQBNNFrontal({
+  entangle_strength: 0.7,
+  quantum_weight: 0.6,
+});
+
+const result = frontal.judge({
+  context: `コードレビュー完了、テスト成功、セキュリティスキャン問題なし、
+            ロールバック計画とモニタリングも構成済みです。`,
+  judgment_request: "このコードは本番環境にデプロイ可能か？",
+  criteria: { security: true, rollback: true },
+  options: ["デプロイする", "延期する"],
+  strict_mode: true,
+});
+
+console.log(result.decision); // "Yes" または "No"
+console.log(result.score);    // 0-100
+console.log(result.reasoning);
+```
+
+返却値は `decision`, `score`, `reasoning`, `confidence`, `key_factors`, `timestamp`, `quantum_info` を含み、MCP サーバー版の前頭葉判断 API と同じ形で扱えます。
 
 ### チャットbot CLI
 

@@ -100,3 +100,40 @@ export type ScoreExpressionRange = {
   max: number;
   expression: string;
 };
+
+/**
+ * Gemma + QBNN as Frontal 判断タスク
+ */
+export interface FrontalJudgmentTask {
+  context: string;
+  judgment_request: string;
+  criteria?: Record<string, string | number | boolean>;
+  options?: string[];
+  strict_mode?: boolean;
+}
+
+/**
+ * Gemma + QBNN as Frontal 判断結果
+ */
+export interface FrontalJudgmentResult {
+  decision: "Yes" | "No";
+  score: number;
+  reasoning: string;
+  confidence: "high" | "medium" | "low";
+  key_factors: string[];
+  timestamp: string;
+  quantum_info?: {
+    yes_probability: number;
+    quantum_weight: number;
+    entangle_strength: number;
+    system: string;
+  };
+  error?: boolean;
+}
+
+/**
+ * Gemma + QBNN as Frontal 設定
+ */
+export interface FrontalEngineConfig extends EngineConfig {
+  quantum_weight?: number;
+}
