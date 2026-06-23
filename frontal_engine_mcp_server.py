@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """
-QBNN Frontal Engine - MCP Server
-前頭葉の判断機能を提供するMCPサーバー
+QBNN Frontal Engine - MCP Server (Quantum-Enhanced)
+量子強化型前頭葉判断機能を提供するMCPサーバー
 
-役割: あらゆる判断タスク（Yes/No、スコア0-100、根拠説明付き）を処理
-入力: JSONデータで判断内容を指定
-出力: 判断結果、スコア、根拠説明
+役割: Gemma+QBNN を使用したあらゆる判断タスク
+     （Yes/No、スコア0-100、根拠説明付き）を処理
+
+特徴:
+  - 量子ビット層による非古典的推論
+  - 層間エンタングルメントによる複雑な判断
+  - Gemmaトランスフォーマーによる意味理解
 """
 
 import os
@@ -37,6 +41,16 @@ except ImportError:
 sys.path.insert(0, os.path.dirname(__file__))
 
 try:
+    from gemma_qbnn_prefrontal_cortex import (
+        GemmaQBNNPrefrontalCortex,
+        JudgmentConfig,
+        create_prefrontal_cortex
+    )
+    QUANTUM_PREFRONTAL_AVAILABLE = True
+except ImportError:
+    QUANTUM_PREFRONTAL_AVAILABLE = False
+
+try:
     from neuroquantum_layered import (
         NeuroQuantum,
         NeuroQuantumConfig,
@@ -49,29 +63,62 @@ except ImportError:
 
 class FrontalEngineJudge:
     """
-    前頭葉の判断エンジン
-    任意の判断タスクを受け取り、Yes/No、スコア、根拠を返す
+    前頭葉の判断エンジン（量子強化型）
+    Gemma + QBNN を使用して複雑な判断タスクを実行
+
+    特徴:
+    - 量子層によるエンタングルメント推論
+    - Gemmaトランスフォーマーによる言語理解
+    - ハイブリッド判断プロセス
     """
 
     def __init__(self):
         self.device = None
         if TORCH_AVAILABLE:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = None
+
+        self.quantum_cortex = None
+        self.fallback_model = None
         self.tokenizer = None
         self.config = None
+        self.use_quantum = False
+
         self.initialize_model()
 
     def initialize_model(self):
         """モデルとトークナイザーを初期化"""
         try:
-            # トークナイザーを読み込む
+            # 量子前頭葉システムを優先的に初期化
+            if QUANTUM_PREFRONTAL_AVAILABLE:
+                print("✓ Gemma+QBNN Quantum Prefrontal Cortex を初期化中...", file=sys.stderr)
+                cortex_config = JudgmentConfig(
+                    vocab_size=32000,
+                    embed_dim=768,
+                    hidden_dim=2048,
+                    num_heads=12,
+                    num_layers=12,
+                    entangle_strength=0.7,
+                    quantum_weight=0.6
+                )
+                self.quantum_cortex = create_prefrontal_cortex(
+                    config=cortex_config,
+                    device=self.device
+                )
+                if self.quantum_cortex:
+                    self.quantum_cortex.eval()
+                    self.use_quantum = True
+                    print("✓ 量子前頭葉システムの初期化完了", file=sys.stderr)
+        except Exception as e:
+            print(f"Quantum cortex initialization warning: {e}", file=sys.stderr)
+
+        # フォールバック: 従来的なモデル
+        try:
             tokenizer_path = Path(__file__).parent / "neuroq_tokenizer.model"
             if tokenizer_path.exists():
                 self.tokenizer = NeuroQuantumTokenizer(str(tokenizer_path))
 
-            # QBNN モデルを初期化（推論用）
-            if NEUROQUANTUM_AVAILABLE:
+            if NEUROQUANTUM_AVAILABLE and not self.use_quantum:
+                print("✓ フォールバック NeuroQuantum モデルを初期化中...", file=sys.stderr)
                 self.config = NeuroQuantumConfig(
                     vocab_size=8000,
                     embed_dim=512,
@@ -83,14 +130,14 @@ class FrontalEngineJudge:
                     dropout=0.1,
                     architecture="neuroquantum"
                 )
-                self.model = NeuroQuantum(self.config).to(self.device)
-                self.model.eval()
+                self.fallback_model = NeuroQuantum(self.config).to(self.device)
+                self.fallback_model.eval()
         except Exception as e:
-            print(f"Model initialization warning: {e}", file=sys.stderr)
+            print(f"Fallback model initialization warning: {e}", file=sys.stderr)
 
     def judge(self, judgment_task: Dict[str, Any]) -> Dict[str, Any]:
         """
-        判断タスクを実行
+        判断タスクを実行（量子強化型）
 
         入力スキーマ:
         {
@@ -108,7 +155,8 @@ class FrontalEngineJudge:
             "reasoning": "判断の根拠説明",
             "confidence": "high" | "medium" | "low",
             "key_factors": ["要因1", "要因2", ...],
-            "timestamp": "ISO形式の時刻"
+            "timestamp": "ISO形式の時刻",
+            "quantum_info": {...}  # 量子推論情報
         }
         """
         try:
@@ -121,7 +169,20 @@ class FrontalEngineJudge:
             if not context or not judgment_request:
                 return self._error_response("context と judgment_request は必須です")
 
-            # 判断ロジック
+            # 量子前頭葉を使用可能な場合は優先する
+            if self.use_quantum and self.quantum_cortex:
+                try:
+                    return self.quantum_cortex.judge({
+                        "context": context,
+                        "judgment_request": judgment_request,
+                        "criteria": criteria,
+                        "options": options,
+                        "strict_mode": strict_mode
+                    })
+                except Exception as e:
+                    print(f"Quantum cortex judgment error: {e}, falling back to traditional", file=sys.stderr)
+
+            # フォールバック: 従来的な判断ロジック
             decision, score, reasoning, confidence, key_factors = self._analyze_judgment(
                 context=context,
                 judgment_request=judgment_request,
@@ -136,7 +197,8 @@ class FrontalEngineJudge:
                 "reasoning": reasoning,
                 "confidence": confidence,
                 "key_factors": key_factors,
-                "timestamp": datetime.utcnow().isoformat() + "Z"
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "system": "traditional_fallback" if not self.use_quantum else "quantum_prefrontal"
             }
 
         except Exception as e:
