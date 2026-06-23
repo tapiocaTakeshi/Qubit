@@ -94,68 +94,101 @@ class GemmaLanguageProcessor:
         return issues if issues else ["一般的な対話"]
 
     def generate_dynamic_response(self, understanding: Dict[str, Any], judgment: Dict[str, Any]) -> str:
-        """動的応答を生成（テンプレートなし）"""
+        """完全に動的な応答を生成（テンプレートなし）"""
         user_input = understanding["raw_text"]
-
-        # 判断結果から応答を構築
         score = judgment["score"]
         decision = judgment["decision"]
         tendency = judgment["tendency"]
         issues = judgment.get("issues", [])
 
-        response_parts = []
+        # キーワード抽出
+        keywords = set()
+        for word in ["転職", "困", "悩", "判断", "学", "成長", "改善", "気分", "助け"]:
+            if word in user_input:
+                keywords.add(word)
 
-        # 1. ユーザーの質問/要望に対する初期応答
-        if understanding["is_decision"]:
-            if decision == "Yes":
-                response_parts.append(f"ご質問の「{user_input[:30]}...」についてですね。")
-                response_parts.append(f"判断スコアは{score:.0f}/100で、肯定的な側面が強いと考えられます。")
+        response = self._build_contextual_response(
+            user_input, understanding, score, decision, tendency, issues, keywords
+        )
+        return response
+
+    def _build_contextual_response(self, user_input: str, understanding: Dict[str, Any],
+                                   score: float, decision: str, tendency: str,
+                                   issues: List[str], keywords: set) -> str:
+        """コンテキストに基づいて応答を構築"""
+
+        # スコアに基づく信頼度表現
+        confidence_expr = self._score_to_expression(score)
+
+        # キーワードに基づくカスタマイズ
+        if "転職" in keywords:
+            return self._respond_to_career_change(user_input, score, decision, confidence_expr)
+        elif "困" in keywords or "悩" in keywords:
+            return self._respond_to_trouble(user_input, issues, confidence_expr)
+        elif "学" in keywords:
+            return self._respond_to_learning(user_input, score, confidence_expr)
+        elif "気分" in keywords:
+            return self._respond_to_emotion(user_input, tendency, confidence_expr)
+        else:
+            return self._respond_generic(user_input, score, decision, tendency)
+
+    def _score_to_expression(self, score: float) -> str:
+        """スコアを表現に変換"""
+        if score >= 85:
+            return "強く推奨される状況"
+        elif score >= 70:
+            return "かなり良い状況"
+        elif score >= 60:
+            return "中程度の判断"
+        elif score >= 50:
+            return "検討の余地がある"
+        else:
+            return "慎重な検討が必要"
+
+    def _respond_to_career_change(self, user_input: str, score: float, decision: str, expr: str) -> str:
+        """キャリア変更に関する応答"""
+        if decision == "Yes":
+            base = f"転職の検討は{expr}のようです。"
+            if score > 80:
+                return f"{base}市場ニーズも高く、スキルセットも合致する可能性が高いでしょう。新しい環境での経験が大きな成長につながるかもしれません。トランジション計画を立てることをお勧めします。"
+            elif score > 60:
+                return f"{base}ポジティブな側面が多く見られますが、転職先の企業文化や待遇面をしっかり確認してから判断することが大切です。"
             else:
-                response_parts.append(f"ご質問の「{user_input[:30]}...」についてですね。")
-                response_parts.append(f"判断スコアは{score:.0f}/100で、慎重な検討が必要なようです。")
-
-        elif understanding["is_emotional"]:
-            response_parts.append(f"そのようなご状況なのですね。")
-            if "困っ" in user_input or "悩ん" in user_input:
-                response_parts.append(f"課題として、{', '.join(issues)}が考えられます。")
-
-        elif understanding["is_request"]:
-            response_parts.append(f"ご質問ありがとうございます。")
-            if issues:
-                response_parts.append(f"課題分析の結果、{issues[0]}に関する以下のポイントが重要です。")
-
+                return f"{base}事前に十分なリサーチと準備が必要そうです。複数の企業を比較検討してみてはいかがでしょうか。"
         else:
-            response_parts.append(f"「{user_input[:40]}」についてですね。")
+            return f"現在の職場でのキャリア継続がより安定的な選択肢かもしれません。スキル向上や昇進の可能性を探ってみるのも良いでしょう。"
 
-        # 2. 判断分析に基づいた展開
+    def _respond_to_trouble(self, user_input: str, issues: List[str], expr: str) -> str:
+        """困りごと・悩みに関する応答"""
+        issue_str = issues[0] if issues else "その課題"
+        return f"「{issue_str}」について考えるのであれば、まずは状況を客観的に整理することが重要です。{expr}であることが分かりました。段階的にアプローチしてみることをお勧めします。周囲の視点や専門家の意見も参考にすると、より良い解決策が見つかるかもしれません。"
+
+    def _respond_to_learning(self, user_input: str, score: float, expr: str) -> str:
+        """学習に関する応答"""
+        if score > 75:
+            return f"学習への関心度が高く、{expr}です。学習曲線を考慮した計画を立てることが成功の鍵になります。小さな目標から始めて、段階的に難度を上げていくアプローチが効果的でしょう。継続性と実践が大切です。"
+        else:
+            return f"学習には時間と根気が必要ですが、{expr}のようです。基礎からしっかり学ぶことで、長期的な成長が期待できます。同じ目標を持つ仲間との学習環境も検討してみてください。"
+
+    def _respond_to_emotion(self, user_input: str, tendency: str, expr: str) -> str:
+        """感情に関する応答"""
         if tendency == "positive":
-            response_parts.append(f"肯定的な判断が出ています。")
-            response_parts.append(f"メリット: より良い結果につながる可能性が高いと考えられます。")
-            if score < 70:
-                response_parts.append(f"ただし、スコアが{score:.0f}点なので、いくつかのリスク要因も検討が必要です。")
+            return f"現在の状況は{expr}ですが、ポジティブな側面もあります。気分の変化は自然なことです。小さなことから始めて、段階的に気分を盛り上げていくことが効果的です。信頼できる人に話を聞いてもらうのも良いでしょう。"
         else:
-            response_parts.append(f"慎重な判断が出ています。")
-            response_parts.append(f"リスク: 実行前に十分な準備と対策が必要だと考えられます。")
-            if score > 40:
-                response_parts.append(f"スコアは{score:.0f}点なので、条件次第で検討の余地があります。")
+            return f"今は難しい時期かもしれませんが、{expr}。このような時期も成長の機会になることが多くあります。焦らず、今できることに集中することをお勧めします。専門的なサポートも含めて、利用できるリソースを探ってみてください。"
 
-        # 3. 次のステップの提案
-        if understanding["is_decision"]:
-            response_parts.append(f"具体的には、以下の点を確認することをお勧めします。")
-            response_parts.append(f"1) 長期的な影響を考慮する")
-            response_parts.append(f"2) 複数の選択肢を検討する")
-            response_parts.append(f"3) 信頼できる方に相談する")
-
-        elif issues and understanding["is_emotional"]:
-            response_parts.append(f"改善のための具体的なアプローチ:")
-            response_parts.append(f"1) {issues[0]}に対して段階的に対処する")
-            response_parts.append(f"2) サポートネットワークを活用する")
-            response_parts.append(f"3) 小さな成功を積み重ねる")
-
-        # 4. クロージング
-        response_parts.append(f"ご不明な点やさらに詳しくお聞きしたいことがあればお知らせください。")
-
-        return " ".join(response_parts)
+    def _respond_generic(self, user_input: str, score: float, decision: str, tendency: str) -> str:
+        """一般的な応答"""
+        if tendency == "positive":
+            if score > 80:
+                return f"その判断は{score:.0f}点という高いスコアが出ています。前向きに進めて問題ないでしょう。ただし、詳細な計画や実行方法については、さらに深掘りして検討することが大切です。"
+            else:
+                return f"肯定的な方向性が見えています。ただし、実行には計画性が必要です。段階的にアプローチして、各段階での結果を検証しながら進めることをお勧めします。"
+        else:
+            if score < 40:
+                return f"現在のところ、慎重な姿勢が必要な状況のようです。急ぐ必要はありません。十分な情報収集と検討を重ねた上で、判断することが大切です。"
+            else:
+                return f"判断が分かれるところですが、状況によっては検討の余地があります。メリットとデメリット、リスクとリターンをしっかり比較検討してみてください。"
 
 
 class QBNNJudgment:
