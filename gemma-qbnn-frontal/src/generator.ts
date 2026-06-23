@@ -29,6 +29,7 @@ export class QuantumTextGenerator {
   private theta: number = 0.3;
   private conversationHistory: ConversationMessage[] = [];
   private knowledgeBase: Record<string, string[]>;
+  private readonly MAX_HISTORY_SIZE = 1000;
 
   constructor() {
     this.knowledgeBase = this._buildKnowledgeBase();
@@ -379,6 +380,11 @@ export class QuantumTextGenerator {
 
     // 応答を履歴に追加
     this.conversationHistory.push({ role: "assistant", content: response });
+
+    // 履歴サイズ制限を適用
+    if (this.conversationHistory.length > this.MAX_HISTORY_SIZE) {
+      this.conversationHistory = this.conversationHistory.slice(-this.MAX_HISTORY_SIZE);
+    }
 
     return response;
   }

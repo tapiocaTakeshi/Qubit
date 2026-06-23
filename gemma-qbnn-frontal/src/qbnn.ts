@@ -10,6 +10,17 @@ export class QBNNJudgment {
   private entangle_strength: number;
 
   constructor(entangle_strength: number = 0.7, seed?: number) {
+    // パラメータ検証
+    if (entangle_strength < 0 || entangle_strength > 1) {
+      throw new Error(
+        `entangle_strength must be between 0 and 1, got ${entangle_strength}`
+      );
+    }
+
+    if (seed !== undefined && !Number.isFinite(seed)) {
+      throw new Error(`seed must be a finite number, got ${seed}`);
+    }
+
     this.entangle_strength = entangle_strength;
     this.theta = this.initializeTheta(256, seed);
   }
