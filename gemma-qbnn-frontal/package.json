@@ -27,7 +27,8 @@
     "test": "jest",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write src/**/*.ts",
-    "prepublish": "npm run build"
+    "prepublish": "npm run build",
+    "chat": "npm run build && node dist/chatbot-cli.js"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
@@ -48,5 +49,8 @@
     "src",
     "README.md",
     "LICENSE"
-  ]
+  ],
+  "bin": {
+    "gemma-qbnn-chatbot": "dist/chatbot-cli.js"
+  }
 }
