@@ -1,0 +1,36 @@
+{
+  "mcp": {
+    "servers": {
+      "qbnn-frontal-engine": {
+        "command": "python",
+        "args": [
+          "/home/user/Qubit/frontal_engine_mcp_server.py"
+        ],
+        "env": {
+          "PYTHONUNBUFFERED": "1",
+          "PYTHONPATH": "/home/user/Qubit"
+        }
+      }
+    }
+  },
+  "integrations": {
+    "qbnn_prefrontal": {
+      "enabled": true,
+      "description": "QBNN Frontal Engine as Claude's Prefrontal Cortex",
+      "module": "claude_prefrontal_integration",
+      "features": {
+        "safety_checks": true,
+        "ethical_judgment": true,
+        "quality_evaluation": true,
+        "risk_assessment": true,
+        "task_prioritization": true
+      }
+    }
+  },
+  "claude_preferences": {
+    "use_prefrontal_for_decisions": true,
+    "strict_mode_for_safety": true,
+    "ethical_checks_enabled": true,
+    "log_judgments": true
+  }
+}
