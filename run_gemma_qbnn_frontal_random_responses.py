@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Gemma言語生成 + QBNN判断処理による統合システム
+Gemma + QBNN ハイブリッド推論システム
 生成AIぽくランダムな応答を返すシステム
 
 アーキテクチャ:
-- Gemma: 言語生成エンジン（自然な応答を生成）
-- QBNN: 前頭葉判断層（判断分析を実行）
-- 統合: QBNN判断に基づいてGemmaの応答を多様化
+- Gemma: 課題発見、言語理解、言語生成（複合エンジン）
+- QBNN: 判断処理（Yes/No、肯定/否定、スコア計算）
+- 統合パイプライン: 課題発見 → 理解 → QBNN判断 → 言語生成
 """
 
 import sys
@@ -45,16 +45,81 @@ except Exception as e:
     sys.exit(1)
 
 
-class QBNNFrontalJudgment:
-    """QBNN前頭葉による判断エンジン"""
+class GemmaLanguageProcessor:
+    """Gemma言語処理エンジン - 課題発見・理解・生成"""
+
+    def __init__(self):
+        """初期化"""
+        self.base_generator = QuantumTextGenerator()
+
+    def discover_issues(self, user_input: str) -> List[str]:
+        """入力から課題を発見"""
+        issues = []
+        input_lower = user_input.lower()
+
+        # 課題キーワード検出
+        issue_keywords = {
+            "転職": "キャリア変更の検討",
+            "困っ": "問題解決の必要性",
+            "悩ん": "意思決定の支援",
+            "判断": "判断・意思決定",
+            "アドバイス": "指導・支援の要求",
+            "学ぶ": "スキル習得の支援",
+            "改善": "プロセス改善",
+            "リスク": "リスク評価",
+            "成長": "個人・組織の成長",
+        }
+
+        for keyword, issue in issue_keywords.items():
+            if keyword in input_lower:
+                issues.append(issue)
+
+        return issues if issues else ["一般的な質問への対応"]
+
+    def understand_intent(self, user_input: str) -> Dict[str, Any]:
+        """ユーザーの意図を理解"""
+        input_lower = user_input.lower()
+
+        intent_analysis = {
+            "type": "unknown",
+            "is_question": "？" in user_input or "?" in user_input,
+            "is_request_for_advice": any(w in input_lower for w in ["アドバイス", "教えて", "どう思う", "意見"]),
+            "is_decision_request": any(w in input_lower for w in ["すべき", "判断", "選ぶ", "決める"]),
+            "is_emotional": any(w in input_lower for w in ["困っ", "悩ん", "つらい", "嬉しい", "悔しい"]),
+            "is_exploration": any(w in input_lower for w in ["について", "とは", "どう", "なぜ"]),
+        }
+
+        # インテントタイプを決定
+        if intent_analysis["is_decision_request"]:
+            intent_analysis["type"] = "decision_making"
+        elif intent_analysis["is_request_for_advice"]:
+            intent_analysis["type"] = "advice_request"
+        elif intent_analysis["is_emotional"]:
+            intent_analysis["type"] = "emotional_support"
+        elif intent_analysis["is_exploration"]:
+            intent_analysis["type"] = "exploration"
+        elif intent_analysis["is_question"]:
+            intent_analysis["type"] = "question"
+        else:
+            intent_analysis["type"] = "statement"
+
+        return intent_analysis
+
+    def generate_response(self, user_input: str, judgment_result: Dict[str, Any]) -> str:
+        """QBNN判断結果に基づいて応答を生成"""
+        return self.base_generator.generate(user_input)
+
+
+class QBNNJudgment:
+    """QBNN判断層 - 判断処理のみを実行"""
 
     def __init__(self):
         """QBNN判断層の初期化"""
         self.theta = [random.gauss(0, 0.1) for _ in range(256)]
         self.entangle_strength = 0.7
 
-    def judge_input(self, user_input: str) -> Dict[str, Any]:
-        """ユーザー入力を判断分析"""
+    def judge(self, user_input: str, issue_list: List[str], intent: Dict[str, Any]) -> Dict[str, Any]:
+        """入力、課題、インテントに基づいて判断を実行"""
         # テキストを数値化
         tokens = [ord(c) % 256 for c in user_input[:256]]
 
@@ -66,8 +131,11 @@ class QBNNFrontalJudgment:
         # 量子補正
         quantum_correction = [(r[i] * 0.3 + T[i] * 0.2) * self.entangle_strength for i in range(len(r))]
 
-        # 判断スコア
+        # 判断スコア（0-1の正規化）
         judgment_score = sum(quantum_correction) / len(quantum_correction) if quantum_correction else 0
+        normalized_score = (judgment_score + 0.3) / 0.6  # -0.3～+0.3 を 0～1に正規化
+        normalized_score = max(0, min(1, normalized_score))
+
         if quantum_correction:
             mean_score = judgment_score
             variance = sum((x - mean_score) ** 2 for x in quantum_correction) / len(quantum_correction)
@@ -75,21 +143,33 @@ class QBNNFrontalJudgment:
         else:
             confidence = 0
 
+        # 判断結果の生成
+        judgment_decision = "Yes" if normalized_score > 0.5 else "No"
+        decision_tendency = "positive" if judgment_score > 0 else "negative"
+
         return {
-            "judgment_score": judgment_score,
+            "score": normalized_score * 100,  # 0-100スケール
+            "decision": judgment_decision,
+            "tendency": decision_tendency,
             "confidence": confidence,
-            "quantum_state": quantum_correction,
-            "decision_tendency": "positive" if judgment_score > 0 else "negative"
+            "quantum_info": {
+                "raw_score": judgment_score,
+                "quantum_correction_magnitude": sum(abs(x) for x in quantum_correction) / len(quantum_correction),
+                "entangle_strength": self.entangle_strength,
+            }
         }
 
 
-class GemmaQBNNRandomResponseEngine:
-    """Gemma言語生成 + QBNN判断による統合ランダム応答エンジン"""
+class GemmaQBNNHybridEngine:
+    """Gemma + QBNN ハイブリッド推論エンジン"""
 
     def __init__(self):
         """初期化"""
-        self.gemma_generator = QuantumTextGenerator()  # 言語生成
-        self.qbnn_judgment = QBNNFrontalJudgment()     # 判断処理
+        # Gemmaコンポーネント
+        self.gemma = GemmaLanguageProcessor()
+        # QBNNコンポーネント
+        self.qbnn = QBNNJudgment()
+
         self.response_cache = {}
         self.diversity_factor = 0.7
         self.quantum_influence = 0.5
@@ -97,9 +177,9 @@ class GemmaQBNNRandomResponseEngine:
         # 応答のバリエーション
         self.response_templates = self._build_response_templates()
 
-        print("\n【Gemma言語生成 + QBNN判断エンジン初期化】")
-        print(f"  言語生成: Gemmaベース")
-        print(f"  判断処理: QBNN前頭葉")
+        print("\n【Gemma + QBNN ハイブリッド推論エンジン初期化】")
+        print(f"  Gemma: 課題発見・言語理解・言語生成")
+        print(f"  QBNN: 判断処理（Yes/No、スコア、傾向）")
         print(f"  多様性係数: {self.diversity_factor}")
         print(f"  ✓ 初期化完了")
 
@@ -180,26 +260,36 @@ class GemmaQBNNRandomResponseEngine:
         quantum_value = (r * 0.3 + T * 0.2)
         return quantum_value * self.quantum_influence
 
-    def _generate_diverse_response(self, user_input: str, base_response: str, judgment: Dict[str, Any]) -> str:
-        """QBNN判断を使用して応答を多様化させる"""
+    def _generate_diverse_response(self, user_input: str, base_response: str, judgment: Dict[str, Any], intent: Dict[str, Any]) -> str:
+        """QBNN判断とインテント分析に基づいて応答を多様化させる"""
         # ランダム性を追加
         if random.random() < self.diversity_factor:
             response_parts = []
 
             # QBNN判断に基づいてトーンを決定
-            decision_tendency = judgment["decision_tendency"]
-            judgment_score = judgment["judgment_score"]
+            decision_tendency = judgment["tendency"]
+            judgment_score = judgment["score"]
+            qbnn_decision = judgment["decision"]
+
+            # インテント別の処理
+            intent_type = intent["type"]
 
             # オープニング
             if random.random() > 0.3:
                 response_parts.append(random.choice(self.response_templates["opening"]))
 
-            # 分析パート
-            if random.random() > 0.2:
+            # インテント別の説明
+            if intent_type == "decision_making":
+                response_parts.append("判断を支援するために、複数の観点から検討してみましょう。")
+            elif intent_type == "advice_request":
+                response_parts.append("アドバイスをさせていただきます。")
+            elif intent_type == "emotional_support":
+                response_parts.append("そのようなご状況なのですね。")
+            else:
                 response_parts.append(random.choice(self.response_templates["analysis"]))
 
             # QBNN判断に基づいた側面選択
-            if decision_tendency == "positive" and abs(judgment_score) > 0.1:
+            if decision_tendency == "positive" or (qbnn_decision == "Yes" and judgment_score >= 50):
                 if random.random() > 0.4:
                     response_parts.append(random.choice(self.response_templates["positive_aspect"]))
                     response_parts.append("様々な利点が考えられます。")
@@ -225,7 +315,10 @@ class GemmaQBNNRandomResponseEngine:
             # 結論
             if random.random() > 0.3:
                 response_parts.append(random.choice(self.response_templates["conclusion"]))
-                response_parts.append("バランスの取れたアプローチが最適と考えられます。")
+                if qbnn_decision == "Yes":
+                    response_parts.append("全体的には肯定的な判断と考えられます。")
+                else:
+                    response_parts.append("慎重な検討が必要と考えられます。")
 
             # 推奨事項
             if random.random() > 0.4:
@@ -257,18 +350,25 @@ class GemmaQBNNRandomResponseEngine:
         return response
 
     def generate_random_response(self, user_input: str) -> Dict[str, Any]:
-        """Gemma言語生成 + QBNN判断によるランダム応答生成"""
+        """Gemma + QBNN ハイブリッド推論によるランダム応答生成"""
 
-        # ステップ1: QBNN前頭葉による判断分析
-        judgment = self.qbnn_judgment.judge_input(user_input)
+        # パイプライン実行
+        # ステップ1: Gemmaが課題を発見
+        issues = self.gemma.discover_issues(user_input)
 
-        # ステップ2: Gemma言語生成エンジンでベース応答を生成
-        base_response = self.gemma_generator.generate(user_input)
+        # ステップ2: Gemmaがユーザーの意図を理解
+        intent = self.gemma.understand_intent(user_input)
 
-        # ステップ3: QBNN判断に基づいて応答を多様化
-        diverse_response = self._generate_diverse_response(user_input, base_response, judgment)
+        # ステップ3: QBNNが判断を実行
+        judgment = self.qbnn.judge(user_input, issues, intent)
 
-        # ステップ4: 量子的なランダム化を適用
+        # ステップ4: Gemmaがベース応答を生成
+        base_response = self.gemma.base_generator.generate(user_input)
+
+        # ステップ5: QBNN判断に基づいて応答を多様化
+        diverse_response = self._generate_diverse_response(user_input, base_response, judgment, intent)
+
+        # ステップ6: 量子的なランダム化を適用
         final_response = self._apply_quantum_randomization(diverse_response)
 
         quantum_factor = self._calculate_quantum_random_factor()
@@ -277,16 +377,20 @@ class GemmaQBNNRandomResponseEngine:
             "input": user_input,
             "response": final_response,
             "quantum_factor": quantum_factor,
-            "judgment_score": judgment["judgment_score"],
-            "decision_tendency": judgment["decision_tendency"],
+            "issues_discovered": issues,
+            "intent_type": intent["type"],
+            "qbnn_decision": judgment["decision"],
+            "qbnn_score": judgment["score"],
+            "qbnn_tendency": judgment["tendency"],
             "confidence": judgment["confidence"],
             "diversity_score": self.diversity_factor,
             "is_randomized": True,
-            "model": "Gemma言語生成 + QBNN判断",
+            "model": "Gemma + QBNN ハイブリッド推論",
             "processing_pipeline": [
-                "入力解析",
-                "QBNN判断",
-                "Gemma言語生成",
+                "Gemma: 課題発見",
+                "Gemma: 言語理解",
+                "QBNN: 判断処理",
+                "Gemma: 言語生成",
                 "多様化処理",
                 "量子ランダム化"
             ]
@@ -312,11 +416,11 @@ class GemmaQBNNRandomResponseEngine:
         return responses
 
 
-class GemmaQBNNRandomResponseDemo:
-    """Gemma言語生成 + QBNN判断 ランダム応答デモンストレーション"""
+class GemmaQBNNHybridDemo:
+    """Gemma + QBNN ハイブリッド推論デモンストレーション"""
 
     def __init__(self):
-        self.engine = GemmaQBNNRandomResponseEngine()
+        self.engine = GemmaQBNNHybridEngine()
         self.demo_inputs = [
             "こんにちは。今日はどのようなことについて話したいですか？",
             "転職すべきですか？給与は上がるけど、安定性が不安です。",
@@ -328,7 +432,7 @@ class GemmaQBNNRandomResponseDemo:
     def demo_single_response(self):
         """単一応答デモ"""
         print("\n" + "="*70)
-        print("デモ 1: 単一ランダム応答生成（Gemma + QBNN）")
+        print("デモ 1: Gemma課題発見 + QBNN判断 → 応答生成")
         print("="*70)
 
         user_input = "プログラミングを学ぶコツは何ですか？"
@@ -336,22 +440,33 @@ class GemmaQBNNRandomResponseDemo:
 
         result = self.engine.generate_random_response(user_input)
 
-        print(f"\n【応答】")
-        print(f"{result['response']}")
-        print(f"\n【QBNN判断】")
-        print(f"  判断スコア: {result['judgment_score']:.3f}")
-        print(f"  判断傾向: {result['decision_tendency']}")
+        print(f"\n【Gemma: 課題発見】")
+        for i, issue in enumerate(result['issues_discovered'], 1):
+            print(f"  {i}. {issue}")
+
+        print(f"\n【Gemma: インテント理解】")
+        print(f"  質問: {result['intent_type']}")
+
+        print(f"\n【QBNN: 判断処理】")
+        print(f"  判定: {result['qbnn_decision']}")
+        print(f"  スコア: {result['qbnn_score']:.1f}/100")
+        print(f"  傾向: {result['qbnn_tendency']}")
         print(f"  信頼度: {result['confidence']:.3f}")
+
+        print(f"\n【Gemma: 言語生成】")
+        print(f"{result['response']}")
+
         print(f"\n【メタデータ】")
         print(f"  量子因子: {result['quantum_factor']:.3f}")
         print(f"  多様性スコア: {result['diversity_score']:.1f}")
-        print(f"  モデル: {result['model']}")
-        print(f"  処理パイプライン: {' → '.join(result['processing_pipeline'])}")
+        print(f"  処理パイプライン:")
+        for step in result['processing_pipeline']:
+            print(f"    → {step}")
 
     def demo_multiple_variations(self):
         """複数バリエーション応答デモ"""
         print("\n" + "="*70)
-        print("デモ 2: 同一入力への複数応答（ランダム多様化）")
+        print("デモ 2: 同一入力への複数応答バリエーション")
         print("="*70)
 
         user_input = "起業に興味があります。アドバイスをください。"
@@ -361,9 +476,10 @@ class GemmaQBNNRandomResponseDemo:
 
         for resp in responses:
             print(f"\n【応答 {resp['variation_index']}】")
-            print(f"{resp['response']}")
-            print(f"  QBNN判断スコア: {resp['judgment_score']:.3f}")
-            print(f"  判断傾向: {resp['decision_tendency']}")
+            print(f"  QBNN判定: {resp['qbnn_decision']} (スコア: {resp['qbnn_score']:.1f}/100)")
+            print(f"  判断傾向: {resp['qbnn_tendency']}")
+            print(f"  インテント: {resp['intent_type']}")
+            print(f"  応答: {resp['response']}")
             print(f"  量子因子: {resp['quantum_factor']:.3f}")
 
     def demo_conversation_flow(self):
@@ -379,16 +495,18 @@ class GemmaQBNNRandomResponseDemo:
             print(f"AI: {result['response']}")
 
     def demo_quantum_randomization(self):
-        """量子的ランダム化の影響デモ"""
+        """量子的ランダム化とQBNN判断の分析"""
         print("\n" + "="*70)
-        print("デモ 4: QBNN判断 + 量子ランダム化の分析")
+        print("デモ 4: QBNN判断スコア + 量子ランダム化の分析")
         print("="*70)
 
         user_input = "今日の気分が落ち込んでいます。元気づけてください。"
 
         quantum_factors = []
-        judgment_scores = []
-        decision_tendencies = []
+        qbnn_scores = []
+        qbnn_decisions = []
+        qbnn_tendencies = []
+        intent_types = []
         responses_list = []
 
         print(f"\nユーザー入力: {user_input}")
@@ -397,14 +515,18 @@ class GemmaQBNNRandomResponseDemo:
         for i in range(5):
             result = self.engine.generate_random_response(user_input)
             quantum_factors.append(result['quantum_factor'])
-            judgment_scores.append(result['judgment_score'])
-            decision_tendencies.append(result['decision_tendency'])
+            qbnn_scores.append(result['qbnn_score'])
+            qbnn_decisions.append(result['qbnn_decision'])
+            qbnn_tendencies.append(result['qbnn_tendency'])
+            intent_types.append(result['intent_type'])
             responses_list.append(result['response'])
 
             print(f"【試行 {i+1}】")
-            print(f"  応答: {result['response'][:80]}...")
-            print(f"  QBNN判断スコア: {result['judgment_score']:.3f} ({result['decision_tendency']})")
+            print(f"  QBNN判定: {result['qbnn_decision']} (スコア: {result['qbnn_score']:.1f}/100)")
+            print(f"  判定傾向: {result['qbnn_tendency']}")
+            print(f"  インテント: {result['intent_type']}")
             print(f"  量子因子: {result['quantum_factor']:.3f}")
+            print(f"  応答: {result['response'][:60]}...")
 
         print(f"\n【統計 - 量子因子】")
         print(f"  平均: {np.mean(quantum_factors):.3f}")
@@ -412,19 +534,20 @@ class GemmaQBNNRandomResponseDemo:
         print(f"  最小: {np.min(quantum_factors):.3f}")
         print(f"  標準偏差: {np.std(quantum_factors):.3f}")
 
-        print(f"\n【統計 - QBNN判断スコア】")
-        print(f"  平均: {np.mean(judgment_scores):.3f}")
-        print(f"  最大: {np.max(judgment_scores):.3f}")
-        print(f"  最小: {np.min(judgment_scores):.3f}")
-        print(f"  標準偏差: {np.std(judgment_scores):.3f}")
-        print(f"  判定傾向: {set(decision_tendencies)}")
+        print(f"\n【統計 - QBNNスコア】")
+        print(f"  平均: {np.mean(qbnn_scores):.1f}/100")
+        print(f"  最大: {np.max(qbnn_scores):.1f}/100")
+        print(f"  最小: {np.min(qbnn_scores):.1f}/100")
+        print(f"  標準偏差: {np.std(qbnn_scores):.1f}")
+        print(f"  判定: {set(qbnn_decisions)}")
+        print(f"  判定傾向: {set(qbnn_tendencies)}")
 
     def demo_all(self):
         """すべてのデモを実行"""
         print("\n" + "╔" + "="*68 + "╗")
         print("║" + " "*68 + "║")
-        print("║" + "Gemma言語生成 + QBNN判断".center(68) + "║")
-        print("║" + "ランダム応答エンジン".center(68) + "║")
+        print("║" + "Gemma + QBNN ハイブリッド推論".center(68) + "║")
+        print("║" + "課題発見 → 理解 → 判断 → 生成".center(68) + "║")
         print("║" + " "*68 + "║")
         print("╚" + "="*68 + "╝")
 
@@ -461,50 +584,58 @@ class GemmaQBNNRandomResponseDemo:
         print("="*70)
 
         print("""
-【Gemma言語生成 + QBNN判断エンジンの特徴】
-  ✓ Gemmaによる自然な言語生成
-  ✓ QBNN前頭葉による判断分析
-  ✓ 生成AIぽいランダム応答
-  ✓ 量子的な不確実性の導入
-  ✓ テンプレートベースの多様化
+【Gemma + QBNN ハイブリッド推論システムの特徴】
+  ✓ Gemma: 課題発見、言語理解、言語生成（複合機能）
+  ✓ QBNN: 判断処理（Yes/No、スコア、傾向）
+  ✓ 統合パイプライン: 課題 → 理解 → 判断 → 生成
+  ✓ 生成AIぽいランダムで多様な応答
+  ✓ 量子的不確実性の導入
   ✓ 複数バリエーションの生成
 
 【応答生成パイプライン】
-  1. 入力解析
-  2. QBNN前頭葉が判断を実行
+  1. Gemma: 入力から課題を発見
+  2. Gemma: ユーザーの意図を理解
+  3. QBNN: 課題と意図に基づいて判断実行
      - APQB量子状態計算
-     - 判断スコア出力
-     - 決定傾向の判定
-  3. Gemma言語生成エンジンがベース応答を生成
-  4. QBNN判断結果に基づいて多様化処理
-  5. 量子的ランダム化の適用（APQB計算）
+     - Yes/No判定
+     - スコア（0-100）出力
+     - 判定傾向（positive/negative）の判定
+  4. Gemma: ベース応答を生成
+  5. QBNN判断に基づいて多様化処理
+  6. 量子的ランダム化の適用
 
 【アーキテクチャ】
-  入力
+  入力テキスト
     ↓
-  QBNN判断層 ──→ 判断スコア + 決定傾向
-    ↓              ↓
-  Gemma言語生成 ←─┘
+  Gemma: 課題発見 ──→ 課題リスト
     ↓
-  多様化処理（判断を反映）
-    ↓
+  Gemma: 言語理解 ──→ インテント分析
+    ↓                  ↓
+  QBNN: 判断処理 ←─────┘
+    ↓ (Yes/No + Score + Tendency)
+  Gemma: 言語生成 ←─┐
+    ↓             (判断を参照)
+  多様化処理 ←───┐
+    ↓           (判断に基づくトーン調整)
   量子ランダム化
     ↓
   最終応答
 
 【システム能力】
-  ✓ 自然な対話スタイル
-  ✓ 複数の応答バリエーション
-  ✓ 量子的な不確定性
-  ✓ QBNN判断に基づく多様な視点提示
-  ✓ コンテキスト対応の柔軟性
-  ✓ 高い多様性と一貫性のバランス
+  ✓ 複数の課題を同時発見
+  ✓ ユーザーインテントの正確な認識
+  ✓ QBNN量子判断による客観的スコアリング
+  ✓ 判断に基づく自然な応答生成
+  ✓ 複数応答バリエーション
+  ✓ 量子的な不確定性による多様性
+  ✓ 自然で対話的なスタイル
 
 【次のステップ】
   1. 実際の会話に適用
   2. より大規模なQBNN層の構築
-  3. MCPサーバーとしての展開
-  4. トレーニングデータによるファインチューニング
+  3. 課題発見精度の向上
+  4. MCPサーバーとしての展開
+  5. トレーニングデータによるファインチューニング
         """)
 
         print("="*70)
@@ -515,13 +646,13 @@ class GemmaQBNNRandomResponseDemo:
 def interactive_mode():
     """対話モード"""
     print("\n" + "="*70)
-    print("🧠 Gemma言語生成 + QBNN判断 - 対話モード")
+    print("🧠 Gemma + QBNN ハイブリッド推論 - 対話モード")
     print("="*70)
-    print("生成AIのようなランダムな応答を体験できます")
-    print("QBNN前頭葉が判断分析を行い、Gemmaが言語生成します")
+    print("生成AIのようなランダムで多様な応答を体験できます")
+    print("Gemmaが課題を発見・理解し、QBNNが判断を行い、応答を生成します")
     print("(終了: 'quit', 'exit', 'さようなら' と入力)\n")
 
-    engine = GemmaQBNNRandomResponseEngine()
+    engine = GemmaQBNNHybridEngine()
 
     while True:
         try:
@@ -550,7 +681,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Gemma+QBNN ランダム応答エンジン"
+        description="Gemma + QBNN ハイブリッド推論システム"
     )
     parser.add_argument(
         "--mode",
@@ -571,7 +702,7 @@ def main():
         if args.mode == "interactive":
             interactive_mode()
         else:
-            demo = GemmaQBNNRandomResponseDemo()
+            demo = GemmaQBNNHybridDemo()
             demo.demo_all()
 
     except KeyboardInterrupt:
