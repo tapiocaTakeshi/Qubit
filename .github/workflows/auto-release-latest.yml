@@ -71,10 +71,9 @@ jobs:
           echo "bump_type=${BUMP_TYPE:-patch}" >> $GITHUB_OUTPUT
           echo "New version: $NEW_VERSION"
 
-      - name: Update package.json
+      - name: Verify version update
         working-directory: gemma-qbnn-frontal
         run: |
-          npm version ${{ steps.bump.outputs.new_version }} --no-git-tag-version
           cat package.json | grep '"version"'
 
       - name: Create tag
