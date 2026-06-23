@@ -240,7 +240,7 @@ class FrontalEngineJudge:
         if confidence == "high" and 40 <= score <= 60:
             confidence = "medium"
 
-        return decision, score, reasoning, confidence, key_factors
+        return decision, int(score), reasoning, confidence, key_factors
 
     def _compute_score(
         self,
@@ -263,7 +263,7 @@ class FrontalEngineJudge:
         traditional_score = self._compute_traditional_score(context, judgment_request)
 
         score = int(qbnn_score * 0.7 + traditional_score * 0.3)
-        key_factors.append("QBNN推論" if self.model else "従来的分析")
+        key_factors.append("QBNN推論" if self.fallback_model else "従来的分析")
 
         # 基準に基づくスコア調整
         if criteria:
@@ -296,7 +296,7 @@ class FrontalEngineJudge:
 
     def _get_qbnn_judgment_score(self, context: str, judgment_request: str) -> float:
         """QBNN モデルを使った判断スコアを取得"""
-        if not self.model or not self.tokenizer:
+        if not self.fallback_model or not self.tokenizer:
             return 50.0  # モデルがない場合は中立
 
         try:
@@ -313,7 +313,7 @@ class FrontalEngineJudge:
 
             # QBNN モデルで推論
             with torch.no_grad():
-                outputs = self.model(input_ids)
+                outputs = self.fallback_model(input_ids)
 
             # 出力から判断スコアを抽出
             if isinstance(outputs, torch.Tensor):
