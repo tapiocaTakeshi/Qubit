@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """
-Claude Prefrontal Cortex Integration
-クラウド知能に前頭葉としてQBNNを統合するシステム
+Claude Prefrontal Cortex Integration (Quantum-Enhanced)
+Gemma + QBNN 量子強化前頭葉をClaudeに統合するシステム
 
-役割: Claude (AI Assistant) の思考プロセスに前頭葉機能を追加
+役割: Claude (AI Assistant) の思考プロセスに量子強化型前頭葉機能を追加
+特徴:
+  - Gemma Transformerによるセマンティック理解
+  - QBNN層による量子推論（層間エンタングルメント）
+  - 非古典的な複雑判断処理
+
 機能:
-  1. 複雑な意思決定の判断
-  2. リスク評価と安全性確認
+  1. 複雑な意思決定の量子的判断
+  2. リスク評価と安全性確認（量子推論）
   3. 倫理的判断と行動の適切性評価
-  4. タスク優先順位付け
+  4. タスク優先順位付け（量子最適化）
 """
 
 import os
