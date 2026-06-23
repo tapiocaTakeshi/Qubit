@@ -48,7 +48,12 @@ jobs:
       - name: Push changes and tag
         run: |
           git push origin HEAD:${{ github.ref }}
-          git push origin ${{ steps.version.outputs.tag }}
+          DESIRED_TAG="${{ steps.version.outputs.tag }}"
+          # Create the desired tag if it doesn't exist (npm version creates a different tag)
+          if ! git rev-parse "$DESIRED_TAG" >/dev/null 2>&1; then
+            git tag "$DESIRED_TAG"
+          fi
+          git push origin refs/tags/"$DESIRED_TAG"
 
       - name: Install dependencies
         working-directory: gemma-qbnn-frontal
