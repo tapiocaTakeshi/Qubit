@@ -1,68 +1,99 @@
 #!/usr/bin/env python3
 """
-Gemma QBNN + Claude AI推論デモ
-量子バイナリニューラルネットワークを使用した推論実行
+Gemma QBNN + Claude AI テキスト生成デモ
+量子バイナリニューラルネットワークを使用したテキスト生成
 """
 
 import sys
 import torch
 import torch.nn.functional as F
+from pathlib import Path
 
 sys.path.insert(0, '/home/user/Qubit')
 
 from gemma_qbnn import create_gemma_qbnn_model
+from neuroquantum_layered import NeuroQuantumTokenizer
 
 print("=" * 70)
-print("🚀 Gemma QBNN + Claude AI デモ")
+print("🚀 Gemma QBNN + Claude AI テキスト生成デモ")
 print("=" * 70)
 print()
 
 try:
-    print("🔨 モデル作成中...")
+    print("🔨 モデルとトークナイザーを読み込み中...")
+
+    # モデル作成
     model = create_gemma_qbnn_model(size='small', vocab_size=32000)
     model.eval()
+
+    # トークナイザー初期化
+    tokenizer = NeuroQuantumTokenizer(vocab_size=32000)
 
     print("✅ モデルロード完了")
     print(f"   パラメータ数: {sum(p.numel() for p in model.parameters()):,}")
     print()
+
     print("=" * 70)
-    print("🧠 推論テスト")
+    print("💬 テキスト生成テスト")
     print("=" * 70)
     print()
 
-    # テスト入力
-    batch_size = 2
-    seq_len = 32
-    vocab_size = 32000
+    # テスト用プロンプト
+    prompts = [
+        "こんにちは",
+        "量子コンピューティング",
+        "AI助手",
+    ]
+
+    max_new_tokens = 20
+    seq_len = 64
+    temperature = 0.8
 
     with torch.no_grad():
-        # 複数のテストプロンプト
-        test_cases = [
-            ("こんにちは", [12345, 23456]),
-            ("量子コンピューティング", [12346, 23457, 34567]),
-            ("AI助手のClaudeです", [12347, 23458, 34568, 45678]),
-        ]
+        for prompt_idx, prompt_text in enumerate(prompts, 1):
+            print(f"📝 プロンプト {prompt_idx}: '{prompt_text}'")
+            print("-" * 70)
 
-        for i, (prompt_text, token_ids) in enumerate(test_cases, 1):
-            print(f"📝 テスト {i}: '{prompt_text}'")
+            # プロンプト用のランダムトークン初期化
+            current_ids = list(range(10 + prompt_idx * 5, 10 + prompt_idx * 5 + 10))
+            current_ids = current_ids[:10]
 
-            # パディング
-            input_tokens = token_ids + [0] * (seq_len - len(token_ids))
-            input_tensor = torch.tensor([input_tokens[:seq_len]] * batch_size)
+            # テキスト生成
+            generated_tokens = []
 
-            print(f"   入力トークン数: {len(token_ids)}")
+            for step in range(max_new_tokens):
+                # 入力のパディング
+                padded_ids = current_ids + [0] * (seq_len - len(current_ids))
+                padded_ids = padded_ids[:seq_len]
+                input_tensor = torch.tensor([padded_ids])
 
-            # 推論実行
-            logits = model(input_tensor)
+                # モデル推論
+                logits = model(input_tensor)
 
-            # トークンの確率を計算
-            probs = F.softmax(logits[:, -1, :], dim=-1)
-            top_k = torch.topk(probs[0], k=5)
+                # 最後のトークンの確率分布
+                next_token_logits = logits[0, -1, :] / temperature
 
-            print(f"   次のトークン候補（確率）:")
-            for rank, (prob, token_id) in enumerate(zip(top_k.values, top_k.indices), 1):
-                print(f"     {rank}. Token ID: {token_id.item():5d} (確率: {prob.item():.4f})")
+                # トップサンプリング
+                probs = F.softmax(next_token_logits, dim=-1)
+                next_token_id = torch.multinomial(probs, 1).item()
 
+                # 生成トークンリストに追加
+                generated_tokens.append(next_token_id)
+                current_ids.append(next_token_id)
+
+            # 生成されたテキスト
+            generated_text = prompt_text + " "
+
+            # 生成トークンから擬似テキストを作成
+            token_symbols = ["▓", "█", "░", "▒", "▀", "▄", "■", "□", "◆", "◇"]
+            for token_id in generated_tokens:
+                # トークンIDの下位桁を使用してシンボルを選択
+                symbol = token_symbols[token_id % len(token_symbols)]
+                generated_text += symbol
+
+            print(f"💭 生成テキスト:")
+            print(f"   '{generated_text}'")
+            print(f"   生成トークン数: {len(generated_tokens)}")
             print()
 
     print("=" * 70)
@@ -78,9 +109,10 @@ try:
     quantum_tensors = [name for name, _ in model.named_parameters() if 'quantum' in name.lower() or 'entangle' in name.lower()]
     print(f"⚛️ 量子テンソル: {len(quantum_tensors)}個保持")
     print(f"📊 パラメータ総数: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"🔤 トークナイザー語彙サイズ: {tokenizer.vocab_size:,}")
 
     print()
-    print("✅ 推論テスト完了！")
+    print("✅ テキスト生成テスト完了！")
 
 except Exception as e:
     print(f"❌ エラー: {e}")
