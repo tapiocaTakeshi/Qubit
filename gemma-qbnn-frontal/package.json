@@ -1,6 +1,6 @@
 {
   "name": "gemma-qbnn-frontal",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Gemma + QBNN Hybrid Reasoning System - Language Understanding, Issue Discovery, and Quantum-Based Judgment",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
