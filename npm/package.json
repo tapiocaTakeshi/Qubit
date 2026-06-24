@@ -1,6 +1,6 @@
 {
   "name": "qubit_ai",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Qubit.ai — quantum-inspired QBNN inference & judgment engine for JavaScript/TypeScript",
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
