@@ -2,15 +2,18 @@
  * Tests for NeuroQuantumAPIClient
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
 import { NeuroQuantumAPIClient } from "../neuroquantum-api-client.js";
 
-// Mock fetch globally
-global.fetch = vi.fn();
+declare const jest: any;
 
 describe("NeuroQuantumAPIClient", () => {
+  beforeAll(() => {
+    // Mock fetch globally
+    (global as any).fetch = jest.fn();
+  });
+
   beforeEach(() => {
-    vi.clearAllMocks();
+    jest.clearAllMocks();
   });
 
   describe("initialization", () => {

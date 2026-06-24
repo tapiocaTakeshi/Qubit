@@ -2,13 +2,11 @@
  * Integration tests for QubitAI with NeuroQuantum backend
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
 import { QubitAI } from "../qubit_ai.js";
 import { NeuroQuantumAPIClient } from "../neuroquantum-api-client.js";
 import type { NeuroQuantumResponse } from "../neuroquantum-api-client.js";
 
-// Mock the NeuroQuantumAPIClient
-vi.mock("../neuroquantum-api-client.js");
+declare const jest: any;
 
 describe("QubitAI with NeuroQuantum backend", () => {
   let mockClient: any;
@@ -28,26 +26,26 @@ describe("QubitAI with NeuroQuantum backend", () => {
   beforeEach(() => {
     // Create mock client with all required methods
     mockClient = {
-      judge: vi.fn().mockResolvedValue(mockResponse),
-      safetyCheck: vi.fn().mockResolvedValue({
+      judge: jest.fn().mockResolvedValue(mockResponse),
+      safetyCheck: jest.fn().mockResolvedValue({
         safe: mockResponse.decision === "Yes",
         result: mockResponse,
       }),
-      ethicsCheck: vi.fn().mockResolvedValue(mockResponse),
-      qualityEval: vi.fn().mockResolvedValue(mockResponse),
-      batchJudge: vi.fn().mockResolvedValue({
+      ethicsCheck: jest.fn().mockResolvedValue(mockResponse),
+      qualityEval: jest.fn().mockResolvedValue(mockResponse),
+      batchJudge: jest.fn().mockResolvedValue({
         results: [mockResponse],
         count: 1,
       }),
-      healthCheck: vi.fn().mockResolvedValue({
+      healthCheck: jest.fn().mockResolvedValue({
         status: "healthy",
         version: "1.0.0",
         neuroquantum_available: true,
       }),
-      getConfig: vi.fn().mockResolvedValue({}),
-      getStatus: vi.fn().mockResolvedValue({}),
-      isAvailable: vi.fn().mockResolvedValue(true),
-      waitForAvailable: vi.fn().mockResolvedValue(undefined),
+      getConfig: jest.fn().mockResolvedValue({}),
+      getStatus: jest.fn().mockResolvedValue({}),
+      isAvailable: jest.fn().mockResolvedValue(true),
+      waitForAvailable: jest.fn().mockResolvedValue(undefined),
     };
 
     // Mock the NeuroQuantumAPIClient constructor
