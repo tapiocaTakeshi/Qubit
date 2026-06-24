@@ -2,7 +2,8 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "module": "CommonJS",
-    "moduleResolution": "node",
-    "outDir": "./dist/cjs"
+    "moduleResolution": "bundler",
+    "outDir": "./dist/cjs",
+    "ignoreDeprecations": "6.0"
   }
 }
