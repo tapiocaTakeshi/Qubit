@@ -10,11 +10,13 @@
 import { QBNNFrontalEngine } from "./frontal.js";
 import { LLMFrontalEngine } from "./llm-frontal.js";
 import { HybridFrontalEngine } from "./hybrid-frontal.js";
+import { NeuroQuantumFrontalEngine } from "./neuroquantum-frontal.js";
 import { LLMTrainer } from "./llm-trainer.js";
 import { QubitAIConfigManager } from "./config.js";
 import { HuggingFaceProvider } from "./llm-provider-hf.js";
 import { ClaudeProvider } from "./llm-provider-claude.js";
 import { OpenAIProvider } from "./llm-provider-openai.js";
+import { NeuroQuantumAPIClient } from "./neuroquantum-api-client.js";
 import type {
   JudgmentRecord,
   JudgmentType,
@@ -104,7 +106,34 @@ export class QubitAI {
     } as Required<QubitAIConfig>;
 
     // Select engine based on config
-    if (this.config.llmEnabled) {
+    // Check for neuroquantum backend first (Python REST API backend)
+    if (mergedConfig.neuroquantumEnabled) {
+      const nqClient = new NeuroQuantumAPIClient(
+        mergedConfig.neuroquantumConfig?.baseUrl
+          ? {
+              baseUrl: mergedConfig.neuroquantumConfig.baseUrl,
+              timeout: mergedConfig.neuroquantumConfig.timeout,
+              maxRetries: mergedConfig.neuroquantumConfig.maxRetries,
+              retryDelayMs: mergedConfig.neuroquantumConfig.retryDelayMs,
+            }
+          : undefined
+      );
+
+      if (this.config.fallbackToHeuristics) {
+        const nqEngine = new NeuroQuantumFrontalEngine(nqClient);
+        const heuristicEngine = new QBNNFrontalEngine();
+        this.engine = new HybridFrontalEngine(
+          nqEngine as any,
+          heuristicEngine,
+          this.config
+        );
+      } else {
+        this.engine = new NeuroQuantumFrontalEngine(nqClient);
+      }
+
+      this.trainer = null;
+    } else if (this.config.llmEnabled) {
+      // LLM backend (Claude, OpenAI, HuggingFace)
       const llmProvider = this.createLLMProvider();
       const llmEngine = new LLMFrontalEngine(llmProvider, this.config);
 
@@ -118,6 +147,7 @@ export class QubitAI {
       // Initialize trainer for HF datasets
       this.trainer = new LLMTrainer(llmProvider, this.config);
     } else {
+      // Default: QBNN heuristic engine
       this.engine = new QBNNFrontalEngine();
       this.trainer = null;
     }

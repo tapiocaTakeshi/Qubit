@@ -21,6 +21,7 @@ export {
 export { QBNNFrontalEngine } from "./frontal.js";
 export { LLMFrontalEngine } from "./llm-frontal.js";
 export { HybridFrontalEngine } from "./hybrid-frontal.js";
+export { NeuroQuantumFrontalEngine } from "./neuroquantum-frontal.js";
 
 // LLM providers (pluggable backends)
 export { LLMProvider } from "./llm-provider.js";
@@ -36,6 +37,9 @@ export { LLMTrainer } from "./llm-trainer.js";
 
 // HuggingFace endpoint client (optional; requires HF_TOKEN)
 export { NeuroQuantumClient } from "./client.js";
+
+// NeuroQuantum REST API client (for Python backend integration)
+export { NeuroQuantumAPIClient } from "./neuroquantum-api-client.js";
 
 // HuggingFace dataset loader
 export { HFDatasetLoader } from "./dataset.js";
@@ -78,6 +82,9 @@ export type {
   EvaluationMetrics,
   TrainingCheckpoint,
 } from "./types.js";
+
+// NeuroQuantum API client types
+export type { NeuroQuantumResponse, NeuroQuantumAPIClientConfig } from "./neuroquantum-api-client.js";
 
 // LLM provider types and errors
 export type { LLMProviderConfig, LLMProviderStatus } from "./llm-provider.js";

@@ -274,6 +274,21 @@ export interface QubitAIConfig {
   llmPromptTemplate?: string;
   /** Blending strategy for hybrid mode: 'weighted' | 'confidence-based' (default: 'weighted') */
   llmBlendStrategy?: "weighted" | "confidence-based";
+
+  // NeuroQuantum backend configuration (Python REST API)
+  /** Enable NeuroQuantum backend (Python quantum-inspired neural reasoning) */
+  neuroquantumEnabled?: boolean;
+  /** NeuroQuantum API client configuration */
+  neuroquantumConfig?: {
+    /** Base URL of NeuroQuantum REST API (default: http://localhost:5000) */
+    baseUrl?: string;
+    /** Request timeout in milliseconds (default: 30000) */
+    timeout?: number;
+    /** Number of retries on failure (default: 3) */
+    maxRetries?: number;
+    /** Retry delay in milliseconds (default: 1000) */
+    retryDelayMs?: number;
+  };
 }
 
 /** Result returned by QubitAI judgment methods */
