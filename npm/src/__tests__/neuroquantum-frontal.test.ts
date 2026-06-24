@@ -2,10 +2,9 @@
  * Tests for NeuroQuantumFrontalEngine
  */
 
+import { describe, beforeEach, it, expect, jest } from "@jest/globals";
 import { NeuroQuantumFrontalEngine } from "../neuroquantum-frontal.js";
 import type { NeuroQuantumResponse } from "../neuroquantum-api-client.js";
-
-declare const jest: any;
 
 describe("NeuroQuantumFrontalEngine", () => {
   let mockClient: any;
@@ -25,23 +24,23 @@ describe("NeuroQuantumFrontalEngine", () => {
   beforeEach(() => {
     // Create mock client
     mockClient = {
-      judge: jest.fn().mockResolvedValue(mockResponse),
-      safetyCheck: jest.fn().mockResolvedValue({
+      judge: (jest.fn() as any).mockResolvedValue(mockResponse),
+      safetyCheck: (jest.fn() as any).mockResolvedValue({
         safe: true,
         result: mockResponse,
       }),
-      ethicsCheck: jest.fn().mockResolvedValue(mockResponse),
-      qualityEval: jest.fn().mockResolvedValue(mockResponse),
-      batchJudge: jest.fn().mockResolvedValue({
+      ethicsCheck: (jest.fn() as any).mockResolvedValue(mockResponse),
+      qualityEval: (jest.fn() as any).mockResolvedValue(mockResponse),
+      batchJudge: (jest.fn() as any).mockResolvedValue({
         results: [mockResponse],
         count: 1,
       }),
-      healthCheck: jest.fn().mockResolvedValue({
+      healthCheck: (jest.fn() as any).mockResolvedValue({
         status: "healthy",
         version: "1.0.0",
         neuroquantum_available: true,
       }),
-      waitForAvailable: jest.fn().mockResolvedValue(undefined),
+      waitForAvailable: (jest.fn() as any).mockResolvedValue(undefined),
     };
 
     engine = new NeuroQuantumFrontalEngine(mockClient);

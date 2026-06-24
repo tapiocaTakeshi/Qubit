@@ -2,11 +2,10 @@
  * Integration tests for QubitAI with NeuroQuantum backend
  */
 
+import { describe, beforeEach, it, expect, jest } from "@jest/globals";
 import { QubitAI } from "../qubit_ai.js";
 import { NeuroQuantumAPIClient } from "../neuroquantum-api-client.js";
 import type { NeuroQuantumResponse } from "../neuroquantum-api-client.js";
-
-declare const jest: any;
 
 describe("QubitAI with NeuroQuantum backend", () => {
   let mockClient: any;
@@ -26,26 +25,26 @@ describe("QubitAI with NeuroQuantum backend", () => {
   beforeEach(() => {
     // Create mock client with all required methods
     mockClient = {
-      judge: jest.fn().mockResolvedValue(mockResponse),
-      safetyCheck: jest.fn().mockResolvedValue({
+      judge: (jest.fn() as any).mockResolvedValue(mockResponse),
+      safetyCheck: (jest.fn() as any).mockResolvedValue({
         safe: mockResponse.decision === "Yes",
         result: mockResponse,
       }),
-      ethicsCheck: jest.fn().mockResolvedValue(mockResponse),
-      qualityEval: jest.fn().mockResolvedValue(mockResponse),
-      batchJudge: jest.fn().mockResolvedValue({
+      ethicsCheck: (jest.fn() as any).mockResolvedValue(mockResponse),
+      qualityEval: (jest.fn() as any).mockResolvedValue(mockResponse),
+      batchJudge: (jest.fn() as any).mockResolvedValue({
         results: [mockResponse],
         count: 1,
       }),
-      healthCheck: jest.fn().mockResolvedValue({
+      healthCheck: (jest.fn() as any).mockResolvedValue({
         status: "healthy",
         version: "1.0.0",
         neuroquantum_available: true,
       }),
-      getConfig: jest.fn().mockResolvedValue({}),
-      getStatus: jest.fn().mockResolvedValue({}),
-      isAvailable: jest.fn().mockResolvedValue(true),
-      waitForAvailable: jest.fn().mockResolvedValue(undefined),
+      getConfig: (jest.fn() as any).mockResolvedValue({}),
+      getStatus: (jest.fn() as any).mockResolvedValue({}),
+      isAvailable: (jest.fn() as any).mockResolvedValue(true),
+      waitForAvailable: (jest.fn() as any).mockResolvedValue(undefined),
     };
 
     // Mock the NeuroQuantumAPIClient constructor

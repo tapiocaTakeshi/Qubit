@@ -2,9 +2,8 @@
  * Tests for NeuroQuantumAPIClient
  */
 
+import { describe, beforeAll, beforeEach, it, expect, jest } from "@jest/globals";
 import { NeuroQuantumAPIClient } from "../neuroquantum-api-client.js";
-
-declare const jest: any;
 
 describe("NeuroQuantumAPIClient", () => {
   beforeAll(() => {

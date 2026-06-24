@@ -56,11 +56,9 @@ export class OpenAIProvider extends LLMProvider {
       });
 
       const generatedText = response.choices[0]?.message?.content ?? "";
-      const processingTimeMs = Date.now() - startTime;
 
       return {
         generatedText,
-        processingTimeMs,
         raw: response,
       };
     } catch (error) {
