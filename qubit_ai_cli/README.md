@@ -124,6 +124,195 @@ You: Explain quantum computing and its applications
 | Complex analysis | `npm run hybrid` (Gemma + QBNN) |
 | Fastest response | `npm start -- --model gemma-7` |
 
+## Multi-Agent Collaborative System
+
+### Four Specialized AI Agents
+
+The multi-agent system brings together four powerful AI agents, each with distinct expertise and specialization:
+
+#### 1. 🧠 Claude (Analyzer)
+**Role:** Deep Analysis & Logical Reasoning
+
+- **Specialty**: Complex problem decomposition and logical analysis
+- **Temperature**: 0.3 (Analytical, deterministic)
+- **Max Tokens**: 200
+- **Key Strengths**:
+  - Breaks down complex problems into manageable components
+  - Identifies core concepts and their relationships
+  - Provides deep logical analysis and structural frameworks
+  - Maps critical dependencies between ideas
+  - Excellent for technical architecture and system design
+- **Best For**:
+  - System design and architecture questions
+  - Complex problem decomposition
+  - Logical reasoning and algorithm analysis
+  - Research methodology and framework creation
+  
+**Example Input**: "Design a scalable microservices architecture"
+**Expected Output**: Detailed logical framework with components and relationships
+
+---
+
+#### 2. ✍️ ChatGPT (Writer)
+**Role:** Natural Communication & Clear Explanation
+
+- **Specialty**: Making complex ideas accessible and understandable
+- **Temperature**: 0.6 (Balanced, conversational)
+- **Max Tokens**: 250
+- **Key Strengths**:
+  - Converts technical concepts into simple, clear language
+  - Creates engaging and natural explanations
+  - Provides practical examples and analogies
+  - Focuses on accessibility without losing accuracy
+  - Excellent for communication and presentation
+- **Best For**:
+  - Explaining technical concepts to non-experts
+  - Writing clear documentation
+  - Creating educational content
+  - Professional communication and messaging
+  
+**Example Input**: "Explain quantum computing to a 10-year-old"
+**Expected Output**: Simple, engaging explanation with relatable analogies
+
+---
+
+#### 3. 🔄 Gemini (Synthesizer)
+**Role:** Multi-Perspective Integration & Holistic Understanding
+
+- **Specialty**: Connecting multiple viewpoints and seeing the bigger picture
+- **Temperature**: 0.7 (Creative, integrative)
+- **Max Tokens**: 300
+- **Key Strengths**:
+  - Integrates multiple perspectives into cohesive insights
+  - Identifies cross-domain connections and patterns
+  - Provides holistic understanding of complex systems
+  - Highlights relationships between seemingly disparate concepts
+  - Excellent for strategic thinking and comprehensive analysis
+- **Best For**:
+  - Strategic business planning
+  - Cross-functional problem solving
+  - System-wide impact analysis
+  - Identifying hidden connections and opportunities
+  
+**Example Input**: "How does AI impact different business departments?"
+**Expected Output**: Integrated analysis showing technical, business, organizational, and ecosystem dimensions
+
+---
+
+#### 4. 🔍 Perplexity (Researcher)
+**Role:** Research & Evidence-Based Verification
+
+- **Specialty**: Fact verification and evidence-based insights
+- **Temperature**: 0.4 (Analytical, precision-focused)
+- **Max Tokens**: 200
+- **Key Strengths**:
+  - Identifies and verifies key facts with evidence
+  - Provides current information and research findings
+  - Notes gaps and areas requiring verification
+  - Grounds recommendations in factual evidence
+  - Excellent for research and validation
+- **Best For**:
+  - Fact-checking and verification
+  - Literature review and research synthesis
+  - Evidence-based recommendations
+  - Identifying knowledge gaps and research needs
+  
+**Example Input**: "What are the latest advances in AI?"
+**Expected Output**: Verified facts with sources, emerging trends, and items needing further verification
+
+---
+
+### Agent Coordination & Synthesis
+
+When you ask the multi-agent system a question, here's what happens:
+
+```
+1. Query Distribution
+   └─> All 4 agents receive your question simultaneously
+
+2. Parallel Processing
+   ├─> Claude analyzes logical structure (0.3°C)
+   ├─> ChatGPT crafts clear explanations (0.6°C)
+   ├─> Gemini integrates perspectives (0.7°C)
+   └─> Perplexity verifies facts (0.4°C)
+
+3. Response Aggregation
+   └─> All four responses collected (~1200ms total)
+
+4. Intelligent Synthesis
+   └─> Unified answer combining all perspectives
+```
+
+### Multi-Agent System Features
+
+- **⚡ Parallel Processing**: All agents work simultaneously (~2 seconds total)
+- **📊 Comprehensive Coverage**: Four specialized viewpoints in one response
+- **🎯 Role Specialization**: Each agent optimized for their domain
+- **🔗 Integrated Intelligence**: Final synthesis combines all insights
+- **💾 Conversation Management**: Full history with agent attribution
+- **📤 Export Capability**: Save complete multi-agent discussions
+
+### Starting Multi-Agent Chat
+
+```bash
+npm run multi-agent              # Interactive multi-agent chat
+npm run dev:multi-agent         # Development mode with hot reload
+node demo-multi-agent.js        # View demonstration
+```
+
+### Multi-Agent Chat Commands
+
+| Command | Description |
+|---------|-------------|
+| `/agents` | List all agents with their roles and specialties |
+| `/details` | Toggle display of individual agent responses |
+| `/config` | Show agent configuration and temperatures |
+| `/history` | View conversation history |
+| `/export` | Save multi-agent conversation to JSON |
+| `/clear` | Clear conversation history |
+| `/help` | Show all available commands |
+| `/exit` or `/quit` | Exit the chat |
+
+### Multi-Agent Usage Example
+
+```bash
+npm run multi-agent
+
+You: Analyze the impact of AI on the software industry
+
+🤖 Claude (Analyzer): [Logical framework with architecture]
+✍️  ChatGPT (Writer): [Clear, engaging explanation]
+🔄 Gemini (Synthesizer): [Multi-dimensional analysis]
+🔍 Perplexity (Researcher): [Evidence and verification]
+
+📊 Final Synthesis: [Integrated comprehensive answer]
+```
+
+### When to Use Multi-Agent System
+
+Use the multi-agent system for:
+- ✅ Complex questions requiring multiple perspectives
+- ✅ Strategic decision-making and planning
+- ✅ Comprehensive analysis and research
+- ✅ Questions requiring verification and evidence
+- ✅ Technical architecture and design decisions
+- ✅ Business impact analysis
+- ✅ Learning and knowledge synthesis
+
+### Agent Characteristics Comparison
+
+| Characteristic | Claude | ChatGPT | Gemini | Perplexity |
+|---|---|---|---|---|
+| **Focus** | Logic & Analysis | Clarity & Communication | Integration & Strategy | Verification & Evidence |
+| **Temperature** | 0.3 (Analytical) | 0.6 (Balanced) | 0.7 (Creative) | 0.4 (Precise) |
+| **Output Length** | 200 tokens | 250 tokens | 300 tokens | 200 tokens |
+| **Speed** | Fast | Medium | Medium | Fast |
+| **Best For** | Architecture, Code | Documentation, Guides | Planning, Strategy | Research, Validation |
+| **Creativity Level** | Low | Medium | High | Low |
+| **Detail Level** | Structural | Narrative | Integrated | Factual |
+
+---
+
 ## Usage
 
 ### Interactive Mode
@@ -501,6 +690,26 @@ This demonstrates:
 - When to use hybrid chat vs. standard models
 - Configuration options
 - Use cases and best practices
+
+### Multi-Agent Collaborative System Demo
+
+Experience the power of four specialized AI agents working together:
+
+```bash
+node demo-multi-agent.js
+```
+
+This demonstrates:
+- Four specialized AI agents (Claude, ChatGPT, Gemini, Perplexity)
+- Parallel agent processing and coordination
+- Role-based specialization and expertise
+- Real-world use cases:
+  - Technology analysis with cloud computing example
+  - Strategic business planning with AI startup example
+- System architecture diagram
+- Performance characteristics (~2 seconds total)
+- Command reference and features
+- When to use multi-agent system
 
 ## Development
 
