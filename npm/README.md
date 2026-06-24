@@ -41,6 +41,108 @@ Requires **Node.js ≥ 18** (uses the built-in `fetch` API).
 
 ---
 
+## Quick Usage Examples
+
+### Basic Text Generation
+
+```ts
+import { NeuroQuantumClient } from "qubit_ai";
+
+const client = new NeuroQuantumClient({
+  hfToken: process.env.HF_TOKEN,
+});
+
+// Simple generation
+const result = await client.generate(
+  "次の文を続けてください: 人工知能は",
+  { maxNewTokens: 50, temperature: 0.7 }
+);
+
+console.log(result.generatedText);
+```
+
+### Load Dataset Examples
+
+```ts
+import { HFDatasetLoader } from "qubit_ai";
+
+const loader = new HFDatasetLoader({
+  hfToken: process.env.HF_TOKEN,
+});
+
+// Quick preview
+const examples = await loader.preview("llm-jp/oasst2-33k-ja", 5);
+console.log(examples); // First 5 examples
+
+// Stream large datasets
+for await (const example of loader.streamExamples({
+  dataset: "llm-jp/oasst2-33k-ja",
+  promptField: "input",
+  completionField: "output",
+  maxRows: 1000,
+})) {
+  console.log(example.prompt, "->", example.completion);
+}
+```
+
+### Few-shot Generation with Examples
+
+```ts
+import { HFDatasetLoader, NeuroQuantumClient } from "qubit_ai";
+
+const loader = new HFDatasetLoader({ hfToken: process.env.HF_TOKEN });
+const client = new NeuroQuantumClient({ hfToken: process.env.HF_TOKEN });
+
+// Load examples from dataset
+const examples = await loader.preview("llm-jp/oasst2-33k-ja", 5);
+
+// Generate using examples as context
+const result = await client.generateWithExamples(
+  "ユーザーの質問に回答してください",
+  examples,
+  {
+    numExamples: 3,
+    exampleTemplate: "Q: {prompt}\nA: {completion}",
+    queryTemplate: "Q: {prompt}\nA:",
+    maxNewTokens: 100,
+  }
+);
+
+console.log(result.generatedText);
+```
+
+### Fine-tune a Model
+
+```ts
+import { NeuroQuantumClient } from "qubit_ai";
+
+const client = new NeuroQuantumClient({
+  hfToken: process.env.HF_TOKEN,
+});
+
+// Start fine-tuning on a dataset
+const trainingResult = await client.trainFromDataset({
+  dataset: "llm-jp/oasst2-33k-ja",
+  promptField: "input",
+  completionField: "output",
+  maxRows: 1000,
+  batchSize: 10,
+  trainingEndpointUrl: "https://your-training-api/train",
+  onProgress: (progress) => {
+    console.log(
+      `Training: ${progress.processedExamples}/${progress.totalExamples} ` +
+      `(Batch ${progress.currentBatch}/${progress.totalBatches})`
+    );
+  },
+});
+
+console.log(`Status: ${trainingResult.status}`);
+console.log(`Duration: ${trainingResult.durationMs}ms`);
+console.log(`Total examples: ${trainingResult.totalExamples}`);
+```
+
+---
+
 ## Modules
 
 | Export | Description |
