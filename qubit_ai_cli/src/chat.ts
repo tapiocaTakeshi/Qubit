@@ -31,6 +31,7 @@ export class QubitAIChat {
   private session: ChatSession;
   private config: ChatConfig;
   private trainingPhrases: string[] = [];
+  private qaPairs: { prompt: string; response: string }[] = [];
 
   constructor(config: Partial<ChatConfig> = {}) {
     this.generator = new QubitAIGenerative({
@@ -55,6 +56,23 @@ export class QubitAIChat {
   }
 
   private loadTrainingData(): void {
+    // Load OASST1 Japanese Q&A pairs (primary)
+    try {
+      const oasstPath = path.join(process.cwd(), "data", "oasst1-ja.json");
+      if (fs.existsSync(oasstPath)) {
+        const data = JSON.parse(fs.readFileSync(oasstPath, "utf-8"));
+        if (Array.isArray(data.pairs)) {
+          this.qaPairs = data.pairs;
+        }
+        if (Array.isArray(data.phrases)) {
+          this.trainingPhrases = this.trainingPhrases.concat(data.phrases);
+        }
+      }
+    } catch {
+      // Silently ignore if OASST1 data is unavailable
+    }
+
+    // Load supplementary phrase data
     try {
       const dataPath = path.join(
         process.cwd(),
@@ -64,12 +82,51 @@ export class QubitAIChat {
       if (fs.existsSync(dataPath)) {
         const data = JSON.parse(fs.readFileSync(dataPath, "utf-8"));
         if (data.phrases && Array.isArray(data.phrases)) {
-          this.trainingPhrases = data.phrases;
+          this.trainingPhrases = this.trainingPhrases.concat(data.phrases);
         }
       }
     } catch {
       // Silently ignore if data file doesn't exist
     }
+  }
+
+  /**
+   * Find the best-matching OASST1 answer using character n-gram overlap.
+   * Returns null when no pair is similar enough.
+   */
+  private findBestQAMatch(userMessage: string): string | null {
+    if (this.qaPairs.length === 0) return null;
+
+    const queryGrams = this.bigrams(userMessage);
+    if (queryGrams.size === 0) return null;
+
+    let best: { response: string; score: number } | null = null;
+    for (const pair of this.qaPairs) {
+      const promptGrams = this.bigrams(pair.prompt);
+      if (promptGrams.size === 0) continue;
+
+      // Dice coefficient over character bigrams
+      let overlap = 0;
+      for (const g of queryGrams) if (promptGrams.has(g)) overlap++;
+      const score = (2 * overlap) / (queryGrams.size + promptGrams.size);
+
+      if (!best || score > best.score) {
+        best = { response: pair.response, score };
+      }
+    }
+
+    // Require a minimum similarity to avoid irrelevant matches
+    return best && best.score >= 0.18 ? best.response : null;
+  }
+
+  /** Character bigram set for lightweight Japanese similarity. */
+  private bigrams(text: string): Set<string> {
+    const cleaned = text.replace(/\s+/g, "");
+    const grams = new Set<string>();
+    for (let i = 0; i < cleaned.length - 1; i++) {
+      grams.add(cleaned.slice(i, i + 2));
+    }
+    return grams;
   }
 
 
@@ -134,6 +191,12 @@ export class QubitAIChat {
   private generateJapaneseResponse(userMessage: string, context: string): string {
     const lower = userMessage.toLowerCase();
     const isJapanese = /[぀-ゟ゠-ヿ一-鿿]/.test(userMessage);
+
+    // First, try to answer from the learned OASST1 Japanese Q&A pairs.
+    const learned = this.findBestQAMatch(userMessage);
+    if (learned) {
+      return learned;
+    }
 
     // AI/ML technical topics with detailed Japanese responses
     if (
