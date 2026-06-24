@@ -16,7 +16,7 @@ pnpm add qubit_ai
 yarn add qubit_ai
 ```
 
-Requires **Node.js ≥ 18** (uses the built-in `fetch` API).
+Requires **Node.js ≥ 18**.
 
 ---
 
@@ -24,19 +24,229 @@ Requires **Node.js ≥ 18** (uses the built-in `fetch` API).
 
 | Export | Description |
 |---|---|
+| `QubitAI` | High-level judgment API — TypeScript port of `qubit_ai.py` |
+| `NeuroQuantumEngine` | Pure-TS port of `neuroquantum_layered.py` math (QBNN layers + APQB) |
+| `QBNNFrontalEngine` | Lightweight heuristic judgment engine (no external deps) |
 | `NeuroQuantumClient` | HTTP client for the neuroQ HuggingFace inference endpoint |
-| `QBNNFrontalEngine` | Pure-JS quantum-inspired judgment engine (no Python required) |
 | `HFDatasetLoader` | HuggingFace Datasets API client — fetch, stream, and convert dataset rows |
 
 ---
 
-## `NeuroQuantumClient` — text generation
+## `QubitAI` — primary judgment API
+
+`QubitAI` is the TypeScript port of `qubit_ai.py`. It uses **`NeuroQuantumEngine`** internally — a pure-TypeScript implementation of the QBNN math from `neuroquantum_layered.py`. No HTTP endpoints, no Python runtime required.
+
+```ts
+import { QubitAI } from "qubit_ai";
+
+const qubit = new QubitAI();
+
+// Judge an action
+const result = await qubit.judge("APIキーをログに記録", "本番環境", "safety");
+console.log(result.decision);    // "Yes" | "No"
+console.log(result.score);       // 0–100
+console.log(result.reasoning);   // human-readable explanation (Japanese)
+console.log(result.confidence);  // "high" | "medium" | "low"
+console.log(result.factors);     // string[] — key contributing factors
+
+// Explain in natural language
+console.log(qubit.explain(result));
+```
+
+### Constructor options
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `version` | `string` | `"1.1.0"` | Library version string |
+| `productName` | `string` | `"Qubit.ai"` | Product name |
+| `description` | `string` | `"Claude's Quantum Prefrontal Cortex"` | Product description |
+| `strictMode` | `boolean` | `false` | Require score ≥ 70 for a "Yes" decision |
+| `enableLogging` | `boolean` | `true` | Enable internal logging |
+| `maxJudgmentHistory` | `number` | `100` | Maximum judgment records to keep |
+
+### Judgment methods
+
+**`judge(action, context, judgmentType?, strict?)`** — Core judgment call.
+
+```ts
+const result = await qubit.judge(
+  "ユーザーの個人情報を収集",   // action
+  "GDPRが適用される本番環境",   // context
+  "safety",                     // type: "safety" | "ethics" | "quality" | "risk" | "decision" | "priority"
+  true,                         // strictMode override (optional)
+);
+```
+
+**`safetyCheck(action, context, opts?)`** — Returns `[boolean, QubitAIResult]`.
+
+```ts
+const [safe, result] = await qubit.safetyCheck(
+  "外部APIにデータを送信",
+  "本番環境",
+  { risks: ["情報漏洩", "プライバシー違反"] }
+);
+if (!safe) console.log("安全でない:", result.reasoning);
+```
+
+**`evaluateQuality(content, opts?)`**
+
+```ts
+const result = await qubit.evaluateQuality("正確で明確なドキュメント", {
+  requirements: ["正確性", "完全性"],
+  userIntent: "APIリファレンス",
+});
+```
+
+**`ethicsCheck(action, stakeholders?, potentialHarms?)`**
+
+```ts
+const result = await qubit.ethicsCheck(
+  "ユーザー行動を分析する",
+  ["ユーザー", "社会"],
+  ["プライバシー侵害"],
+);
+```
+
+**`prioritize(items, constraints?)`** — Returns items sorted by priority score (descending).
+
+```ts
+const ranked = await qubit.prioritize(
+  [
+    { name: "セキュリティパッチ", description: "本番環境の脆弱性を修正" },
+    { name: "新機能開発", description: "UIコンポーネントの追加" },
+    { name: "ドキュメント更新", description: "APIリファレンスの整備" },
+  ],
+  "リソース制限あり、本番稼働中"
+);
+for (const [item, score] of ranked) {
+  console.log(item.name, score.toFixed(2)); // score: 0–1
+}
+```
+
+### Status & history
+
+```ts
+qubit.getInfo();    // product, version, sessionId, status
+qubit.getStatus();  // frontalEngineAvailable, judgmentHistorySize, ...
+qubit.getHistory(10);  // last N JudgmentRecord entries
+qubit.clearHistory();
+```
+
+### Singleton & convenience functions
+
+```ts
+import { getQubitAI, resetQubitAI, judge, safetyCheck, evaluateQuality, ethicsCheck } from "qubit_ai";
+
+// Module-level convenience (use shared singleton)
+const result  = await judge("行動", "コンテキスト", "ethics");
+const [safe]  = await safetyCheck("操作", "環境");
+const quality = await evaluateQuality("コンテンツ", { requirements: ["正確性"] });
+const ethics  = await ethicsCheck("行動", ["ユーザー"]);
+
+// Reset the singleton (e.g. between tests)
+resetQubitAI();
+```
+
+### Judgment types
+
+| Type | Description |
+|---|---|
+| `"safety"` | Is this action safe to perform? |
+| `"ethics"` | Is this ethically acceptable? |
+| `"quality"` | Does this content meet quality standards? |
+| `"risk"` | What is the risk level? |
+| `"decision"` | General decision-making |
+| `"priority"` | Task prioritisation |
+
+---
+
+## `NeuroQuantumEngine` — pure-TS QBNN engine
+
+`NeuroQuantumEngine` is a faithful TypeScript port of the mathematical core of `neuroquantum_layered.py`:
+
+- **`QBNNLayer.forward()`** — entanglement correction with dynamic sinusoidal λ
+- **`QBNNAttention.forward()`** — QBNN-enhanced multi-head attention (action × context)
+- **Dynamic θ phase** from `NeuroQuantumAI.generate()` — `0.5 + 0.5×sin(step×0.2)`
+- **APQB scoring** — `r = cos(2θ)`, `score = ((r+1)/2) × 100`
+
+Defaults match the `'cpu'` tier of `NeuroQuantumConfig`: 3 layers, 4 heads, λ = 0.5.
+
+```ts
+import { NeuroQuantumEngine } from "qubit_ai";
+
+const engine = new NeuroQuantumEngine({
+  numLayers:      3,    // QBNN transformer blocks (default: 3)
+  numHeads:       4,    // attention heads (default: 4)
+  lambdaEntangle: 0.5,  // entanglement strength λ (default: 0.5)
+});
+
+const result = await engine.judge(
+  "ユーザーデータをログに記録",
+  "本番環境",
+  { type: "safety", strictMode: true }
+);
+
+console.log(result.decision);   // "Yes" | "No"
+console.log(result.score);      // 0–100 (APQB score)
+console.log(result.system);     // "qbnn"
+console.log(result.keyFactors); // action signal, context signal, attention weight, …
+```
+
+### Convenience wrappers
+
+```ts
+// Safety check (with optional risks / constraints)
+const safety = await engine.checkSafety("操作", "環境", { risks: ["データ損失"] });
+
+// Ethics evaluation
+const ethics = await engine.evaluateEthics("行動", "コンテキスト");
+
+// Risk assessment (riskTolerance 0–100, higher = more permissive)
+const risk = await engine.assessRisk("リリース", "ステージング環境", { riskTolerance: 70 });
+
+// Quality evaluation
+const quality = await engine.evaluateQuality("コンテンツ", { requirements: ["正確性"] });
+
+// Task prioritisation — returns sorted { rankedTasks, scores, reasonings }
+const { rankedTasks, scores } = await engine.prioritize(
+  ["バグ修正", "新機能開発", "セキュリティパッチ"],
+  "本番環境のインシデント対応"
+);
+```
+
+---
+
+## `QBNNFrontalEngine` — lightweight heuristic engine
+
+A lightweight pure-TypeScript judgment engine based on keyword scoring and APQB theory. Useful when minimal overhead is needed and the full QBNN layer math is not required.
+
+```ts
+import { QBNNFrontalEngine } from "qubit_ai";
+
+const engine = new QBNNFrontalEngine();
+
+const result = await engine.judge(
+  "ユーザーの個人情報をログに記録する",
+  "セキュリティ監査のための操作",
+  { type: "safety", strictMode: true }
+);
+
+console.log(result.decision);    // "Yes" | "No"
+console.log(result.score);       // 0–100
+console.log(result.confidence);  // "high" | "medium" | "low"
+```
+
+---
+
+## `NeuroQuantumClient` — text generation via HuggingFace endpoint
+
+HTTP client for the neuroQ HuggingFace inference endpoint. Requires an `HF_TOKEN` for authenticated access.
 
 ```ts
 import { NeuroQuantumClient } from "qubit_ai";
 
 const client = new NeuroQuantumClient({
-  hfToken: process.env.HF_TOKEN, // optional — public endpoint works without token
+  hfToken: process.env.HF_TOKEN,
 });
 
 const result = await client.generate("量子コンピュータとは何ですか？", {
@@ -61,18 +271,14 @@ console.log(result.generatedText);
 
 ### Few-shot inference with dataset examples
 
-Use `generateWithExamples()` to prepend examples from a HF dataset as in-context few-shot prompts:
-
 ```ts
 import { HFDatasetLoader, NeuroQuantumClient } from "qubit_ai";
 
 const loader = new HFDatasetLoader({ hfToken: process.env.HF_TOKEN });
 const client = new NeuroQuantumClient({ hfToken: process.env.HF_TOKEN });
 
-// Load a few examples from a public dataset
 const examples = await loader.preview("llm-jp/oasst2-33k-ja", 3);
 
-// Generate with those examples as context (few-shot learning)
 const result = await client.generateWithExamples(
   "量子コンピュータの利点を教えてください",
   examples,
@@ -87,47 +293,25 @@ const result = await client.generateWithExamples(
 console.log(result.generatedText);
 ```
 
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `numExamples` | `number` | `3` | Number of examples to include in context |
-| `exampleSeparator` | `string` | `"\n\n"` | Separator between examples |
-| `exampleTemplate` | `string` | `"Q: {prompt}\nA: {completion}"` | Format for each example |
-| `queryTemplate` | `string` | `"Q: {prompt}\nA:"` | Format for the query |
-
 ### Training from a HuggingFace dataset
-
-Use `trainFromDataset()` to stream a HF dataset and send it in batches to a fine-tuning endpoint:
 
 ```ts
 const result = await client.trainFromDataset({
   dataset: "llm-jp/oasst2-33k-ja",
-  promptField: "input",       // column to use as prompt
-  completionField: "output",  // column to use as completion
-  maxRows: 500,               // cap total rows
-  batchSize: 10,              // examples per HTTP batch
+  promptField: "input",
+  completionField: "output",
+  maxRows: 500,
+  batchSize: 10,
   trainingEndpointUrl: "https://your-training-endpoint/train",
   onProgress: (p) => {
-    console.log(`${p.processedExamples}/${p.totalExamples} examples, batch ${p.currentBatch}/${p.totalBatches}`);
+    console.log(`${p.processedExamples}/${p.totalExamples} examples`);
   },
 });
 
 console.log(result.status);        // "completed" | "partial" | "failed"
-console.log(result.totalExamples); // number of examples sent
-console.log(result.durationMs);    // total time in ms
+console.log(result.totalExamples);
+console.log(result.durationMs);
 ```
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `dataset` | `string` | — | Dataset name on HuggingFace Hub |
-| `config` | `string` | `"default"` | Dataset configuration |
-| `split` | `string` | `"train"` | Dataset split |
-| `promptField` | `string` | auto-inferred | Column name for prompts |
-| `completionField` | `string` | auto-inferred | Column name for completions |
-| `transform` | `(row) => TrainingExample \| null` | — | Custom row converter |
-| `maxRows` | `number` | unlimited | Maximum rows to stream |
-| `batchSize` | `number` | `10` | Examples per HTTP batch |
-| `trainingEndpointUrl` | `string` | `endpointUrl + "/train"` | Fine-tuning endpoint URL |
-| `onProgress` | `(p: TrainingProgress) => void` | — | Progress callback |
 
 ---
 
@@ -141,31 +325,17 @@ const loader = new HFDatasetLoader({
 });
 ```
 
-### Constructor options
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `hfToken` | `string` | `$HF_TOKEN` env | HuggingFace API token |
-| `datasetsServerUrl` | `string` | HF Datasets Server | Custom Datasets Server URL |
-| `timeoutMs` | `number` | `30_000` | Per-request timeout |
-
-### Methods
-
-**`fetchRows(opts)`** — Fetch a single page of rows.
+**`fetchRows(opts)`** — single page of rows.
 
 ```ts
 const page = await loader.fetchRows({
   dataset: "llm-jp/oasst2-33k-ja",
-  config: "default",   // optional
-  split: "train",      // optional
-  offset: 0,           // optional
-  limit: 50,           // optional, max 100
+  offset: 0,
+  limit: 50,
 });
-// page.rows: HFDatasetRow[]
-// page.numRowsTotal: number
 ```
 
-**`streamRows(opts)`** — Async generator yielding all rows page-by-page.
+**`streamRows(opts)`** — async generator yielding all rows.
 
 ```ts
 for await (const { rowIdx, row } of loader.streamRows({ dataset: "...", maxRows: 1000 })) {
@@ -173,7 +343,7 @@ for await (const { rowIdx, row } of loader.streamRows({ dataset: "...", maxRows:
 }
 ```
 
-**`streamExamples(opts)`** — Async generator yielding `{ prompt, completion }` pairs.
+**`streamExamples(opts)`** — async generator of `{ prompt, completion }` pairs.
 
 ```ts
 for await (const example of loader.streamExamples({
@@ -186,101 +356,17 @@ for await (const example of loader.streamExamples({
 }
 ```
 
-Field names (`promptField` / `completionField`) are auto-inferred when omitted, trying common names: `input`, `instruction`, `question`, `prompt` for prompts and `output`, `response`, `answer`, `completion` for completions.
-
-**`loadExamples(opts)`** — Load all examples into memory (convenience wrapper).
-
-```ts
-const examples = await loader.loadExamples({ dataset: "...", maxRows: 100 });
-```
-
-**`preview(dataset, n)`** — Quickly fetch the first `n` examples.
+**`preview(dataset, n)`** — first `n` examples.
 
 ```ts
 const examples = await loader.preview("llm-jp/oasst2-33k-ja", 5);
 ```
 
-**`fetchSplits(dataset)`** — List available splits.
+**`fetchSplits(dataset)`** — available splits.
 
 ```ts
 const splits = await loader.fetchSplits("llm-jp/oasst2-33k-ja");
 // ["train", "validation", "test"]
-```
-
----
-
-## `QBNNFrontalEngine` — judgment & decision-making
-
-A **pure TypeScript** quantum-inspired judgment engine. No Python, no model weights — runs entirely in Node.js or the browser.
-
-The engine implements the **APQB scoring model**: text signals are mapped to a pseudo-quantum angle θ, which yields a correlation score `r = cos(2θ)` normalised to 0–100.
-
-### Core `judge()` API
-
-```ts
-import { QBNNFrontalEngine } from "qubit_ai";
-
-const engine = new QBNNFrontalEngine();
-
-const result = await engine.judge(
-  "ユーザーの個人情報をログに記録する",   // action
-  "セキュリティ監査のための操作",          // context
-  { type: "safety", strictMode: true }
-);
-
-console.log(result.decision);    // "Yes" | "No"
-console.log(result.score);       // 0–100
-console.log(result.reasoning);   // human-readable explanation
-console.log(result.confidence);  // "high" | "medium" | "low"
-console.log(result.keyFactors);  // string[]
-```
-
-### Judgment types
-
-| Type | Description |
-|---|---|
-| `"safety"` | Is this action safe to perform? |
-| `"ethics"` | Is this ethically acceptable? |
-| `"quality"` | Does this content meet quality standards? |
-| `"risk"` | What is the risk level? |
-| `"decision"` | General decision-making |
-| `"priority"` | Task prioritisation |
-
-### Convenience helpers
-
-```ts
-// Safety check
-const safety = await engine.checkSafety(
-  "データベースを削除する",
-  "バックアップ済み、承認済み",
-  { risks: ["データ損失", "ダウンタイム"] }
-);
-
-// Ethics evaluation
-const ethics = await engine.evaluateEthics(
-  "ユーザー行動を分析する",
-  "匿名化されたデータのみを使用"
-);
-
-// Risk assessment (riskTolerance 0–100, higher = more permissive)
-const risk = await engine.assessRisk(
-  "新機能のリリース",
-  "ステージングでテスト済み",
-  { riskTolerance: 70 }
-);
-
-// Quality evaluation
-const quality = await engine.evaluateQuality(
-  "正確で明確なドキュメント",
-  { requirements: ["正確性", "完全性"], userIntent: "APIリファレンス" }
-);
-
-// Task prioritisation
-const { rankedTasks, scores } = await engine.prioritize(
-  ["バグ修正", "新機能開発", "セキュリティパッチ"],
-  "本番環境のインシデント対応"
-);
-console.log(rankedTasks); // sorted by QBNN priority score
 ```
 
 ---
@@ -296,23 +382,35 @@ T = |sin(2θ)|        — quantum tunnelling amplitude
 r² + T² = 1          — conservation law
 ```
 
-The JS engine maps text sentiment signals → θ → score (0–100), replicating the quantum-inspired reasoning of the Python QBNN model without requiring PyTorch.
+`NeuroQuantumEngine` ports the full QBNN pipeline from `neuroquantum_layered.py`:
+text signals → keyword extraction → QBNN attention (action × context) → N QBNN layers (dynamic λ entanglement) → dynamic θ phase → APQB score 0–100.
 
 ---
 
 ## TypeScript support
 
-Full type definitions are included. Import types directly:
+Full type definitions are included:
 
 ```ts
 import type {
-  // Inference
-  GenerateOptions,
-  GenerateResult,
+  // QubitAI
+  QubitAIConfig,
+  QubitAIResult,
+  QubitAIInfo,
+  QubitAIStatus,
+  JudgmentRecord,
+  PriorityItem,
+  PriorityItemResult,
+  // NeuroQuantumEngine
+  NeuroQuantumEngineConfig,
   // Judgment
   JudgmentResult,
   JudgmentType,
   JudgeOptions,
+  // Inference
+  GenerateOptions,
+  GenerateResult,
+  NeuroQuantumClientConfig,
   // Dataset
   HFDatasetLoaderConfig,
   HFDatasetRow,
