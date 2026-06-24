@@ -1,16 +1,19 @@
 # Qubit AI CLI - Interactive Chat
 
-🤖 **Interactive chat interface powered by Qubit AI and quantum-inspired neural networks**
+🤖 **A full-screen terminal chat interface — like Claude Code / Codex CLI — powered by the QBNN (quantum-inspired) engine**
 
-A command-line chat application that uses the `qubit_ai` library to generate contextual, human-like responses in real-time.
+Running the CLI drops you straight into an interactive chat screen built with
+[Ink](https://github.com/vadimdemedes/ink): a header banner, a scrolling
+conversation area, a live status line, and a bordered input box pinned to the
+bottom of the terminal. Just start typing.
 
 ## Features
 
-✨ **Real-time Conversation**: Chat interactively with quantum-inspired AI  
-💾 **Conversation History**: Automatically saves and manages chat history  
-⚙️ **Configurable Parameters**: Adjust temperature, token limits, and sampling strategies  
-📊 **Performance Metrics**: See response generation time  
-🎯 **Few-shot Learning**: Learns from examples for better responses  
+🖥️ **Full-screen TUI**: A polished chat screen (Ink-based) like Claude Code / Codex CLI  
+✨ **Real-time Conversation**: Chat interactively with the quantum-inspired QBNN engine  
+⏳ **Live status**: Animated spinner while the model is thinking + per-response timing  
+💾 **Conversation History**: In-session history with one-command JSON export  
+⚙️ **Configurable Parameters**: Adjust temperature and token limits on the fly via slash commands  
 💡 **Context Awareness**: Maintains conversation context for coherent multi-turn dialogue  
 📥 **Export Conversations**: Save chats as JSON files  
 
@@ -29,45 +32,66 @@ npm start
 
 ```bash
 npm install -g qubit_ai_cli
-qubit-chat
+qbnn          # launches the chat screen
+# qubit-chat  # alias, same thing
 ```
 
 ### Development
 
 ```bash
-npm run dev                    # Run with ts-node
+npm run dev                    # Run the TUI directly with tsx
 ```
 
 ## Usage
 
-### Interactive Mode
+### Interactive Mode (default)
 
-Start the chat interface:
+Just run the command with no arguments and the full-screen chat interface opens:
 
 ```bash
+qbnn
+# or, from source:
 npm start
 # or
 node dist/bin/cli.js
 ```
 
-Then type your messages:
+You'll see a chat screen like this:
+
 ```
-You: こんにちは、今日はどんな日ですか？
-🤖 Assistant: 今日は素晴らしい一日ですね...
+╭────────────────────────────────────────────────────────────╮
+│ ✶ Qubit AI  quantum-inspired chat · QBNN engine             │
+│ temp 0.7 · max 150 tokens · top-k 40 · top-p 0.9            │
+╰────────────────────────────────────────────────────────────╯
+ Type a message and press Enter. /help for commands, /exit to quit.
+
+› You
+  こんにちは、今日はどんな日ですか？
+⏺ Qubit   1245ms
+  今日は素晴らしい一日ですね...
+
+╭────────────────────────────────────────────────────────────╮
+│ › Send a message…                                           │
+╰────────────────────────────────────────────────────────────╯
+ temp 0.7 · 150 tokens · 2 msgs · Ctrl+C to quit
 ```
+
+Type a message and press Enter to chat. Press `Ctrl+C` or type `/exit` to quit.
 
 ### Single Query Mode
 
-Ask a single question:
+Pass a question as an argument to get a one-shot answer (no TUI):
 
 ```bash
-npm start "Tell me about artificial intelligence"
+qbnn "Tell me about artificial intelligence"
+# or
+node dist/bin/cli.js "What is quantum computing?"
 ```
 
-Or programmatically:
+### Help
 
 ```bash
-node dist/bin/cli.js "What is quantum computing?"
+qbnn --help
 ```
 
 ## Commands
@@ -143,7 +167,7 @@ npm start
 
 ### Customizing Configuration
 
-Edit `src/bin/cli.ts` to modify defaults:
+Edit `src/bin/cli.tsx` to modify defaults:
 
 ```typescript
 const chat = await createChat({
@@ -163,37 +187,12 @@ const chat = await createChat({
 
 ## Output Examples
 
-### Interactive Mode
-
-```
-╔════════════════════════════════════════════════════════════╗
-║         🤖 Qubit AI Interactive Chat CLI 🤖              ║
-║  Powered by quantum-inspired neural networks              ║
-╚════════════════════════════════════════════════════════════╝
-
-ℹ️  Type 'help' for commands | 'exit' to quit
-
-You: What is machine learning?
-🤖 Assistant: Machine learning is a subset of artificial intelligence...
-ℹ️  Generated in 1245ms
-
-You: /help
-📖 Available Commands:
-
-  help          - Show this help message
-  clear         - Clear conversation history
-  history       - Show conversation history
-  ...
-```
-
 ### Single Query Mode
 
 ```
-👤 You: Explain quantum computing
-🤖 Assistant: Quantum computing uses quantum mechanics principles...
-ℹ️  Generated in 1180ms
-
-✅ Chat session ended. (1 messages)
+› You: Explain quantum computing
+⏺ Qubit: Quantum computing uses quantum mechanics principles...
+  generated in 1180ms
 ```
 
 ## Conversation History
@@ -282,16 +281,23 @@ You: What are popular tourist attractions?
 ```
 qubit_ai_cli/
 ├── src/
-│   ├── chat.ts          # Core chat functionality
+│   ├── chat.ts          # Core chat engine (QubitAIChat)
 │   ├── types.ts         # Type definitions
 │   ├── index.ts         # Public API
+│   ├── ui/
+│   │   └── app.tsx      # Full-screen Ink chat UI
 │   └── bin/
-│       └── cli.ts       # Interactive CLI interface
+│       └── cli.tsx      # CLI entry point (TUI + single-query mode)
 ├── dist/                # Compiled JavaScript
 ├── package.json         # Dependencies
 ├── tsconfig.json        # TypeScript config
 └── README.md            # This file
 ```
+
+The interactive UI is built with [Ink](https://github.com/vadimdemedes/ink)
+(React for the terminal). `cli.tsx` decides between launching the full-screen
+`<App>` (no arguments) and one-shot query mode (a question passed as an
+argument); `app.tsx` owns the chat screen, slash commands, and rendering.
 
 ### Key Classes
 
