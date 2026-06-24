@@ -26,6 +26,7 @@ Requires **Node.js ≥ 18** (uses the built-in `fetch` API).
 |---|---|
 | `NeuroQuantumClient` | HTTP client for the neuroQ HuggingFace inference endpoint |
 | `QBNNFrontalEngine` | Pure-JS quantum-inspired judgment engine (no Python required) |
+| `HFDatasetLoader` | HuggingFace Datasets API client — fetch, stream, and convert dataset rows |
 
 ---
 
@@ -57,6 +58,154 @@ console.log(result.generatedText);
 | `hfToken` | `string` | `$HF_TOKEN` env | HuggingFace API token |
 | `timeoutMs` | `number` | `600_000` | Per-request timeout |
 | `maxRetries` | `number` | `12` | Retries on 503 / network errors |
+
+### Few-shot inference with dataset examples
+
+Use `generateWithExamples()` to prepend examples from a HF dataset as in-context few-shot prompts:
+
+```ts
+import { HFDatasetLoader, NeuroQuantumClient } from "qubit_ai";
+
+const loader = new HFDatasetLoader({ hfToken: process.env.HF_TOKEN });
+const client = new NeuroQuantumClient({ hfToken: process.env.HF_TOKEN });
+
+// Load a few examples from a public dataset
+const examples = await loader.preview("llm-jp/oasst2-33k-ja", 3);
+
+// Generate with those examples as context (few-shot learning)
+const result = await client.generateWithExamples(
+  "量子コンピュータの利点を教えてください",
+  examples,
+  {
+    numExamples: 3,
+    exampleTemplate: "Q: {prompt}\nA: {completion}",
+    queryTemplate: "Q: {prompt}\nA:",
+    maxNewTokens: 200,
+  }
+);
+
+console.log(result.generatedText);
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `numExamples` | `number` | `3` | Number of examples to include in context |
+| `exampleSeparator` | `string` | `"\n\n"` | Separator between examples |
+| `exampleTemplate` | `string` | `"Q: {prompt}\nA: {completion}"` | Format for each example |
+| `queryTemplate` | `string` | `"Q: {prompt}\nA:"` | Format for the query |
+
+### Training from a HuggingFace dataset
+
+Use `trainFromDataset()` to stream a HF dataset and send it in batches to a fine-tuning endpoint:
+
+```ts
+const result = await client.trainFromDataset({
+  dataset: "llm-jp/oasst2-33k-ja",
+  promptField: "input",       // column to use as prompt
+  completionField: "output",  // column to use as completion
+  maxRows: 500,               // cap total rows
+  batchSize: 10,              // examples per HTTP batch
+  trainingEndpointUrl: "https://your-training-endpoint/train",
+  onProgress: (p) => {
+    console.log(`${p.processedExamples}/${p.totalExamples} examples, batch ${p.currentBatch}/${p.totalBatches}`);
+  },
+});
+
+console.log(result.status);        // "completed" | "partial" | "failed"
+console.log(result.totalExamples); // number of examples sent
+console.log(result.durationMs);    // total time in ms
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `dataset` | `string` | — | Dataset name on HuggingFace Hub |
+| `config` | `string` | `"default"` | Dataset configuration |
+| `split` | `string` | `"train"` | Dataset split |
+| `promptField` | `string` | auto-inferred | Column name for prompts |
+| `completionField` | `string` | auto-inferred | Column name for completions |
+| `transform` | `(row) => TrainingExample \| null` | — | Custom row converter |
+| `maxRows` | `number` | unlimited | Maximum rows to stream |
+| `batchSize` | `number` | `10` | Examples per HTTP batch |
+| `trainingEndpointUrl` | `string` | `endpointUrl + "/train"` | Fine-tuning endpoint URL |
+| `onProgress` | `(p: TrainingProgress) => void` | — | Progress callback |
+
+---
+
+## `HFDatasetLoader` — dataset access
+
+```ts
+import { HFDatasetLoader } from "qubit_ai";
+
+const loader = new HFDatasetLoader({
+  hfToken: process.env.HF_TOKEN, // required for private datasets
+});
+```
+
+### Constructor options
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `hfToken` | `string` | `$HF_TOKEN` env | HuggingFace API token |
+| `datasetsServerUrl` | `string` | HF Datasets Server | Custom Datasets Server URL |
+| `timeoutMs` | `number` | `30_000` | Per-request timeout |
+
+### Methods
+
+**`fetchRows(opts)`** — Fetch a single page of rows.
+
+```ts
+const page = await loader.fetchRows({
+  dataset: "llm-jp/oasst2-33k-ja",
+  config: "default",   // optional
+  split: "train",      // optional
+  offset: 0,           // optional
+  limit: 50,           // optional, max 100
+});
+// page.rows: HFDatasetRow[]
+// page.numRowsTotal: number
+```
+
+**`streamRows(opts)`** — Async generator yielding all rows page-by-page.
+
+```ts
+for await (const { rowIdx, row } of loader.streamRows({ dataset: "...", maxRows: 1000 })) {
+  console.log(rowIdx, row);
+}
+```
+
+**`streamExamples(opts)`** — Async generator yielding `{ prompt, completion }` pairs.
+
+```ts
+for await (const example of loader.streamExamples({
+  dataset: "llm-jp/oasst2-33k-ja",
+  promptField: "input",
+  completionField: "output",
+  maxRows: 200,
+})) {
+  console.log(example.prompt, "->", example.completion);
+}
+```
+
+Field names (`promptField` / `completionField`) are auto-inferred when omitted, trying common names: `input`, `instruction`, `question`, `prompt` for prompts and `output`, `response`, `answer`, `completion` for completions.
+
+**`loadExamples(opts)`** — Load all examples into memory (convenience wrapper).
+
+```ts
+const examples = await loader.loadExamples({ dataset: "...", maxRows: 100 });
+```
+
+**`preview(dataset, n)`** — Quickly fetch the first `n` examples.
+
+```ts
+const examples = await loader.preview("llm-jp/oasst2-33k-ja", 5);
+```
+
+**`fetchSplits(dataset)`** — List available splits.
+
+```ts
+const splits = await loader.fetchSplits("llm-jp/oasst2-33k-ja");
+// ["train", "validation", "test"]
+```
 
 ---
 
@@ -157,9 +306,25 @@ Full type definitions are included. Import types directly:
 
 ```ts
 import type {
+  // Inference
+  GenerateOptions,
+  GenerateResult,
+  // Judgment
   JudgmentResult,
   JudgmentType,
-  GenerateOptions,
+  JudgeOptions,
+  // Dataset
+  HFDatasetLoaderConfig,
+  HFDatasetRow,
+  HFDatasetPage,
+  FetchRowsOptions,
+  StreamRowsOptions,
+  DatasetToExamplesOptions,
+  TrainingExample,
+  TrainFromDatasetOptions,
+  TrainingProgress,
+  TrainingResult,
+  GenerateWithExamplesOptions,
 } from "qubit_ai";
 ```
 
