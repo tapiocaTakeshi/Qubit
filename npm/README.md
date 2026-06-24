@@ -1,8 +1,13 @@
 # qubit_ai
 
-**Quantum-inspired QBNN inference & judgment engine for JavaScript / TypeScript**
+**Quantum-inspired generative AI judgment engine for JavaScript / TypeScript**
 
-`qubit_ai` is the official JavaScript/TypeScript SDK for the [NeuroQuantum (neuroQ)](https://github.com/tapiocaTakeshi/Qubit) project — a quantum-inspired neural network language model and AI decision-making system built on the **APQB (Adjustable Pseudo Quantum Bit)** theory.
+`qubit_ai` is the official JavaScript/TypeScript SDK for the [NeuroQuantum (neuroQ)](https://github.com/tapiocaTakeshi/Qubit) project — a quantum-inspired neural network AI decision-making system with **multiple backend support**:
+
+- **NeuroQuantum**: Quantum-inspired neural networks (Python backend)
+- **LLM**: Claude, OpenAI, HuggingFace generative AI
+- **Heuristic**: Fast keyword-based QBNN scoring (built on **APQB** theory)
+- **Hybrid**: Combines multiple backends with fallback for reliability
 
 ---
 
@@ -20,14 +25,31 @@ Requires **Node.js ≥ 18** (uses the built-in `fetch` API).
 
 ---
 
+## Key Features
+
+- ✅ **Multiple Backends**: Switch between heuristic, LLM, NeuroQuantum, or hybrid mode
+- ✅ **6 Judgment Types**: safety, ethics, quality, risk, decision, priority
+- ✅ **Generative AI**: Claude, OpenAI, HuggingFace LLM providers
+- ✅ **Quantum-Inspired**: Python NeuroQuantum neural networks via REST API
+- ✅ **Production Ready**: Retry logic, fallback, strict mode, history tracking
+- ✅ **Fine-tuning**: Train LLMs on HuggingFace datasets
+- ✅ **100% Backward Compatible**: Upgrade from v1 without code changes
+
 ## Modules
 
 | Export | Description |
 |---|---|
-| `QubitAI` | High-level judgment engine (TypeScript port of `qubit_ai.py`) |
-| `QBNNFrontalEngine` | Pure-JS quantum-inspired judgment engine (low-level, no Python required) |
-| `NeuroQuantumClient` | HTTP client for the neuroQ HuggingFace inference endpoint |
-| `HFDatasetLoader` | HuggingFace Datasets API client — fetch, stream, and convert dataset rows |
+| `QubitAI` | High-level judgment engine with backend selection |
+| `QBNNFrontalEngine` | Pure-JS quantum-inspired QBNN engine (low-level) |
+| `LLMFrontalEngine` | LLM-based judgment with multiple providers |
+| `NeuroQuantumFrontalEngine` | Python REST API quantum-inspired backend |
+| `HybridFrontalEngine` | Combines LLM and heuristic with blending |
+| `LLMProvider` | Abstract base for pluggable LLM providers |
+| `ClaudeProvider` / `OpenAIProvider` / `HuggingFaceProvider` | LLM implementations |
+| `NeuroQuantumAPIClient` | REST client for Python backend |
+| `LLMTrainer` | HuggingFace dataset fine-tuning |
+| `NeuroQuantumClient` | HuggingFace inference endpoint client |
+| `HFDatasetLoader` | HuggingFace Datasets API client |
 
 ---
 
@@ -57,12 +79,40 @@ console.log(result.factors);     // string[]
 ### Constructor options
 
 ```ts
+// Default: Heuristic-based QBNN (fast, offline)
 const qubit = new QubitAI({
   productName: "MyAI",          // default: "Qubit.ai"
-  version: "1.0.0",             // default: "1.1.0"
-  strictMode: true,             // default: false — score ≥ 70 = Yes (vs ≥ 50)
-  enableLogging: true,          // default: true
+  strictMode: true,             // default: false — score ≥ 70 = Yes
   maxJudgmentHistory: 500,      // default: 100
+});
+
+// With LLM backend (Claude, OpenAI, HuggingFace)
+const qubit = new QubitAI({
+  llmEnabled: true,
+  llmProvider: 'claude',        // or 'openai' | 'hf'
+  llmConfig: {
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    model: 'claude-3-5-sonnet-20241022',
+    temperature: 0.7,
+  },
+});
+
+// With NeuroQuantum backend (Python quantum-inspired)
+const qubit = new QubitAI({
+  neuroquantumEnabled: true,
+  neuroquantumConfig: {
+    baseUrl: 'http://localhost:5000',
+    timeout: 30000,
+  },
+});
+
+// Hybrid mode (NeuroQuantum + heuristic fallback, recommended for production)
+const qubit = new QubitAI({
+  neuroquantumEnabled: true,
+  fallbackToHeuristics: true,   // Use heuristics if API fails
+  neuroquantumConfig: {
+    baseUrl: 'http://localhost:5000',
+  },
 });
 ```
 
@@ -528,6 +578,151 @@ Confidence levels:
   medium  Some uncertainty
   low     Ambiguous — human review recommended
 ```
+
+---
+
+## 🧠 LLM Backend — Generative AI Reasoning
+
+Use Claude, OpenAI, or HuggingFace for advanced generative reasoning:
+
+```ts
+const qubit = new QubitAI({
+  llmEnabled: true,
+  llmProvider: 'claude',
+  llmConfig: {
+    apiKey: process.env.ANTHROPIC_API_KEY,
+  },
+});
+
+const result = await qubit.judge(
+  "Delete user data",
+  "Production environment",
+  "safety"
+);
+
+console.log(result.reasoning);  // LLM-generated explanation
+```
+
+### LLM Providers
+
+| Provider | Setup |
+|----------|-------|
+| **Claude** | `llmProvider: 'claude'`, set `ANTHROPIC_API_KEY` |
+| **OpenAI** | `llmProvider: 'openai'`, set `OPENAI_API_KEY` |
+| **HuggingFace** | `llmProvider: 'hf'`, set `HF_TOKEN` |
+
+See [LLM Integration Guide](../docs/LLM_INTEGRATION.md) for detailed setup.
+
+---
+
+## 🌌 NeuroQuantum Backend — Python Quantum-Inspired Neural Networks
+
+Connect to Python backend for advanced quantum-inspired reasoning:
+
+```ts
+// Start Python server first:
+// python neuroquantum_api_server.py --host 127.0.0.1 --port 5000
+
+const qubit = new QubitAI({
+  neuroquantumEnabled: true,
+  neuroquantumConfig: {
+    baseUrl: 'http://localhost:5000',
+  },
+});
+
+const result = await qubit.judge(
+  "データを削除",
+  "本番環境",
+  "safety"
+);
+
+console.log(result.reasoning);  // Quantum-inspired neural analysis
+```
+
+### Production Setup (Recommended)
+
+Use **hybrid mode** for maximum reliability:
+
+```ts
+const qubit = new QubitAI({
+  neuroquantumEnabled: true,
+  fallbackToHeuristics: true,  // Use QBNN if API fails
+  neuroquantumConfig: {
+    baseUrl: 'http://api.example.com:5000',
+    timeout: 30000,
+    maxRetries: 3,
+  },
+});
+```
+
+See [NeuroQuantum Integration Guide](../docs/NEUROQUANTUM_INTEGRATION.md) for complete setup and deployment.
+
+---
+
+## 📚 Training on HuggingFace Datasets
+
+Fine-tune LLMs for specialized judgment tasks:
+
+```ts
+const qubit = new QubitAI({
+  llmEnabled: true,
+  llmProvider: 'hf',
+});
+
+// Train on safety dataset
+const result = await qubit.trainOnHFDataset({
+  dataset: 'llm-jp/oasst2-33k-ja',
+  judgmentType: 'safety',
+  maxExamples: 5000,
+  onProgress: (prog) => {
+    console.log(`${prog.processedExamples}/${prog.totalExamples}`);
+  },
+});
+
+// Evaluate on test set
+const metrics = await qubit.evaluateFineTunedModel({
+  dataset: 'llm-jp/oasst2-33k-ja',
+  split: 'test',
+  sampleSize: 100,
+});
+
+console.log(`Accuracy: ${metrics.accuracy.toFixed(2)}`);
+```
+
+---
+
+## Environment Variables
+
+```bash
+# Backend selection
+QUBIT_NEUROQUANTUM_ENABLED=true          # Use Python backend
+QUBIT_LLM_ENABLED=true                   # Use LLM backend
+QUBIT_FALLBACK_TO_HEURISTICS=true        # Hybrid mode
+
+# LLM configuration
+QUBIT_LLM_PROVIDER=claude                # claude | openai | hf
+ANTHROPIC_API_KEY=sk_...
+OPENAI_API_KEY=sk_...
+HF_TOKEN=hf_...
+
+# NeuroQuantum configuration
+QUBIT_NEUROQUANTUM_BASE_URL=http://localhost:5000
+QUBIT_NEUROQUANTUM_TIMEOUT=30000
+
+# Judgment settings
+QUBIT_STRICT_MODE=true                   # Score ≥ 70 = Yes
+```
+
+---
+
+## 📖 Documentation
+
+- [Quick Start](../docs/NEUROQUANTUM_QUICKSTART.md) — Get running in 5 minutes
+- [NeuroQuantum Integration](../docs/NEUROQUANTUM_INTEGRATION.md) — Full Python backend guide
+- [LLM Integration](../docs/LLM_INTEGRATION.md) — Generative AI setup
+- [Configuration](../docs/CONFIGURATION.md) — All config options
+- [Examples](../examples/) — Complete usage examples
+- [Implementation Summary](../IMPLEMENTATION_SUMMARY.md) — Architecture overview
 
 ---
 
