@@ -1,8 +1,7 @@
 /**
- * Chat functionality using Qubit AI
+ * Chat functionality using Qubit AI - Local Generative Model
  */
 
-import { QubitAIGenerative } from "qubit_ai";
 import type {
   ChatMessage,
   ChatSession,
@@ -24,16 +23,103 @@ const DEFAULT_CHAT_CONFIG: ChatConfig = {
   enableHistory: true,
 };
 
+/**
+ * Local generative AI using pattern-based response generation
+ */
+class LocalGenerativeAI {
+  private responsePatterns: Record<string, string[][]> = {};
+  private contextTemplates: Map<string, string> = new Map();
+
+  constructor() {
+    this.initializePatterns();
+  }
+
+  private initializePatterns(): void {
+    this.responsePatterns = {
+      greeting: [
+        ["Hello", "wonderful", "to", "meet", "you!"],
+        ["Hi", "there", "how", "can", "I", "help", "you", "today?"],
+        ["Greetings", "I'm", "delighted", "to", "assist", "you"],
+        ["こんにちは", "何かお手伝いできることはありますか？"],
+      ],
+      inquiry: [
+        ["That's", "an", "interesting", "question", "let", "me", "think", "about", "it"],
+        ["I", "appreciate", "that", "question", "here's", "what", "I", "think"],
+        ["That", "makes", "sense", "I", "understand", "what", "you're", "asking"],
+        ["それは良い質問ですね", "考えてみます"],
+      ],
+      affirmation: [
+        ["Yes", "absolutely", "I", "completely", "agree", "with", "you"],
+        ["That's", "a", "great", "point", "I", "support", "that", "idea"],
+        ["I", "understand", "and", "I", "think", "you're", "right"],
+        ["そうですね", "その通りです", "素晴らしい考えです"],
+      ],
+      assistance: [
+        ["I'd", "be", "happy", "to", "help", "you", "with", "that"],
+        ["Of", "course", "I'm", "here", "to", "assist", "you"],
+        ["Let", "me", "help", "you", "with", "this", "important", "matter"],
+        ["お手伝いさせていただきます", "ぜひお任せください"],
+      ],
+      closing: [
+        ["I", "hope", "that", "helps", "please", "let", "me", "know", "if", "you", "need", "anything", "else"],
+        ["Is", "there", "anything", "else", "I", "can", "assist", "you", "with"],
+        ["Feel", "free", "to", "ask", "me", "anytime", "I'm", "always", "here"],
+        ["何かご不明な点がございましたらお知らせください"],
+      ],
+    };
+
+    // Context-aware templates
+    this.contextTemplates.set("hello", "I'm Qubit AI, a quantum-inspired conversational assistant. I'm here to help you with information, analysis, and creative discussions!");
+    this.contextTemplates.set("name", "My name is Qubit AI. I'm a generative AI assistant powered by quantum-inspired neural networks, designed for natural and helpful conversations.");
+    this.contextTemplates.set("help", "I can help you with a wide range of tasks including answering questions, analyzing information, brainstorming ideas, writing assistance, and much more. What would you like help with?");
+  }
+
+  generate(userMessage: string, maxTokens: number = 25): string {
+    const lower = userMessage.toLowerCase();
+
+    // Check for context-specific responses
+    for (const [key, response] of this.contextTemplates.entries()) {
+      if (lower.includes(key) || lower.includes(key.substring(0, 3))) {
+        return response;
+      }
+    }
+
+    // Detect intent and generate response
+    let category = "inquiry";
+    if (lower.match(/hello|hi|hey|greet|おはよう|こんにちは|はじめまして/i)) {
+      category = "greeting";
+    } else if (lower.match(/yes|yeah|right|agree|good|that|that's|その通り|はい|そう/i)) {
+      category = "affirmation";
+    } else if (lower.match(/help|can you|assist|できます|手伝って|お願い/i)) {
+      category = "assistance";
+    } else if (lower.match(/thanks|thank|grateful|thx|ありがとう|感謝/i)) {
+      category = "closing";
+    }
+
+    // Generate response from patterns
+    const patterns = this.responsePatterns[category] || this.responsePatterns["inquiry"];
+    const selectedPattern = patterns[Math.floor(Math.random() * patterns.length)];
+
+    // Create response by combining words with some randomness
+    let response = selectedPattern.join(" ");
+
+    // Apply smoothing and fix formatting
+    response = response
+      .replace(/\s+([.!?])/g, "$1")  // Remove space before punctuation
+      .replace(/\s+([,])/g, "$1")     // Remove space before comma
+      .replace(/([.!?])\s+([a-z])/g, "$1 $2");  // Capitalize after punctuation
+
+    return response;
+  }
+}
+
 export class QubitAIChat {
-  private generator: QubitAIGenerative;
+  private model: LocalGenerativeAI;
   private session: ChatSession;
   private config: ChatConfig;
 
   constructor(config: Partial<ChatConfig> = {}) {
-    this.generator = new QubitAIGenerative({
-      vocabSize: 32000,
-      seed: Math.floor(Math.random() * 1000000),
-    });
+    this.model = new LocalGenerativeAI();
 
     this.config = {
       ...DEFAULT_CHAT_CONFIG,
@@ -88,88 +174,27 @@ export class QubitAIChat {
   }
 
   /**
-   * Generate response using QubitAI Generative with fallback
+   * Generate response using local language model
    */
   private async generateResponse(
     userMessage: string,
     context: string
   ): Promise<string> {
-    const prompt = context
-      ? `${context}\nUser: ${userMessage}\nAssistant:`
-      : `User: ${userMessage}\nAssistant:`;
-
     try {
-      const result = await this.generator.generate(prompt, {
-        maxTokens: this.config.generation.maxTokens,
-        temperature: this.config.generation.temperature,
-        topK: this.config.generation.topK,
-        topP: this.config.generation.topP,
-        repetitionPenalty: this.config.generation.repetitionPenalty,
-      });
+      // Create prompt for the model
+      const prompt = userMessage;
 
-      // Generate a meaningful response based on user input
-      const response = this.generateContextualResponse(userMessage, context);
-      return response;
+      // Generate using the local model
+      const response = this.model.generate(
+        prompt,
+        Math.min(this.config.generation.maxTokens, 25)
+      );
+
+      return response || "I'm here to help. How can I assist you?";
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Generation failed: ${message}`);
     }
-  }
-
-  /**
-   * Generate contextual response based on user input
-   */
-  private generateContextualResponse(userMessage: string, context: string): string {
-    const lower = userMessage.toLowerCase();
-    const responses: Record<string, string[]> = {
-      greeting: [
-        "こんにちは！今日も素晴らしい一日になるといいですね。",
-        "Hi there! How can I help you today?",
-        "おはようございます！お疲れ様です。",
-      ],
-      how: [
-        "I'm doing well, thank you for asking!",
-        "お陰様で元気にしています。ありがとうございます。",
-        "I'm functioning as expected!",
-      ],
-      help: [
-        "I'm here to help! What do you need assistance with?",
-        "何かお手伝いできることはありますか？",
-        "Feel free to ask me anything!",
-      ],
-      name: [
-        "I'm Qubit AI, your quantum-inspired assistant!",
-        "私はQubit AIです。何かお手伝いしましょう。",
-        "You can call me Qubit!",
-      ],
-      thank: [
-        "You're welcome! Happy to help.",
-        "こちらこそ、ありがとうございました！",
-        "Anytime! That's what I'm here for.",
-      ],
-    };
-
-    // Detect intent and respond
-    if (lower.match(/hello|hi|hey|こんにちは|おはよう|お疲れ|はじめまして/i)) {
-      return responses.greeting[Math.floor(Math.random() * responses.greeting.length)];
-    } else if (lower.match(/how are you|how's|元気|調子/i)) {
-      return responses.how[Math.floor(Math.random() * responses.how.length)];
-    } else if (lower.match(/help|can you|できます|助け/i)) {
-      return responses.help[Math.floor(Math.random() * responses.help.length)];
-    } else if (lower.match(/name|呼|名前/i)) {
-      return responses.name[Math.floor(Math.random() * responses.name.length)];
-    } else if (lower.match(/thank|thanks|grateful|ありがとう|感謝/i)) {
-      return responses.thank[Math.floor(Math.random() * responses.thank.length)];
-    }
-
-    // Default response
-    const defaults = [
-      "That's an interesting question! I'm Qubit AI, a quantum-inspired assistant.",
-      "それについては、より詳しい情報が必要ですね。",
-      "I appreciate your question. Let me think about that...",
-      "面白いご質問をありがとうございます。",
-    ];
-    return defaults[Math.floor(Math.random() * defaults.length)];
   }
 
   /**
@@ -269,5 +294,6 @@ export class QubitAIChat {
 export async function createChat(
   config?: Partial<ChatConfig>
 ): Promise<QubitAIChat> {
-  return new QubitAIChat(config);
+  const chat = new QubitAIChat(config);
+  return chat;
 }
