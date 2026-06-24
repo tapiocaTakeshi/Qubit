@@ -23,5 +23,5 @@ describe("NeuroQuantumClient", () => {
       timeoutMs: 10_000,
     });
     await expect(client.generate("test")).rejects.toThrow();
-  });
+  }, 30_000);
 });

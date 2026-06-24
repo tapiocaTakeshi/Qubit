@@ -34,7 +34,7 @@ describe("QubitAI", () => {
     const qubit = new QubitAI();
     const info = qubit.getInfo();
     expect(info.product).toBe("Qubit.ai");
-    expect(info.version).toBe("1.1.0");
+    expect(info.version).toBe("1.2.2");
     expect(info.status).toBe("operational");
     expect(info.sessionId).toMatch(/^qubit-ai-/);
     expect(info.description).toBeTruthy();
