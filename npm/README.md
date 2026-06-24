@@ -1,13 +1,25 @@
 # qubit_ai
 
-**Quantum-inspired generative AI judgment engine for JavaScript / TypeScript**
+**General-Purpose Quantum-Inspired Large Language Model (LLM) for JavaScript / TypeScript**
 
-`qubit_ai` is the official JavaScript/TypeScript SDK for the [NeuroQuantum (neuroQ)](https://github.com/tapiocaTakeshi/Qubit) project — a quantum-inspired neural network AI decision-making system with **multiple backend support**:
+`qubit_ai` is the official JavaScript/TypeScript SDK for [Qubit AI](https://github.com/tapiocaTakeshi/Qubit) — a **next-generation general-purpose language model** that combines the conversational capabilities of ChatGPT with a quantum-inspired neural network architecture (APQB/QBNN).
 
-- **NeuroQuantum**: Quantum-inspired neural networks (Python backend)
-- **LLM**: Claude, OpenAI, HuggingFace generative AI
-- **Heuristic**: Fast keyword-based QBNN scoring (built on **APQB** theory)
-- **Hybrid**: Combines multiple backends with fallback for reliability
+## What is Qubit AI?
+
+Qubit AI is a ChatGPT-like large language model built on **quantum-inspired computational principles**:
+
+- 🧠 **General-Purpose Conversational AI**: Natural dialogue, code generation, summarization, translation, reasoning, and more
+- ⚛️ **Quantum-Inspired Architecture**: Uses APQB (Adjustable Pseudo Quantum Bit) theory for more efficient and theoretically-grounded AI
+- 🎯 **Judgment & Decision Engine**: Built-in specialized judgments (safety, ethics, quality, risk, decision, priority)
+- 🔧 **Multiple Backends**: Choose from pure QBNN, LLM providers (Claude, OpenAI, HuggingFace), Python NeuroQuantum, or hybrid mode
+- ⚡ **Production-Ready**: Retry logic, fallback mechanisms, history tracking, and fine-tuning capabilities
+
+### Multiple Backend Support
+
+- **QBNN Engine**: Pure JavaScript quantum-inspired inference (fast, offline)
+- **LLM Providers**: Claude, OpenAI, HuggingFace (state-of-the-art generative AI)
+- **NeuroQuantum**: Python backend quantum-inspired neural networks via REST API
+- **Hybrid**: Automatic fallback and load balancing across backends
 
 ---
 
@@ -27,13 +39,25 @@ Requires **Node.js ≥ 18** (uses the built-in `fetch` API).
 
 ## Key Features
 
-- ✅ **Multiple Backends**: Switch between heuristic, LLM, NeuroQuantum, or hybrid mode
+### 🤖 As a General-Purpose LLM
+- ✅ **Natural Conversation**: Chat-based dialogue like ChatGPT
+- ✅ **Code Generation**: Generate and explain code in multiple languages
+- ✅ **Text Processing**: Summarization, translation, paraphrasing, creative writing
+- ✅ **Complex Reasoning**: Mathematical problem-solving, logical analysis, research synthesis
+- ✅ **Controllable Creativity**: APQB θ parameter for fine-tuned output diversity
+
+### 🎯 As a Judgment Engine
 - ✅ **6 Judgment Types**: safety, ethics, quality, risk, decision, priority
-- ✅ **Generative AI**: Claude, OpenAI, HuggingFace LLM providers
-- ✅ **Quantum-Inspired**: Python NeuroQuantum neural networks via REST API
-- ✅ **Production Ready**: Retry logic, fallback, strict mode, history tracking
-- ✅ **Fine-tuning**: Train LLMs on HuggingFace datasets
-- ✅ **100% Backward Compatible**: Upgrade from v1 without code changes
+- ✅ **Multiple Backends**: Switch between QBNN (fast), LLM (accurate), NeuroQuantum (quantum-inspired), or hybrid mode
+- ✅ **Generative AI Providers**: Claude, OpenAI, HuggingFace
+- ✅ **Quantum-Inspired Inference**: Python NeuroQuantum neural networks via REST API
+
+### ⚙️ Production Features
+- ✅ **Reliability**: Automatic retry logic, fallback mechanisms, strict mode
+- ✅ **History Tracking**: Judge history with configurable limits
+- ✅ **Fine-tuning**: Train on HuggingFace datasets for custom tasks
+- ✅ **Backward Compatible**: Upgrade from v1 without code changes
+- ✅ **TypeScript Support**: Full type safety and intellisense
 
 ## Modules
 
