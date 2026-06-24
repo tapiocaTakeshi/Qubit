@@ -199,6 +199,30 @@ Temperature: 0.4 (analytical, structured, deterministic)`;
   } catch (error) {
     const errorMsg =
       error instanceof Error ? error.message : String(error);
+    const stack =
+      error instanceof Error ? error.stack : "";
+
+    // Log detailed error for debugging
+    logError(`API Error: ${errorMsg}`);
+    if (stack) {
+      logError(`Stack: ${stack.split("\n").slice(0, 3).join(" → ")}`);
+    }
+
+    // Check if HF_TOKEN is set
+    const token = process.env.HF_TOKEN || process.env.HUGGING_FACE_HUB_TOKEN;
+    if (!token) {
+      logError("HF_TOKEN environment variable is not set");
+    } else {
+      logError(
+        `HF_TOKEN is set (length: ${token.length})`
+      );
+    }
+
+    // Check proxy settings
+    const proxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+    if (proxy) {
+      logInfo(`Proxy configured: ${proxy}`);
+    }
 
     // Fallback to simulation if API fails
     logInfo("Using simulation mode (API unavailable)\n");
