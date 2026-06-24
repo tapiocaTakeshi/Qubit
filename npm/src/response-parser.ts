@@ -116,55 +116,52 @@ export class ResponseParser {
    */
   private static validateAndNormalize(parsed: Record<string, unknown>): JudgmentResult {
     // Validate decision
-    let decision = parsed.decision;
-    if (typeof decision !== "string") {
-      decision = "No";
-    }
+    let decision: string = typeof parsed.decision === "string" ? parsed.decision : "No";
     decision = decision.toLowerCase() === "yes" ? "Yes" : "No";
 
     // Validate and normalize score
-    let score = parsed.score;
-    if (typeof score === "string") {
-      score = parseFloat(score);
+    let score: number = 50;
+    if (typeof parsed.score === "string") {
+      score = parseFloat(parsed.score);
+    } else if (typeof parsed.score === "number") {
+      score = parsed.score;
     }
-    if (typeof score !== "number" || isNaN(score)) {
+    if (isNaN(score)) {
       score = 50;
     }
     score = Math.max(0, Math.min(100, Math.round(score)));
 
     // Validate reasoning
-    let reasoning = parsed.reasoning;
-    if (typeof reasoning !== "string") {
-      reasoning = `Decision: ${decision}`;
-    }
+    let reasoning: string = typeof parsed.reasoning === "string"
+      ? parsed.reasoning
+      : `Decision: ${decision}`;
     reasoning = reasoning.trim().substring(0, 500);
 
     // Validate confidence
-    let confidence = parsed.confidence;
-    if (!["high", "medium", "low"].includes(String(confidence).toLowerCase())) {
+    let confidence: "high" | "medium" | "low" = "medium";
+    const confidenceStr = String(parsed.confidence).toLowerCase();
+    if (["high", "medium", "low"].includes(confidenceStr)) {
+      confidence = confidenceStr as "high" | "medium" | "low";
+    } else {
       // Infer from score
-      const scoreNum = score;
-      if (scoreNum >= 80 || scoreNum <= 20) {
+      if (score >= 80 || score <= 20) {
         confidence = "high";
-      } else if (scoreNum >= 65 || scoreNum <= 35) {
+      } else if (score >= 65 || score <= 35) {
         confidence = "medium";
       } else {
         confidence = "low";
       }
-    } else {
-      confidence = String(confidence).toLowerCase();
     }
 
     // Validate factors
-    let factors = parsed.factors;
-    if (!Array.isArray(factors)) {
-      factors = [];
+    let factors: string[] = [];
+    if (Array.isArray(parsed.factors)) {
+      factors = parsed.factors
+        .filter((f): f is string => typeof f === "string")
+        .slice(0, 5) // Max 5 factors
+        .map((f) => f.trim())
+        .filter((f) => f.length > 0);
     }
-    factors = factors
-      .filter((f): f is string => typeof f === "string")
-      .slice(0, 5) // Max 5 factors
-      .map((f) => f.trim())
-      .filter((f) => f.length > 0);
 
     if (factors.length === 0) {
       // Generate default factors

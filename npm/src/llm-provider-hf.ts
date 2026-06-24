@@ -23,7 +23,7 @@ export class HuggingFaceProvider extends LLMProvider {
     this.client = new NeuroQuantumClient({
       endpointUrl: config.endpoint,
       hfToken: config.apiKey,
-      timeoutMs: config.timeout,
+      timeoutMs: config.timeoutMs,
     });
   }
 
@@ -45,8 +45,9 @@ export class HuggingFaceProvider extends LLMProvider {
       const processingTimeMs = Date.now() - startTime;
 
       return {
-        ...result,
-        processingTimeMs,
+        generatedText: result.generatedText,
+        debug: result.debug,
+        raw: result.raw,
       };
     } catch (error) {
       throw new Error(
@@ -78,7 +79,7 @@ export class HuggingFaceProvider extends LLMProvider {
     try {
       // For HuggingFace, we would call a training endpoint
       // For now, we implement a stub that processes examples
-      const totalExamples = options.limit ?? 1000;
+      const totalExamples = options.maxRows ?? 1000;
       const batchSize = options.batchSize ?? 10;
       const batches = Math.ceil(totalExamples / batchSize);
 

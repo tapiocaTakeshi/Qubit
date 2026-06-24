@@ -62,11 +62,8 @@ export class ClaudeProvider extends LLMProvider {
         .map((block: any) => block.text)
         .join("");
 
-      const processingTimeMs = Date.now() - startTime;
-
       return {
         generatedText,
-        processingTimeMs,
         raw: message,
       };
     } catch (error) {
