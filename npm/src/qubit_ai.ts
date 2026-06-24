@@ -271,7 +271,7 @@ export class QubitAI {
 
     // Re-associate ranked strings with the original PriorityItem objects
     const nameToItem = new Map(items.map((t) => [`${t.name}: ${t.description}`, t]));
-    return prioritized.rankedTasks.map((taskStr, i) => {
+    return prioritized.rankedTasks.map((taskStr: string, i: number) => {
       const item = nameToItem.get(taskStr) ?? { name: taskStr, description: "" };
       const score = (prioritized.scores[i] ?? 0) / 100;
       return [item, score] as PriorityItemResult;
