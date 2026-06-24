@@ -1,7 +1,7 @@
 {
   "name": "qubit_ai",
   "version": "4.0.0",
-  "description": "Qubit.ai — Generative AI with LLM (Claude, OpenAI, HuggingFace) + HuggingFace dataset fine-tuning",
+  "description": "Qubit.ai — Generative AI with Pyodide + NeuroQuantum (quantum-inspired text generation without external APIs)",
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
   "types": "./dist/types/index.d.ts",
@@ -30,20 +30,16 @@
     "qubit-ai",
     "quantum-inspired",
     "neuroquantum",
-    "qbnn",
+    "pyodide",
     "generative-ai",
-    "llm",
-    "claude",
-    "openai",
-    "huggingface",
-    "judgment-engine",
-    "decision-making",
-    "safety-check",
-    "ethics-evaluation",
+    "text-generation",
+    "qbnn",
     "neural-network",
     "japanese",
     "ai",
-    "inference"
+    "inference",
+    "onnx",
+    "transformers"
   ],
   "author": "tapiocaTakeshi",
   "license": "MIT",
@@ -65,6 +61,9 @@
     "jest": "^29.0.0",
     "ts-jest": "^29.0.0",
     "typescript": "^5.0.0"
+  },
+  "optionalDependencies": {
+    "pyodide": "^0.24.0"
   },
   "engines": {
     "node": ">=18.0.0"

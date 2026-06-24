@@ -1,48 +1,35 @@
 /**
- * qubit_ai — Generative AI with LLM + HuggingFace training
+ * qubit_ai — Generative AI with Pyodide + NeuroQuantum
  *
- * Generate content and fine-tune LLMs on HuggingFace datasets
- * Support for Claude, OpenAI, and HuggingFace providers
+ * Quantum-inspired text generation without external APIs
+ * Pure in-browser or Node.js generative AI using Pyodide
  *
  * @packageDocumentation
  */
 
-// Primary export: QubitAI Generative (LLM + HF training)
+// Primary export: QubitAI Generative (Pyodide-based)
 export {
   QubitAIGenerative,
   getQubitAIGenerative,
   resetQubitAIGenerative,
-  resetQubitAIGenerativeProvider,
+  resetQubitAIGenerativeSession,
   generate,
   generateWithExamples,
   generateBatch,
+  trainOnData,
   trainOnHFDataset,
   type GenerationOptions,
   type GenerationResult,
-} from "./qubit_ai_generative.js";
+  type TrainingProgress,
+  type TrainingResult,
+} from "./qubit_ai_generative_pyodide.js";
 
-// LLM providers
-export { LLMProvider } from "./llm-provider.js";
-export { ClaudeProvider } from "./llm-provider-claude.js";
-export { OpenAIProvider } from "./llm-provider-openai.js";
-export { HuggingFaceProvider } from "./llm-provider-hf.js";
-
-// HuggingFace dataset loader (for Pyodide training)
-export { HFDatasetLoader } from "./dataset.js";
-
-export type {
-  // Config
-  QubitAIConfig,
-  // Training types
-  TrainingProgress,
-  TrainingResult,
-  // Dataset types
-  HFDatasetLoaderConfig,
-  HFDatasetRow,
-  StreamRowsOptions,
-  // LLM types
-  LLMProviderConfig,
-  LLMProviderStatus,
-} from "./types.js";
-
-export { ProviderNotImplementedError, ProviderConfigError } from "./llm-provider.js";
+// Core generation engine
+export {
+  NeuroQuantumGenerator,
+  SimpleTokenizer,
+  LightweightLanguageModel,
+  type GenerationConfig,
+  type GenerationResult as GeneratorResult,
+  type ModelStatus,
+} from "./pyodide-generator.js";
