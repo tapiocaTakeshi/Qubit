@@ -730,6 +730,52 @@ This demonstrates:
 - QBNN system architecture diagram
 - Theoretical foundations of agent coordination
 
+### QBNN Interactive Chat Demo - How AI Works
+
+Experience an interactive educational chat session with QBNN explaining AI mechanisms:
+
+```bash
+node demo-qbnn-ai-mechanism.js
+```
+
+This comprehensive demo simulates a complete chat session with three levels of questions:
+
+**Main Question:** How AI works (AIの仕組み)
+- 4 hierarchical levels of explanation
+- Neuron structure and network components
+- Layer-based information processing
+- Learning through backpropagation
+- QBNN's bidirectional perspective
+- Temperature parameters and randomness
+- Large Language Model architecture
+
+**Follow-up Question 1:** Deep learning process details
+- Gradient descent visualization
+- Weight optimization and convergence
+- Batch learning and mini-batch training
+- Overfitting and regularization
+- Implementation examples (PyTorch/TensorFlow)
+- Learning curve interpretation
+- Backpropagation mathematics
+
+**Follow-up Question 2:** LLM text generation mechanics
+- Tokenization and embedding
+- Transformer self-attention mechanism
+- Next token probability prediction
+- Temperature-based sampling
+- Multi-head attention processing
+- Iterative generation workflow
+- Generation termination conditions
+
+**Features:**
+- Progressive educational structure
+- Mathematical rigor with intuitive explanations
+- ASCII diagrams and visualizations
+- Concrete examples throughout
+- Implementation-level details
+- Interactive dialogue simulation
+- Session summary with statistics
+
 ## Development
 
 ### Build
