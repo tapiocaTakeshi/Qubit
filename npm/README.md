@@ -532,7 +532,7 @@ The JS engine maps text sentiment signals → θ → score (0–100), replicatin
 
 ## TypeScript support
 
-Full type definitions are included. Import types directly:
+**Fully compatible with TypeScript 6.0+**. Full type definitions are included. Import types directly:
 
 ```ts
 import type {
@@ -567,6 +567,10 @@ import type {
   GenerateWithExamplesOptions,
 } from "qubit_ai";
 ```
+
+**TypeScript Version Requirements:**
+- TypeScript 5.0+: Fully supported
+- TypeScript 6.0+: Fully supported with modern `moduleResolution: "node16"`
 
 ### Return types
 
