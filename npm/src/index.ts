@@ -1,6 +1,8 @@
 /**
  * qubit_ai — quantum-inspired QBNN inference & judgment engine
  *
+ * Supports both keyword-based heuristics and LLM-based generative inference
+ *
  * @packageDocumentation
  */
 
@@ -15,8 +17,22 @@ export {
   ethicsCheck,
 } from "./qubit_ai.js";
 
-// Lower-level engine (pure QBNN scoring, no external deps)
+// Lower-level engines (pure QBNN scoring, no external deps)
 export { QBNNFrontalEngine } from "./frontal.js";
+export { LLMFrontalEngine } from "./llm-frontal.js";
+export { HybridFrontalEngine } from "./hybrid-frontal.js";
+
+// LLM providers (pluggable backends)
+export { LLMProvider } from "./llm-provider.js";
+export { HuggingFaceProvider } from "./llm-provider-hf.js";
+export { ClaudeProvider } from "./llm-provider-claude.js";
+export { OpenAIProvider } from "./llm-provider-openai.js";
+
+// LLM support classes
+export { PromptTemplates } from "./prompt-templates.js";
+export { ResponseParser } from "./response-parser.js";
+export { QubitAIConfigManager } from "./config.js";
+export { LLMTrainer } from "./llm-trainer.js";
 
 // HuggingFace endpoint client (optional; requires HF_TOKEN)
 export { NeuroQuantumClient } from "./client.js";
@@ -57,4 +73,12 @@ export type {
   TrainingExample,
   TrainingProgress,
   TrainingResult,
+  // LLM provider types
+  AdaptedTrainingExample,
+  EvaluationMetrics,
+  TrainingCheckpoint,
 } from "./types.js";
+
+// LLM provider types and errors
+export type { LLMProviderConfig, LLMProviderStatus } from "./llm-provider.js";
+export { ProviderNotImplementedError, ProviderConfigError } from "./llm-provider.js";

@@ -83,7 +83,11 @@ export interface JudgmentResult {
   /** ISO timestamp */
   timestamp: string;
   /** System that produced the judgment */
-  system: "qbnn" | "heuristic";
+  system: "qbnn" | "heuristic" | "llm" | "hybrid";
+  /** Optional: LLM model used (if system is "llm" or "hybrid") */
+  llmModelUsed?: string;
+  /** Optional: Processing time in milliseconds */
+  processingTimeMs?: number;
 }
 
 /** Options for safety / ethics / risk / quality convenience wrappers */
@@ -241,6 +245,35 @@ export interface QubitAIConfig {
   enableLogging?: boolean;
   /** Maximum number of judgment records to keep in history (default: 100) */
   maxJudgmentHistory?: number;
+
+  // LLM-based judgment configuration
+  /** Enable LLM-based inference (default: false, uses heuristics) */
+  llmEnabled?: boolean;
+  /** Which LLM provider to use: 'hf' | 'claude' | 'openai' */
+  llmProvider?: "hf" | "claude" | "openai" | "custom";
+  /** LLM provider configuration */
+  llmConfig?: {
+    /** API key or authentication token */
+    apiKey?: string;
+    /** Custom endpoint URL (for HuggingFace) */
+    endpoint?: string;
+    /** Model identifier */
+    model?: string;
+    /** Sampling temperature (0.0-2.0, default: 0.7) */
+    temperature?: number;
+    /** Maximum tokens to generate (default: 500) */
+    maxTokens?: number;
+    /** Request timeout in milliseconds (default: 30000) */
+    timeout?: number;
+    /** Number of retries on failure (default: 3) */
+    maxRetries?: number;
+  };
+  /** Fall back to heuristic engine if LLM fails (default: false) */
+  fallbackToHeuristics?: boolean;
+  /** Custom LLM prompt template override */
+  llmPromptTemplate?: string;
+  /** Blending strategy for hybrid mode: 'weighted' | 'confidence-based' (default: 'weighted') */
+  llmBlendStrategy?: "weighted" | "confidence-based";
 }
 
 /** Result returned by QubitAI judgment methods */
@@ -308,4 +341,62 @@ export interface GenerateWithExamplesOptions extends GenerateOptions {
   exampleTemplate?: string;
   /** Suffix appended before the model generates; use {prompt} (default: "Q: {prompt}\nA:") */
   queryTemplate?: string;
+}
+
+// ---------------------------------------------------------------------------
+// LLM Training types
+// ---------------------------------------------------------------------------
+
+/** Training example adapted for judgment tasks */
+export interface AdaptedTrainingExample extends TrainingExample {
+  /** Original prompt from dataset */
+  prompt: string;
+  /** Original completion from dataset */
+  completion: string;
+  /** Adapted prompt for judgment */
+  judgmentPrompt: string;
+  /** Adapted completion in JSON format */
+  judgmentCompletion: string;
+  /** Source dataset and row ID */
+  source: string;
+  /** Which judgment type this example is for */
+  judgmentType: JudgmentType;
+}
+
+/** Evaluation metrics from model testing */
+export interface EvaluationMetrics {
+  /** Total examples evaluated */
+  totalExamples: number;
+  /** Correct decision predictions (Yes/No match) */
+  correctDecisions: number;
+  /** Accuracy rate (0-1) */
+  accuracy: number;
+  /** Mean Absolute Error on scores */
+  scoreMAE: number;
+  /** Accuracy on confidence predictions */
+  confidenceAccuracy: number;
+  /** Weighted F1 score */
+  f1Score: number;
+  /** Average inference time per example (ms) */
+  inferenceTimeMs: number;
+  /** Failed predictions and errors */
+  errors: string[];
+}
+
+/** Checkpoint for resuming training */
+export interface TrainingCheckpoint {
+  /** Dataset name being trained on */
+  datasetName: string;
+  /** Judgment type being trained for */
+  judgmentType: JudgmentType;
+  /** Examples processed so far */
+  examplesProcessed: number;
+  /** Batches processed so far */
+  batchesProcessed: number;
+  /** Last example processed */
+  lastExample?: TrainingExample;
+  /** Checkpoint timestamp */
+  timestamp: string;
+  /** Model checkpoint ID or path */
+  modelCheckpoint: string;
 }
