@@ -1,53 +1,38 @@
 /**
- * qubit_ai — Quantum-inspired AI with Pyodide backend
+ * qubit_ai — Generative AI with LLM + HuggingFace training
  *
- * Execute neuroquantum_layered.py in WebAssembly + HuggingFace dataset training
+ * Generate content and fine-tune LLMs on HuggingFace datasets
+ * Support for Claude, OpenAI, and HuggingFace providers
  *
  * @packageDocumentation
  */
 
-// Primary export: QubitAI with Pyodide backend (simplified for quantum + HF training)
+// Primary export: QubitAI Generative (LLM + HF training)
 export {
-  QubitAIPyodide,
-  getQubitAIPyodide,
-  resetQubitAIPyodide,
-  judge,
-  safetyCheck,
-  ethicsCheck,
-  evaluateQuality,
-} from "./qubit_ai_pyodide.js";
+  QubitAIGenerative,
+  getQubitAIGenerative,
+  resetQubitAIGenerative,
+  resetQubitAIGenerativeProvider,
+  generate,
+  generateWithExamples,
+  generateBatch,
+  trainOnHFDataset,
+  type GenerationOptions,
+  type GenerationResult,
+} from "./qubit_ai_generative.js";
 
-// Legacy exports (deprecated, use QubitAIPyodide instead)
-export {
-  QubitAI,
-  getQubitAI,
-  resetQubitAI,
-} from "./qubit_ai.js";
-
-// Pyodide backend
-export {
-  NeuroQuantumPyodide,
-  getNeuroQuantumPyodide,
-  resetNeuroQuantumPyodide,
-  initPyodide,
-  executePython,
-  loadNeuroQuantumModule,
-} from "./pyodide-wrapper.js";
-
-// Lower-level engines (legacy, not used with Pyodide backend)
-export { QBNNFrontalEngine } from "./frontal.js";
+// LLM providers
+export { LLMProvider } from "./llm-provider.js";
+export { ClaudeProvider } from "./llm-provider-claude.js";
+export { OpenAIProvider } from "./llm-provider-openai.js";
+export { HuggingFaceProvider } from "./llm-provider-hf.js";
 
 // HuggingFace dataset loader (for Pyodide training)
 export { HFDatasetLoader } from "./dataset.js";
 
 export type {
-  // Core Qubit AI types
+  // Config
   QubitAIConfig,
-  QubitAIResult,
-  QubitAIInfo,
-  QubitAIStatus,
-  JudgmentRecord,
-  JudgmentType,
   // Training types
   TrainingProgress,
   TrainingResult,
@@ -55,4 +40,9 @@ export type {
   HFDatasetLoaderConfig,
   HFDatasetRow,
   StreamRowsOptions,
+  // LLM types
+  LLMProviderConfig,
+  LLMProviderStatus,
 } from "./types.js";
+
+export { ProviderNotImplementedError, ProviderConfigError } from "./llm-provider.js";

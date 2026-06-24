@@ -1,7 +1,7 @@
 {
   "name": "qubit_ai",
-  "version": "3.0.0",
-  "description": "Qubit.ai — Quantum-inspired AI with Pyodide: Python neural reasoning + HuggingFace dataset training in WebAssembly",
+  "version": "4.0.0",
+  "description": "Qubit.ai — Generative AI with LLM (Claude, OpenAI, HuggingFace) + HuggingFace dataset fine-tuning",
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
   "types": "./dist/types/index.d.ts",
@@ -56,9 +56,6 @@
     "url": "https://github.com/tapiocaTakeshi/Qubit/issues"
   },
   "homepage": "https://github.com/tapiocaTakeshi/Qubit#readme",
-  "dependencies": {
-    "pyodide": "^0.24.0"
-  },
   "devDependencies": {
     "@types/jest": "^29.5.14",
     "@types/node": "^20.0.0",
