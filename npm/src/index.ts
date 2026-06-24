@@ -70,6 +70,5 @@ export type {
   PriorityItem,
   PriorityItemResult,
   EvaluationMetrics,
-  NeuroQuantumResponse,
-  NeuroQuantumConfig,
+  NeuroQuantumClientConfig,
 } from "./types.js";
