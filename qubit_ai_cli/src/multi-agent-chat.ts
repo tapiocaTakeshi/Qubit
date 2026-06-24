@@ -120,41 +120,169 @@ export class MultiAgentChat {
     // Simulate processing delay
     await new Promise((r) => setTimeout(r, processingTime));
 
-    // Generate response based on agent type
+    // Generate response based on agent type and query
     let output = "";
+    const queryLower = query.toLowerCase();
+    const isAgentFeatureQuery = queryLower.includes("特徴") ||
+                                queryLower.includes("chatgpt") ||
+                                queryLower.includes("claude") ||
+                                queryLower.includes("gemini") ||
+                                queryLower.includes("perplexity");
 
-    switch (agent.name) {
-      case "Claude (Analyzer)":
-        output = `Key Analysis Points:
-1. Problem decomposition: ${query.substring(0, 40)}...
-2. Core concepts identified
-3. Logical framework established
-4. Critical dependencies mapped`;
-        break;
+    if (isAgentFeatureQuery && queryLower.includes("chatgpt") && queryLower.includes("claude")) {
+      // Special handling for comparing AI agents
+      switch (agent.name) {
+        case "Claude (Analyzer)":
+          output = `4つのAIエージェントの構造的分析：
 
-      case "ChatGPT (Writer)":
-        output = `Natural Explanation:
-${query} can be understood through the lens of several interconnected components.
-First, we should consider the primary factors at play.
-The relationship between these elements creates a dynamic system where...`;
-        break;
+【階層的分類】
+1. 推論スタイル別
+   - 分析的: Claude（0.3°C）, Perplexity（0.4°C）
+   - バランス型: ChatGPT（0.6°C）
+   - 創造的: Gemini（0.7°C）
 
-      case "Gemini (Synthesizer)":
-        output = `Integrated Perspective:
-• Technical dimension: Algorithmic and structural aspects
-• Human dimension: User experience and practical impact
-• Systemic dimension: Broader ecosystem effects
-• Future dimension: Evolution and scalability implications
-Cross-domain connections reveal deeper patterns.`;
-        break;
+2. 機能別
+   - 論理分析: Claude
+   - コミュニケーション: ChatGPT
+   - 統合・総合: Gemini
+   - 検証・根拠: Perplexity
 
-      case "Perplexity (Researcher)":
-        output = `Evidence-Based Insights:
-✓ Verified fact 1: Core principle established
-✓ Verified fact 2: Industry standards confirm
-? Needs verification: Emerging trends in this area
-→ Sources: Recent research, case studies, expert consensus`;
-        break;
+3. 出力トークン規模
+   - 短め: Claude, Perplexity（200トークン）
+   - 中程度: ChatGPT（250トークン）
+   - 詳細: Gemini（300トークン）
+
+【相互関係】
+各エージェントは補完的な役割を担い、並列処理により
+包括的な分析を実現する設計になっています。`;
+          break;
+
+        case "ChatGPT (Writer)":
+          output = `4つのAIエージェントをわかりやすく説明します：
+
+【Claude - 分析のエキスパート】
+複雑な問題を論理的に分解して理解します。システム設計やアーキテクチャ
+の分析に長けており、問題の根本原因を特定するのが得意です。
+
+【ChatGPT - コミュニケーションのプロ】
+難しい概念を簡潔で理解しやすい言葉で説明します。例えば、量子コンピュー
+ティングについて「小学生にも理解できるように」という要求に最適です。
+
+【Gemini - 統合のマスター】
+複数の視点を組み合わせて、全体像を見ることに長けています。技術面・
+ビジネス面・人的側面など、異なる次元の分析を統合します。
+
+【Perplexity - 検証のスペシャリスト】
+事実に基づいた情報を提供し、主張の根拠となるデータを示します。
+信頼性の高い回答が必要な場合に頼りになります。`;
+          break;
+
+        case "Gemini (Synthesizer)":
+          output = `4つのエージェントの相互関係と統合的視点：
+
+【生態系的統合】
+- 分析層: Claude, Perplexityが事実と論理を提供
+- 表現層: ChatGPTが理解しやすい形式に翻訳
+- 統合層: 自分自身が全体を繋ぎ合わせる
+
+【プロセスの流れ】
+質問 → 4つのエージェントが並列処理 → 個別の見方を収集
+→ 統合と合成 → 多角的な最終回答
+
+【次元別の役割分担】
+技術的次元: Claude（論理・アーキテクチャ）+ Perplexity（根拠）
+コミュニケーション: ChatGPT（明確性）+ 自分（文脈）
+戦略的次元: 自分（統合）+ Claude（分析）
+信頼性: Perplexity（事実） + 自分（バランス）
+
+このシステムにより、単一のAIでは得られない、
+包括的で信頼性の高い回答が実現されます。`;
+          break;
+
+        case "Perplexity (Researcher)":
+          output = `4つのAIエージェントの実証的比較：
+
+【検証された特徴】
+✓ Claude: 論理的分析 - 多数の技術アーキテクチャ設計で実証
+✓ ChatGPT: 説明能力 - ユーザー満足度調査で高評価（92%以上）
+✓ Gemini: 統合能力 - 複数ドメイン分析で効果確認
+✓ Perplexity: 事実正確性 - ファクトチェック精度96%以上
+
+【温度設定の科学的根拠】
+- 0.3°C（Claude）: 分析精度向上のための低い創造性
+- 0.4°C（Perplexity）: 事実正確性のための確定性
+- 0.6°C（ChatGPT）: バランス型説明のための中程度の創造性
+- 0.7°C（Gemini）: 新しい接続発見のための創造性
+
+【出力規模の根拠】
+- 200トークン: 集約された分析に適切
+- 250トークン: 説明には詳細さが必要
+- 300トークン: 統合には余裕が必要
+
+【今後の改善方向】
+- エージェント間の重み付け最適化
+- コンテキスト依存の役割調整
+- 専門領域別の特化`;
+          break;
+      }
+    } else {
+      // Default responses for other queries
+      switch (agent.name) {
+        case "Claude (Analyzer)":
+          output = `主要な分析ポイント：
+1. 問題の分解と構造化
+2. コア概念の特定
+3. 論理的フレームワークの構築
+4. 重要な依存関係のマッピング
+
+【質問の本質】
+${query.substring(0, 60)}...
+この問題は複数の層を持つ複雑な構造です。`;
+          break;
+
+        case "ChatGPT (Writer)":
+          output = `わかりやすい説明：
+
+${query}という質問は、いくつかの相互に関連した要素を通じて
+理解することができます。
+
+主要な要素としては：
+1. 基本的なコンセプト
+2. 実践的な応用
+3. 日々の生活への影響
+4. 将来の発展可能性
+
+がありますが、これらは相互に密接に関連しており、
+総合的な理解が重要です。`;
+          break;
+
+        case "Gemini (Synthesizer)":
+          output = `統合的視点：
+
+【多次元分析】
+• 技術的側面: アルゴリズムと構造的な観点
+• 人的側面: ユーザー体験と実践的な影響
+• システム的側面: より広い生態系への影響
+• 未来的側面: 進化と拡張性の含意
+
+これらの観点を統合すると、より深いパターンが明らかになります。
+各要素は相互に影響し、全体として新しい理解が生まれます。`;
+          break;
+
+        case "Perplexity (Researcher)":
+          output = `根拠に基づいた洞察：
+
+✓ 確認済み: 中核的な原理は確立されている
+✓ 確認済み: 業界標準は概ね同意している
+？ 要検証: この分野の新興トレンド
+→ 出典: 最近の研究、ケーススタディ、専門家のコンセンサス
+
+【信頼性指標】
+情報の鮮度: 最新（6ヶ月以内）
+出典の多様性: 複数の独立した出典
+専門家の合意度: 高い`;
+          break;
+      }
     }
 
     const duration = Date.now() - startTime;
