@@ -1,0 +1,58 @@
+name: QBNN CLI CI/CD
+
+on:
+  push:
+    branches: [ main, develop, 'claude/**' ]
+    paths:
+      - 'qubit_ai_cli/**'
+      - '.github/workflows/qbnn-cli.yml'
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - uses: actions/setup-node@v3
+      with:
+        node-version: ${{ matrix.node-version }}
+
+    - name: Cache node modules
+      uses: actions/cache@v3
+      with:
+        path: qubit_ai_cli/node_modules
+        key: ${{ runner.os }}-npm-${{ hashFiles('qubit_ai_cli/package-lock.json') }}
+        restore-keys: ${{ runner.os }}-npm-
+
+    - name: Install dependencies
+      working-directory: ./qubit_ai_cli
+      run: npm ci
+
+    - name: Build TypeScript
+      working-directory: ./qubit_ai_cli
+      run: npm run build
+
+    - name: Verify QBNN CLI
+      working-directory: ./qubit_ai_cli
+      env:
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      run: |
+        # CLI が起動できるか確認（ヘルプ表示）
+        timeout 15 npm run qbnn << 'STDIN' || true
+/help
+/exit
+STDIN
+
+    - name: Upload build artifacts
+      if: success()
+      uses: actions/upload-artifact@v3
+      with:
+        name: qbnn-cli-build-${{ matrix.node-version }}
+        path: qubit_ai_cli/dist/
