@@ -191,6 +191,13 @@ export class QubitAIChat {
   }
 
   /**
+   * Get current generation config
+   */
+  getConfig(): GenerationConfig {
+    return { ...this.config.generation };
+  }
+
+  /**
    * Update generation config
    */
   updateConfig(config: Partial<GenerationConfig>): void {

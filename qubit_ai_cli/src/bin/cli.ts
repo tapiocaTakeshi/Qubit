@@ -145,13 +145,13 @@ async function handleCommand(
     }
 
     case "config": {
-      const session = state.chat.getSessionInfo();
+      const config = state.chat.getConfig();
       log("\n⚙️  Current Configuration:\n", colors.bright);
-      log(`  Temperature: ${session.config.generation.temperature}`);
-      log(`  Max Tokens: ${session.config.generation.maxTokens}`);
-      log(`  Top K: ${session.config.generation.topK}`);
-      log(`  Top P: ${session.config.generation.topP}`);
-      log(`  Repetition Penalty: ${session.config.generation.repetitionPenalty}`);
+      log(`  Temperature: ${config.temperature}`);
+      log(`  Max Tokens: ${config.maxTokens}`);
+      log(`  Top K: ${config.topK}`);
+      log(`  Top P: ${config.topP}`);
+      log(`  Repetition Penalty: ${config.repetitionPenalty}`);
       log("", colors.reset);
       return true;
     }
