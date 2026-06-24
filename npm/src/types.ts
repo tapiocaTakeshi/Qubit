@@ -223,6 +223,81 @@ export interface TrainFromDatasetOptions extends DatasetToExamplesOptions {
   onProgress?: (progress: TrainingProgress) => void;
 }
 
+// ---------------------------------------------------------------------------
+// QubitAI types (TypeScript port of qubit_ai.py)
+// ---------------------------------------------------------------------------
+
+/** Configuration for QubitAI */
+export interface QubitAIConfig {
+  /** Library version (default: "1.1.0") */
+  version?: string;
+  /** Product name (default: "Qubit.ai") */
+  productName?: string;
+  /** Product description */
+  description?: string;
+  /** Strict mode: require score ≥ 70 for "Yes" decisions (default: false) */
+  strictMode?: boolean;
+  /** Enable logging (default: true) */
+  enableLogging?: boolean;
+  /** Maximum number of judgment records to keep in history (default: 100) */
+  maxJudgmentHistory?: number;
+}
+
+/** Result returned by QubitAI judgment methods */
+export interface QubitAIResult {
+  /** Binary decision */
+  decision: "Yes" | "No";
+  /** Confidence score 0–100 */
+  score: number;
+  /** Human-readable reasoning */
+  reasoning: string;
+  /** Confidence level */
+  confidence: "high" | "medium" | "low";
+  /** Key factors that influenced the decision */
+  factors: string[];
+  /** ISO timestamp */
+  timestamp: string;
+}
+
+/** System information returned by getInfo() */
+export interface QubitAIInfo {
+  product: string;
+  version: string;
+  description: string;
+  sessionId: string;
+  initializedAt: string;
+  status: "operational";
+}
+
+/** System status returned by getStatus() */
+export interface QubitAIStatus {
+  product: string;
+  status: "operational";
+  frontalEngineAvailable: boolean;
+  judgmentHistorySize: number;
+  maxHistory: number;
+  timestamp: string;
+}
+
+/** A single judgment history record */
+export interface JudgmentRecord {
+  timestamp: string;
+  judgmentType: JudgmentType;
+  contextPreview: string;
+  decision: "Yes" | "No";
+  score: number;
+  confidence: "high" | "medium" | "low";
+}
+
+/** An item to prioritize */
+export interface PriorityItem {
+  name: string;
+  description: string;
+}
+
+/** Result of a prioritize() call — item paired with its normalised score (0–1) */
+export type PriorityItemResult = [PriorityItem, number];
+
 /** Options for few-shot generation using dataset examples */
 export interface GenerateWithExamplesOptions extends GenerateOptions {
   /** Number of few-shot examples to include in context (default: 3) */
