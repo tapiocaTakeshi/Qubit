@@ -8,6 +8,7 @@ A command-line chat application that uses the `qubit_ai` library to generate con
 
 ✨ **Real-time Conversation**: Chat interactively with quantum-inspired AI  
 🤖 **Model Selection**: Choose between QBNN, Gemma 2, and Gemma 7 models  
+🧠 **Hybrid System**: Gemma + QBNN Frontal for intelligent reasoning + quality writing  
 💾 **Conversation History**: Automatically saves and manages chat history  
 ⚙️ **Configurable Parameters**: Adjust temperature, token limits, and sampling strategies  
 📊 **Performance Metrics**: See response generation time  
@@ -70,6 +71,58 @@ You: /model
 You: /model gemma-2
 # Switches to Gemma 2 model
 ```
+
+## Hybrid Chat System
+
+### Gemma + QBNN Frontal
+
+The hybrid system combines two AI models for superior reasoning and generation:
+
+- **QBNN (Phase 1)**: Quantum-inspired reasoning engine analyzes your query, identifies key concepts, and creates a structured reasoning framework
+- **Gemma (Phase 2)**: High-quality language model generates responses guided by QBNN's analysis
+
+This combination excels at:
+- **Complex technical questions**: Structured reasoning + clear explanations
+- **Detailed analysis**: Logical decomposition + natural presentation
+- **Problem-solving**: Step-by-step reasoning + actionable output
+- **Professional writing**: Organized thinking + polished text
+
+### Starting Hybrid Chat
+
+```bash
+npm run hybrid              # Interactive hybrid chat
+npm run dev:hybrid         # Development mode
+```
+
+### Hybrid Chat Commands
+
+| Command | Description |
+|---------|-------------|
+| `/reasoning` | Toggle QBNN reasoning display (see analysis) |
+| `/config` | View hybrid configuration (temperatures, tokens) |
+| `/temp <0-2>` | Set Gemma generation temperature |
+| `/tokens <num>` | Set maximum output length |
+
+### Hybrid Chat Example
+
+```
+🧠 Qubit AI Hybrid Chat - Gemma + QBNN
+
+You: Explain quantum computing and its applications
+
+🧠 Reasoning: [QBNN analyzes structure and key points]
+🤖 Assistant: Quantum computing leverages principles of quantum mechanics...
+   [Complete, well-structured response from Gemma]
+```
+
+### When to Use Each Mode
+
+| Task | Recommended |
+|------|-------------|
+| Quick conversation | `npm start` (default model) |
+| Specific model needed | `npm start -- --model gemma-2` |
+| Complex analysis | `npm run hybrid` (Gemma + QBNN) |
+| Fastest response | `npm start -- --model gemma-7` |
 
 ## Usage
 
@@ -433,6 +486,21 @@ Watch an interactive chat simulation:
 ```bash
 node demo-chat-simulation.js
 ```
+
+### Hybrid Chat Demo
+
+Learn about the Gemma + QBNN Frontal system:
+
+```bash
+node demo-hybrid-chat.js
+```
+
+This demonstrates:
+- Hybrid system architecture (QBNN reasoning + Gemma generation)
+- Comparison with single-model approaches
+- When to use hybrid chat vs. standard models
+- Configuration options
+- Use cases and best practices
 
 ## Development
 
