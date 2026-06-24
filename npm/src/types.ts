@@ -241,6 +241,13 @@ export interface QubitAIConfig {
   enableLogging?: boolean;
   /** Maximum number of judgment records to keep in history (default: 100) */
   maxJudgmentHistory?: number;
+  /**
+   * NeuroQuantum model client config.
+   * When provided (or HF_TOKEN env var is set), QubitAI uses the
+   * NeuroQuantum language model for judgments.
+   * Falls back to the pure-TypeScript QBNNFrontalEngine when omitted.
+   */
+  neuroQuantumConfig?: NeuroQuantumClientConfig;
 }
 
 /** Result returned by QubitAI judgment methods */

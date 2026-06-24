@@ -1,15 +1,16 @@
 /**
  * QubitAI — TypeScript port of qubit_ai.py
  *
- * Quantum-inspired judgment engine that runs entirely in-process.
- * No HTTP endpoint or Python runtime required.
+ * Uses NeuroQuantumEngine (pure-TS port of neuroquantum_layered.py) for
+ * judgment inference.  No HTTP endpoints, no Python runtime required.
  *
  * https://qubit.ai
  */
 
-import { QBNNFrontalEngine } from "./frontal.js";
+import { NeuroQuantumEngine } from "./neuroquantum.js";
 import type {
   JudgmentRecord,
+  JudgmentResult,
   JudgmentType,
   PriorityItem,
   PriorityItemResult,
@@ -21,18 +22,11 @@ import type {
   SafetyCheckOptions,
 } from "./types.js";
 
-function generateSessionId(): string {
-  return `qubit-ai-${new Date().toISOString()}`;
-}
+// ---------------------------------------------------------------------------
+// Result helpers
+// ---------------------------------------------------------------------------
 
-function formatResult(raw: {
-  decision: "Yes" | "No";
-  score: number;
-  reasoning: string;
-  confidence: "high" | "medium" | "low";
-  keyFactors: string[];
-  timestamp: string;
-}): QubitAIResult {
+function fromJudgmentResult(raw: JudgmentResult): QubitAIResult {
   return {
     decision: raw.decision,
     score: raw.score,
@@ -43,30 +37,39 @@ function formatResult(raw: {
   };
 }
 
+function generateSessionId(): string {
+  return `qubit-ai-${new Date().toISOString()}`;
+}
+
+// ---------------------------------------------------------------------------
+// QubitAI
+// ---------------------------------------------------------------------------
+
 /**
  * QubitAI — Claude's Quantum Prefrontal Cortex.
  *
- * A pure-TypeScript port of `qubit_ai.py` that uses {@link QBNNFrontalEngine}
- * internally. No HTTP endpoint or external service required.
+ * All judgment inference is performed by {@link NeuroQuantumEngine}, a
+ * pure-TypeScript port of `neuroquantum_layered.py` that implements:
+ *   - QBNN entanglement correction with dynamic sinusoidal λ
+ *   - Multi-head QBNN attention (action × context)
+ *   - APQB scoring: r = cos(2θ), score = ((r+1)/2) × 100
+ *
+ * No HTTP endpoint is used.
  *
  * @example
  * ```ts
  * import { QubitAI } from "qubit_ai";
  *
  * const qubit = new QubitAI();
- * const result = await qubit.judge("ユーザーデータをログ出力", "デバッグモード");
- * console.log(result.decision, result.score);
+ * const result = await qubit.judge("APIキーをログに記録", "本番環境", "safety");
+ * console.log(result.decision, result.score, result.reasoning);
  *
- * const [safe, detail] = await qubit.safetyCheck(
- *   "APIキーをログに出力",
- *   "本番環境",
- *   { risks: ["情報漏洩"] }
- * );
+ * const [safe] = await qubit.safetyCheck("安全な操作", "テスト環境");
  * ```
  */
 export class QubitAI {
-  private readonly config: Required<QubitAIConfig>;
-  private readonly engine: QBNNFrontalEngine;
+  private readonly config: Required<Omit<QubitAIConfig, "neuroQuantumConfig">>;
+  private readonly engine: NeuroQuantumEngine;
   readonly sessionId: string;
   private readonly history: JudgmentRecord[] = [];
 
@@ -79,16 +82,17 @@ export class QubitAI {
       enableLogging: config.enableLogging ?? true,
       maxJudgmentHistory: config.maxJudgmentHistory ?? 100,
     };
-    this.engine = new QBNNFrontalEngine();
+
+    this.engine = new NeuroQuantumEngine({ numLayers: 3, numHeads: 4, lambdaEntangle: 0.5 });
     this.sessionId = generateSessionId();
   }
 
   // ---------------------------------------------------------------------------
-  // Main API — mirrors qubit_ai.py public methods
+  // Main API
   // ---------------------------------------------------------------------------
 
   /**
-   * Judge an action (simple interface, mirrors `QubitAI.judge()` in Python).
+   * Judge an action using the NeuroQuantum engine.
    *
    * @param action       - Description of the action to evaluate
    * @param context      - Situational context
@@ -102,27 +106,32 @@ export class QubitAI {
     strict?: boolean
   ): Promise<QubitAIResult> {
     const strictMode = strict ?? this.config.strictMode;
-    const raw = await this.engine.judge(action, context, {
-      type: judgmentType,
-      strictMode,
-    });
-    this.recordHistory(judgmentType, context, raw);
-    return formatResult(raw);
+    const raw = await this.engine.judge(action, context, { type: judgmentType, strictMode });
+    const result = fromJudgmentResult(raw);
+    this.recordHistory(judgmentType, context, result);
+    return result;
   }
 
   /**
    * Check whether an action is safe to perform.
    *
-   * @returns `[safe, result]` — boolean safety flag plus the full result
+   * @returns `[safe, result]` — boolean flag plus the full result
    */
   async safetyCheck(
     action: string,
     context: string,
     opts: SafetyCheckOptions = {}
   ): Promise<[boolean, QubitAIResult]> {
-    const raw = await this.engine.checkSafety(action, context, opts);
-    this.recordHistory("safety", context, raw);
-    const result = formatResult(raw);
+    const riskText =
+      opts.risks && opts.risks.length > 0
+        ? `\n考慮するリスク: ${opts.risks.join(", ")}`
+        : "";
+    const constraintText = opts.constraints
+      ? `\n制約: ${JSON.stringify(opts.constraints)}`
+      : "";
+    const fullContext = `${context}${riskText}${constraintText}`;
+
+    const result = await this.judge(action, fullContext, "safety");
     return [result.decision === "Yes", result];
   }
 
@@ -133,9 +142,13 @@ export class QubitAI {
     content: string,
     opts: QualityEvalOptions = {}
   ): Promise<QubitAIResult> {
-    const raw = await this.engine.evaluateQuality(content, opts);
-    this.recordHistory("quality", content, raw);
-    return formatResult(raw);
+    const reqText =
+      opts.requirements && opts.requirements.length > 0
+        ? `\n要件: ${opts.requirements.join(", ")}`
+        : "";
+    const intentText = opts.userIntent ? `\nユーザーの意図: ${opts.userIntent}` : "";
+    const context = `品質評価${reqText}${intentText}`;
+    return this.judge(content, context, "quality");
   }
 
   /**
@@ -158,13 +171,11 @@ export class QubitAI {
       parts.push(`潜在的な害: ${potentialHarms.join(", ")}`);
     }
     const context = parts.length > 0 ? parts.join("\n") : "倫理的評価";
-    const raw = await this.engine.evaluateEthics(action, context);
-    this.recordHistory("ethics", context, raw);
-    return formatResult(raw);
+    return this.judge(action, context, "ethics");
   }
 
   /**
-   * Rank a list of items by priority.
+   * Rank a list of items by priority using the NeuroQuantum engine.
    *
    * @param items       - Items with `name` and `description`
    * @param constraints - Optional constraint description
@@ -176,23 +187,27 @@ export class QubitAI {
     constraints?: string
   ): Promise<PriorityItemResult[]> {
     const context = constraints ? `制約: ${constraints}` : "タスク優先順位付け";
-    const taskStrings = items.map((t) => `${t.name}: ${t.description}`);
-    const prioritized = await this.engine.prioritize(taskStrings, context);
 
-    // Re-associate ranked strings with the original PriorityItem objects
-    const nameToItem = new Map(items.map((t) => [`${t.name}: ${t.description}`, t]));
-    return prioritized.rankedTasks.map((taskStr, i) => {
-      const item = nameToItem.get(taskStr) ?? { name: taskStr, description: "" };
-      const score = (prioritized.scores[i] ?? 0) / 100;
-      return [item, score] as PriorityItemResult;
-    });
+    const scored = await Promise.all(
+      items.map(async (item) => {
+        const action = `${item.name}: ${item.description}`;
+        const raw = await this.engine.judge(action, context, {
+          type: "priority",
+          strictMode: this.config.strictMode,
+        });
+        return { item, score: raw.score / 100 };
+      })
+    );
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored.map(({ item, score }) => [item, score] as PriorityItemResult);
   }
 
   // ---------------------------------------------------------------------------
   // Status & information
   // ---------------------------------------------------------------------------
 
-  /** Return product information (mirrors `QubitAI.get_info()` in Python). */
+  /** Return product information. */
   getInfo(): QubitAIInfo {
     return {
       product: this.config.productName,
@@ -204,7 +219,7 @@ export class QubitAI {
     };
   }
 
-  /** Return system status (mirrors `QubitAI.get_status()` in Python). */
+  /** Return system status. */
   getStatus(): QubitAIStatus {
     return {
       product: this.config.productName,
@@ -255,26 +270,21 @@ export class QubitAI {
   }
 
   // ---------------------------------------------------------------------------
-  // Private helpers
+  // Private
   // ---------------------------------------------------------------------------
 
   private recordHistory(
     judgmentType: JudgmentType,
     context: string,
-    raw: {
-      decision: "Yes" | "No";
-      score: number;
-      confidence: "high" | "medium" | "low";
-      timestamp: string;
-    }
+    result: QubitAIResult
   ): void {
     this.history.push({
-      timestamp: raw.timestamp,
+      timestamp: result.timestamp,
       judgmentType,
       contextPreview: context.slice(0, 200),
-      decision: raw.decision,
-      score: raw.score,
-      confidence: raw.confidence,
+      decision: result.decision,
+      score: result.score,
+      confidence: result.confidence,
     });
     if (this.history.length > this.config.maxJudgmentHistory) {
       this.history.splice(
@@ -286,7 +296,7 @@ export class QubitAI {
 }
 
 // ---------------------------------------------------------------------------
-// Singleton — mirrors get_qubit_ai() / reset_qubit_ai() in Python
+// Singleton
 // ---------------------------------------------------------------------------
 
 let _instance: QubitAI | undefined;
@@ -305,7 +315,7 @@ export function resetQubitAI(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Convenience functions — module-level, mirror Python globals in qubit_ai.py
+// Module-level convenience functions (mirror qubit_ai.py globals)
 // ---------------------------------------------------------------------------
 
 /** Judge an action using the global QubitAI instance. */

@@ -15,7 +15,10 @@ export {
   ethicsCheck,
 } from "./qubit_ai.js";
 
-// Lower-level engine (pure QBNN scoring, no external deps)
+// NeuroQuantum engine — pure-TS port of neuroquantum_layered.py math
+export { NeuroQuantumEngine } from "./neuroquantum.js";
+
+// Lower-level heuristic engine (pure QBNN scoring, no external deps)
 export { QBNNFrontalEngine } from "./frontal.js";
 
 // HuggingFace endpoint client (optional; requires HF_TOKEN)
@@ -23,6 +26,8 @@ export { NeuroQuantumClient } from "./client.js";
 
 // HuggingFace dataset loader
 export { HFDatasetLoader } from "./dataset.js";
+
+export type { NeuroQuantumEngineConfig } from "./neuroquantum.js";
 
 export type {
   // QubitAI types
