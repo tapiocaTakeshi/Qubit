@@ -44,8 +44,11 @@ export class HFDatasetLoader {
       config.datasetsServerUrl ?? DEFAULT_DATASETS_SERVER;
     this.hfToken =
       config.hfToken ??
-      (typeof process !== "undefined"
-        ? (process.env["HF_TOKEN"] ?? process.env["HUGGING_FACE_HUB_TOKEN"] ?? "")
+      (typeof globalThis !== "undefined" &&
+      (globalThis as any).process?.env
+        ? ((globalThis as any).process.env["HF_TOKEN"] ??
+            (globalThis as any).process.env["HUGGING_FACE_HUB_TOKEN"] ??
+            "")
         : "");
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
