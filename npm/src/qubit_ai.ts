@@ -8,6 +8,13 @@
  */
 
 import { QBNNFrontalEngine } from "./frontal.js";
+import { LLMFrontalEngine } from "./llm-frontal.js";
+import { HybridFrontalEngine } from "./hybrid-frontal.js";
+import { LLMTrainer } from "./llm-trainer.js";
+import { QubitAIConfigManager } from "./config.js";
+import { HuggingFaceProvider } from "./llm-provider-hf.js";
+import { ClaudeProvider } from "./llm-provider-claude.js";
+import { OpenAIProvider } from "./llm-provider-openai.js";
 import type {
   JudgmentRecord,
   JudgmentType,
@@ -19,6 +26,9 @@ import type {
   QubitAIResult,
   QubitAIStatus,
   SafetyCheckOptions,
+  EvaluationMetrics,
+  TrainingProgress,
+  TrainingResult,
 } from "./types.js";
 
 function generateSessionId(): string {
@@ -66,21 +76,71 @@ function formatResult(raw: {
  */
 export class QubitAI {
   private readonly config: Required<QubitAIConfig>;
-  private readonly engine: QBNNFrontalEngine;
+  private readonly engine: any; // QBNNFrontalEngine | LLMFrontalEngine | HybridFrontalEngine
+  private readonly trainer: LLMTrainer | null;
   readonly sessionId: string;
   private readonly history: JudgmentRecord[] = [];
 
   constructor(config: QubitAIConfig = {}) {
+    // Merge provided config with environment and defaults
+    const mergedConfig = QubitAIConfigManager.mergeConfigs(
+      QubitAIConfigManager.getDefaults(),
+      QubitAIConfigManager.loadFromEnv(),
+      config
+    );
+
     this.config = {
-      version: config.version ?? "1.1.0",
-      productName: config.productName ?? "Qubit.ai",
-      description: config.description ?? "Claude's Quantum Prefrontal Cortex",
-      strictMode: config.strictMode ?? false,
-      enableLogging: config.enableLogging ?? true,
-      maxJudgmentHistory: config.maxJudgmentHistory ?? 100,
-    };
-    this.engine = new QBNNFrontalEngine();
+      version: mergedConfig.version ?? "1.1.0",
+      productName: mergedConfig.productName ?? "Qubit.ai",
+      description: mergedConfig.description ?? "Claude's Quantum Prefrontal Cortex",
+      strictMode: mergedConfig.strictMode ?? false,
+      enableLogging: mergedConfig.enableLogging ?? true,
+      maxJudgmentHistory: mergedConfig.maxJudgmentHistory ?? 100,
+      llmEnabled: mergedConfig.llmEnabled ?? false,
+      llmProvider: mergedConfig.llmProvider ?? "claude",
+      llmConfig: mergedConfig.llmConfig,
+      fallbackToHeuristics: mergedConfig.fallbackToHeuristics ?? false,
+      llmBlendStrategy: mergedConfig.llmBlendStrategy ?? "weighted",
+    } as Required<QubitAIConfig>;
+
+    // Select engine based on config
+    if (this.config.llmEnabled) {
+      const llmProvider = this.createLLMProvider();
+      const llmEngine = new LLMFrontalEngine(llmProvider, this.config);
+
+      if (this.config.fallbackToHeuristics) {
+        const heuristicEngine = new QBNNFrontalEngine();
+        this.engine = new HybridFrontalEngine(llmEngine, heuristicEngine, this.config);
+      } else {
+        this.engine = llmEngine;
+      }
+
+      // Initialize trainer for HF datasets
+      this.trainer = new LLMTrainer(llmProvider, this.config);
+    } else {
+      this.engine = new QBNNFrontalEngine();
+      this.trainer = null;
+    }
+
     this.sessionId = generateSessionId();
+  }
+
+  /**
+   * Create LLM provider based on configuration
+   */
+  private createLLMProvider(): any {
+    const provider = this.config.llmProvider;
+
+    switch (provider) {
+      case "claude":
+        return new ClaudeProvider(this.config.llmConfig);
+      case "openai":
+        return new OpenAIProvider(this.config.llmConfig);
+      case "hf":
+        return new HuggingFaceProvider(this.config.llmConfig);
+      default:
+        throw new Error(`Unknown LLM provider: ${provider}`);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -282,6 +342,84 @@ export class QubitAI {
         this.history.length - this.config.maxJudgmentHistory
       );
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Training API (LLM-based only)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Train LLM on HuggingFace dataset for a specific judgment type
+   *
+   * Only available when LLM is enabled. Raises error otherwise.
+   */
+  async trainOnHFDataset(opts: {
+    dataset: string;
+    judgmentType: JudgmentType;
+    split?: string;
+    promptField?: string;
+    completionField?: string;
+    batchSize?: number;
+    maxExamples?: number;
+    onProgress?: (progress: TrainingProgress) => void;
+  }): Promise<TrainingResult> {
+    if (!this.trainer) {
+      throw new Error("Training not available: LLM is not enabled. Set llmEnabled: true in config.");
+    }
+
+    return this.trainer.trainOnDataset({
+      dataset: opts.dataset,
+      judgmentType: opts.judgmentType,
+      batchSize: opts.batchSize ?? 16,
+      maxExamples: opts.maxExamples ?? 1000,
+      onProgress: opts.onProgress,
+    });
+  }
+
+  /**
+   * Evaluate fine-tuned model on a test split
+   */
+  async evaluateFineTunedModel(opts: {
+    dataset: string;
+    split: string;
+    sampleSize?: number;
+  }): Promise<EvaluationMetrics> {
+    if (!this.trainer) {
+      throw new Error("Evaluation not available: LLM is not enabled.");
+    }
+
+    return this.trainer.evaluateOnTestSet({
+      dataset: opts.dataset,
+      split: opts.split,
+      sampleSize: opts.sampleSize ?? 100,
+    });
+  }
+
+  /**
+   * Train on multiple judgment types from the same dataset
+   */
+  async trainMultipleJudgmentTypes(opts: {
+    dataset: string;
+    judgmentTypes: JudgmentType[];
+    split?: string;
+    maxExamples?: number;
+  }): Promise<Record<JudgmentType, TrainingResult>> {
+    if (!this.trainer) {
+      throw new Error("Training not available: LLM is not enabled.");
+    }
+
+    const results: Record<JudgmentType, TrainingResult> = {} as any;
+
+    for (const judgmentType of opts.judgmentTypes) {
+      results[judgmentType] = await this.trainOnHFDataset({
+        dataset: opts.dataset,
+        judgmentType,
+        split: opts.split,
+        maxExamples: opts.maxExamples ?? 1000,
+      });
+    }
+
+    return results;
   }
 }
 
