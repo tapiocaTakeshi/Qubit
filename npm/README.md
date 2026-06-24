@@ -1,6 +1,6 @@
 # qubit_ai
 
-**QBNN quantum-inspired inference & judgment engine for JavaScript / TypeScript**
+**Quantum-inspired QBNN inference & judgment engine for JavaScript / TypeScript**
 
 `qubit_ai` is the official JavaScript/TypeScript SDK for the [NeuroQuantum (neuroQ)](https://github.com/tapiocaTakeshi/Qubit) project — a quantum-inspired neural network language model and AI decision-making system built on the **APQB (Adjustable Pseudo Quantum Bit)** theory.
 
@@ -24,9 +24,243 @@ Requires **Node.js ≥ 18** (uses the built-in `fetch` API).
 
 | Export | Description |
 |---|---|
+| `QubitAI` | High-level judgment engine (TypeScript port of `qubit_ai.py`) |
+| `QBNNFrontalEngine` | Pure-JS quantum-inspired judgment engine (low-level, no Python required) |
 | `NeuroQuantumClient` | HTTP client for the neuroQ HuggingFace inference endpoint |
-| `QBNNFrontalEngine` | Pure-JS quantum-inspired judgment engine (no Python required) |
 | `HFDatasetLoader` | HuggingFace Datasets API client — fetch, stream, and convert dataset rows |
+
+---
+
+## `QubitAI` — main high-level API
+
+`QubitAI` is the recommended entry point. It wraps `QBNNFrontalEngine` with a Python-compatible API (mirrors `qubit_ai.py`) and tracks judgment history.
+
+### Quick start
+
+```ts
+import { QubitAI } from "qubit_ai";
+
+const qubit = new QubitAI();
+
+const result = await qubit.judge(
+  "ユーザーデータをログ出力",
+  "デバッグモード"
+);
+
+console.log(result.decision);    // "Yes" | "No"
+console.log(result.score);       // 0–100
+console.log(result.confidence);  // "high" | "medium" | "low"
+console.log(result.reasoning);   // human-readable explanation
+console.log(result.factors);     // string[]
+```
+
+### Constructor options
+
+```ts
+const qubit = new QubitAI({
+  productName: "MyAI",          // default: "Qubit.ai"
+  version: "1.0.0",             // default: "1.1.0"
+  strictMode: true,             // default: false — score ≥ 70 = Yes (vs ≥ 50)
+  enableLogging: true,          // default: true
+  maxJudgmentHistory: 500,      // default: 100
+});
+```
+
+### `judge(action, context, judgmentType?, strict?)`
+
+General-purpose judgment. `judgmentType` defaults to `"safety"`.
+
+```ts
+const result = await qubit.judge(
+  "ユーザーのAPIキーを外部サーバーに送信",
+  "本番環境",
+  "safety",
+  true  // per-call strict override
+);
+```
+
+Available judgment types:
+
+| Type | Description |
+|---|---|
+| `"safety"` | Is this action safe to perform? |
+| `"ethics"` | Is this ethically acceptable? |
+| `"quality"` | Does this content meet quality standards? |
+| `"risk"` | What is the risk level? |
+| `"decision"` | General decision-making |
+| `"priority"` | Task prioritisation |
+
+### `safetyCheck(action, context, opts?)`
+
+Returns `[isSafe, result]`.
+
+```ts
+const [isSafe, result] = await qubit.safetyCheck(
+  "APIキーをログに出力",
+  "本番環境",
+  { risks: ["情報漏洩", "セキュリティ違反"] }
+);
+
+if (!isSafe) {
+  console.warn("Blocked:", result.reasoning);
+}
+```
+
+### `evaluateQuality(content, opts?)`
+
+```ts
+const quality = await qubit.evaluateQuality(
+  "生成されたテキスト",
+  { criteria: ["正確性", "読みやすさ", "完全性"] }
+);
+console.log(`Quality: ${quality.score}/100`);
+```
+
+### `ethicsCheck(action, stakeholders?, potentialHarms?)`
+
+```ts
+const ethics = await qubit.ethicsCheck(
+  "ユーザーデータを分析",
+  ["ユーザー", "企業"],
+  ["プライバシー侵害", "差別"]
+);
+```
+
+### `prioritize(items, constraints?)`
+
+Ranks items by priority score (0–1). Returns `[item, score][]` sorted descending.
+
+```ts
+const ranked = await qubit.prioritize(
+  [
+    { name: "バグ修正", description: "本番クラッシュ" },
+    { name: "新機能", description: "検索機能" },
+    { name: "ドキュメント", description: "API ドキュメント更新" },
+  ],
+  "チーム3人、納期2週間"
+);
+
+ranked.forEach(([item, score]) => {
+  console.log(`${item.name}: ${(score * 100).toFixed(1)}%`);
+});
+```
+
+### Status & history
+
+```ts
+qubit.getInfo();    // product, version, sessionId, status
+qubit.getStatus();  // frontalEngineAvailable, judgmentHistorySize, …
+qubit.getHistory(5);   // last 5 JudgmentRecord entries
+qubit.clearHistory();
+```
+
+### `explain(result)`
+
+Format a result as a readable Japanese string.
+
+```ts
+const result = await qubit.judge("...", "...");
+console.log(qubit.explain(result));
+// 【判断結果】
+// 決定: Yes
+// スコア: 75/100
+// 信頼度: high
+// ...
+```
+
+---
+
+## Global convenience functions
+
+Use these when you don't need instance-level config or history:
+
+```ts
+import { judge, safetyCheck, evaluateQuality, ethicsCheck } from "qubit_ai";
+
+const result  = await judge("アクション", "コンテキスト");
+const [ok, r] = await safetyCheck("アクション", "コンテキスト");
+const quality = await evaluateQuality("コンテンツ");
+const ethics  = await ethicsCheck("アクション", ["ユーザー"]);
+```
+
+All convenience functions share a global `QubitAI` singleton.
+
+### Singleton management
+
+```ts
+import { getQubitAI, resetQubitAI } from "qubit_ai";
+
+// Get or create the global instance (optionally configure on first call)
+const qubit = getQubitAI({ strictMode: true });
+
+// Reset — next call to getQubitAI() creates a fresh instance
+resetQubitAI();
+```
+
+---
+
+## `QBNNFrontalEngine` — low-level engine
+
+A pure TypeScript quantum-inspired judgment engine. No Python, no model weights — runs entirely in Node.js or the browser.
+
+The engine implements the **APQB scoring model**: text signals are mapped to a pseudo-quantum angle θ, which yields a correlation score `r = cos(2θ)` normalised to 0–100.
+
+### Core `judge()` API
+
+```ts
+import { QBNNFrontalEngine } from "qubit_ai";
+
+const engine = new QBNNFrontalEngine();
+
+const result = await engine.judge(
+  "ユーザーの個人情報をログに記録する",   // action
+  "セキュリティ監査のための操作",          // context
+  { type: "safety", strictMode: true }
+);
+
+console.log(result.decision);    // "Yes" | "No"
+console.log(result.score);       // 0–100
+console.log(result.reasoning);   // human-readable explanation
+console.log(result.confidence);  // "high" | "medium" | "low"
+console.log(result.keyFactors);  // string[]
+```
+
+### Convenience helpers
+
+```ts
+// Safety check
+const safety = await engine.checkSafety(
+  "データベースを削除する",
+  "バックアップ済み、承認済み",
+  { risks: ["データ損失", "ダウンタイム"] }
+);
+
+// Ethics evaluation
+const ethics = await engine.evaluateEthics(
+  "ユーザー行動を分析する",
+  "匿名化されたデータのみを使用"
+);
+
+// Risk assessment (riskTolerance 0–100, higher = more permissive)
+const risk = await engine.assessRisk(
+  "新機能のリリース",
+  "ステージングでテスト済み",
+  { riskTolerance: 70 }
+);
+
+// Quality evaluation
+const quality = await engine.evaluateQuality(
+  "正確で明確なドキュメント",
+  { requirements: ["正確性", "完全性"], userIntent: "APIリファレンス" }
+);
+
+// Task prioritisation
+const { rankedTasks, scores } = await engine.prioritize(
+  ["バグ修正", "新機能開発", "セキュリティパッチ"],
+  "本番環境のインシデント対応"
+);
+console.log(rankedTasks); // sorted by QBNN priority score
+```
 
 ---
 
@@ -69,10 +303,8 @@ import { HFDatasetLoader, NeuroQuantumClient } from "qubit_ai";
 const loader = new HFDatasetLoader({ hfToken: process.env.HF_TOKEN });
 const client = new NeuroQuantumClient({ hfToken: process.env.HF_TOKEN });
 
-// Load a few examples from a public dataset
 const examples = await loader.preview("llm-jp/oasst2-33k-ja", 3);
 
-// Generate with those examples as context (few-shot learning)
 const result = await client.generateWithExamples(
   "量子コンピュータの利点を教えてください",
   examples,
@@ -101,10 +333,10 @@ Use `trainFromDataset()` to stream a HF dataset and send it in batches to a fine
 ```ts
 const result = await client.trainFromDataset({
   dataset: "llm-jp/oasst2-33k-ja",
-  promptField: "input",       // column to use as prompt
-  completionField: "output",  // column to use as completion
-  maxRows: 500,               // cap total rows
-  batchSize: 10,              // examples per HTTP batch
+  promptField: "input",
+  completionField: "output",
+  maxRows: 500,
+  batchSize: 10,
   trainingEndpointUrl: "https://your-training-endpoint/train",
   onProgress: (p) => {
     console.log(`${p.processedExamples}/${p.totalExamples} examples, batch ${p.currentBatch}/${p.totalBatches}`);
@@ -156,10 +388,10 @@ const loader = new HFDatasetLoader({
 ```ts
 const page = await loader.fetchRows({
   dataset: "llm-jp/oasst2-33k-ja",
-  config: "default",   // optional
-  split: "train",      // optional
-  offset: 0,           // optional
-  limit: 50,           // optional, max 100
+  config: "default",
+  split: "train",
+  offset: 0,
+  limit: 50,         // max 100
 });
 // page.rows: HFDatasetRow[]
 // page.numRowsTotal: number
@@ -209,82 +441,6 @@ const splits = await loader.fetchSplits("llm-jp/oasst2-33k-ja");
 
 ---
 
-## `QBNNFrontalEngine` — judgment & decision-making
-
-A **pure TypeScript** quantum-inspired judgment engine. No Python, no model weights — runs entirely in Node.js or the browser.
-
-The engine implements the **APQB scoring model**: text signals are mapped to a pseudo-quantum angle θ, which yields a correlation score `r = cos(2θ)` normalised to 0–100.
-
-### Core `judge()` API
-
-```ts
-import { QBNNFrontalEngine } from "qubit_ai";
-
-const engine = new QBNNFrontalEngine();
-
-const result = await engine.judge(
-  "ユーザーの個人情報をログに記録する",   // action
-  "セキュリティ監査のための操作",          // context
-  { type: "safety", strictMode: true }
-);
-
-console.log(result.decision);    // "Yes" | "No"
-console.log(result.score);       // 0–100
-console.log(result.reasoning);   // human-readable explanation
-console.log(result.confidence);  // "high" | "medium" | "low"
-console.log(result.keyFactors);  // string[]
-```
-
-### Judgment types
-
-| Type | Description |
-|---|---|
-| `"safety"` | Is this action safe to perform? |
-| `"ethics"` | Is this ethically acceptable? |
-| `"quality"` | Does this content meet quality standards? |
-| `"risk"` | What is the risk level? |
-| `"decision"` | General decision-making |
-| `"priority"` | Task prioritisation |
-
-### Convenience helpers
-
-```ts
-// Safety check
-const safety = await engine.checkSafety(
-  "データベースを削除する",
-  "バックアップ済み、承認済み",
-  { risks: ["データ損失", "ダウンタイム"] }
-);
-
-// Ethics evaluation
-const ethics = await engine.evaluateEthics(
-  "ユーザー行動を分析する",
-  "匿名化されたデータのみを使用"
-);
-
-// Risk assessment (riskTolerance 0–100, higher = more permissive)
-const risk = await engine.assessRisk(
-  "新機能のリリース",
-  "ステージングでテスト済み",
-  { riskTolerance: 70 }
-);
-
-// Quality evaluation
-const quality = await engine.evaluateQuality(
-  "正確で明確なドキュメント",
-  { requirements: ["正確性", "完全性"], userIntent: "APIリファレンス" }
-);
-
-// Task prioritisation
-const { rankedTasks, scores } = await engine.prioritize(
-  ["バグ修正", "新機能開発", "セキュリティパッチ"],
-  "本番環境のインシデント対応"
-);
-console.log(rankedTasks); // sorted by QBNN priority score
-```
-
----
-
 ## Background — APQB theory
 
 The APQB (Adjustable Pseudo Quantum Bit) model unifies statistics, AI, and quantum mechanics via a single angle parameter θ:
@@ -306,14 +462,24 @@ Full type definitions are included. Import types directly:
 
 ```ts
 import type {
-  // Inference
-  GenerateOptions,
-  GenerateResult,
-  // Judgment
+  // QubitAI types
+  QubitAIConfig,
+  QubitAIResult,
+  QubitAIInfo,
+  QubitAIStatus,
+  JudgmentRecord,
+  PriorityItem,
+  PriorityItemResult,
+  // Judgment engine types
   JudgmentResult,
   JudgmentType,
   JudgeOptions,
-  // Dataset
+  GenerateOptions,
+  GenerateResult,
+  SafetyCheckOptions,
+  QualityEvalOptions,
+  RiskAssessmentOptions,
+  // Dataset types
   HFDatasetLoaderConfig,
   HFDatasetRow,
   HFDatasetPage,
@@ -326,6 +492,41 @@ import type {
   TrainingResult,
   GenerateWithExamplesOptions,
 } from "qubit_ai";
+```
+
+### Return types
+
+**`QubitAIResult`** (returned by `judge`, `safetyCheck`, `evaluateQuality`, `ethicsCheck`):
+
+```ts
+interface QubitAIResult {
+  decision:   "Yes" | "No";
+  score:      number;                        // 0–100
+  reasoning:  string;
+  confidence: "high" | "medium" | "low";
+  factors:    string[];
+  timestamp:  string;                        // ISO 8601
+}
+```
+
+**`PriorityItemResult`** (each element returned by `prioritize`):
+
+```ts
+type PriorityItemResult = [item: PriorityItem, score: number]; // score 0–1
+```
+
+### Scoring guide
+
+```
+Score 70–100  → Strong Yes (Recommended)
+Score 50–69   → Weak Yes (Verify first)
+Score 30–49   → Weak No (Concerns exist)
+Score 0–29    → Strong No (Not recommended)
+
+Confidence levels:
+  high    Definitive decision
+  medium  Some uncertainty
+  low     Ambiguous — human review recommended
 ```
 
 ---
