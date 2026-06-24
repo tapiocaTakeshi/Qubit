@@ -37,6 +37,9 @@ export {
 // Dataset utilities for training
 export { HFDatasetLoader } from "./dataset.js";
 
+// NeuroQuantum inference client for few-shot generation and training
+export { NeuroQuantumClient } from "./client.js";
+
 export type {
   GenerateOptions,
   GenerateResult,
