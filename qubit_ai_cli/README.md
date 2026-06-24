@@ -711,6 +711,25 @@ This demonstrates:
 - Command reference and features
 - When to use multi-agent system
 
+### QBNN-Only Deep Analysis Demo
+
+Explore the Quantum-inspired Bidirectional Neural Network perspective on the four AI agents:
+
+```bash
+node demo-qbnn-only.js
+```
+
+This demonstrates:
+- QBNN's bidirectional neural network architecture
+- Quantum-inspired superposition concepts
+- How the four agents are structurally integrated through QBNN
+- Forward and backward information flow
+- Weight optimization and learning convergence
+- Neural network weight parameters for each agent
+- Performance metrics and processing phases
+- QBNN system architecture diagram
+- Theoretical foundations of agent coordination
+
 ## Development
 
 ### Build
