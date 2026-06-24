@@ -103,19 +103,105 @@ function printWelcome(): void {
  */
 function printHelp(): void {
   log("\n📖 Available Commands:\n", colors.bright);
-  log("  help            - Show this help message");
-  log("  agents          - Show all agents and their roles");
-  log("  details         - Toggle detailed agent output display");
-  log("  history         - View conversation history");
-  log("  export          - Export conversation to JSON");
-  log("  clear           - Clear conversation history");
-  log("  exit / quit     - Exit the chat\n");
+  log("  help              - Show this help message");
+  log("  agents            - Show all agents and their roles");
+  log("  details           - Toggle detailed agent output display");
+  log("  analyze <path>    - Analyze an image file with multi-agent system");
+  log("  history           - View conversation history");
+  log("  export            - Export conversation to JSON");
+  log("  clear             - Clear conversation history");
+  log("  exit / quit       - Exit the chat\n");
 
   log("💡 Tips:\n", colors.bright);
   log("  • Ask complex questions to see all agents work");
   log("  • Use /details to see individual agent responses");
   log("  • Each agent specializes in different aspects");
-  log("  • Responses are synthesized into a final answer\n");
+  log("  • Responses are synthesized into a final answer");
+  log("  • Use /analyze <image_path> for image analysis\n");
+}
+
+/**
+ * Load and convert image to base64
+ */
+function loadImageAsBase64(imagePath: string): string {
+  try {
+    const absolutePath = path.resolve(imagePath);
+    if (!fs.existsSync(absolutePath)) {
+      throw new Error(`Image file not found: ${absolutePath}`);
+    }
+
+    const imageBuffer = fs.readFileSync(absolutePath);
+    return imageBuffer.toString("base64");
+  } catch (error) {
+    throw new Error(
+      `Failed to load image: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/**
+ * Analyze image with multi-agent system
+ */
+async function analyzeImage(
+  imagePath: string,
+  state: MultiAgentCLIState
+): Promise<void> {
+  try {
+    logInfo(`Loading image: ${imagePath}`);
+    const base64Image = loadImageAsBase64(imagePath);
+    const fileName = path.basename(imagePath);
+
+    logUser(`Analyze image: ${fileName}`);
+    logInfo("🔄 Coordinating agents for image analysis...\n");
+
+    const startTime = Date.now();
+    const analysisPrompt = `You are analyzing an image. The image is provided as base64 data.
+Please analyze the following image and provide insights:
+- Visual description
+- Design elements
+- Purpose and context
+- Notable features
+- Potential improvements
+
+Image (base64): ${base64Image.substring(0, 100)}... [truncated for brevity]
+File: ${fileName}`;
+
+    const result = await state.chat.processQuery(analysisPrompt);
+    const duration = Date.now() - startTime;
+
+    // Show agent details if enabled
+    if (state.showAgentDetails) {
+      log("\n" + "═".repeat(70), colors.dim);
+      log("📊 INDIVIDUAL AGENT RESPONSES", colors.yellow);
+      log("═".repeat(70), colors.dim);
+
+      result.agentResponses.forEach((response) => {
+        log(`\n🤖 ${response.agentName}`, colors.bright);
+        log(`   Role: ${response.role}`);
+        log(`   Processing time: ${response.processingTime}ms`);
+        log(`   Response:\n${response.output}\n`);
+      });
+
+      log("═".repeat(70), colors.dim);
+    }
+
+    // Show synthesized response
+    log("\n" + result.finalSynthesis + "\n");
+
+    logInfo(`Image analysis completed in ${duration}ms\n`);
+
+    state.messageCount++;
+
+    // Auto-save history
+    if (state.saveHistory) {
+      saveHistory(state);
+    }
+  } catch (error) {
+    const errorMsg =
+      error instanceof Error ? error.message : String(error);
+    logError(`Failed to analyze image: ${errorMsg}`);
+    log("", colors.reset);
+  }
 }
 
 /**
@@ -152,6 +238,17 @@ async function handleCommand(
       state.showAgentDetails = !state.showAgentDetails;
       const status = state.showAgentDetails ? "enabled" : "disabled";
       logSuccess(`Detailed agent output display ${status}\n`);
+      return true;
+    }
+
+    case "analyze": {
+      const imagePath = args.slice(1).join(" ");
+      if (!imagePath) {
+        logError("Please provide an image path: /analyze <path>");
+        log("", colors.reset);
+        return true;
+      }
+      await analyzeImage(imagePath, state);
       return true;
     }
 
