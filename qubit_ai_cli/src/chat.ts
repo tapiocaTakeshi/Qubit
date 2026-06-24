@@ -9,6 +9,8 @@ import type {
   GenerationConfig,
   ChatConfig,
 } from "./types.js";
+import * as fs from "fs";
+import * as path from "path";
 
 const DEFAULT_GENERATION_CONFIG: GenerationConfig = {
   maxTokens: 150,
@@ -28,6 +30,7 @@ export class QubitAIChat {
   private generator: QubitAIGenerative;
   private session: ChatSession;
   private config: ChatConfig;
+  private trainingPhrases: string[] = [];
 
   constructor(config: Partial<ChatConfig> = {}) {
     this.generator = new QubitAIGenerative({
@@ -46,6 +49,27 @@ export class QubitAIChat {
       createdAt: new Date(),
       updatedAt: new Date(),
     };
+
+    // Load Japanese training data
+    this.loadTrainingData();
+  }
+
+  private loadTrainingData(): void {
+    try {
+      const dataPath = path.join(
+        process.cwd(),
+        "data",
+        "japanese-training-data.json"
+      );
+      if (fs.existsSync(dataPath)) {
+        const data = JSON.parse(fs.readFileSync(dataPath, "utf-8"));
+        if (data.phrases && Array.isArray(data.phrases)) {
+          this.trainingPhrases = data.phrases;
+        }
+      }
+    } catch {
+      // Silently ignore if data file doesn't exist
+    }
   }
 
 
@@ -186,7 +210,28 @@ export class QubitAIChat {
         : "Thank you for your question! Feel free to ask me more details about any topic.";
     }
 
-    // Default: Complex-sounding response for unknown topics
+    // Default: Pick a relevant phrase from training data or use fallback
+    if (isJapanese && this.trainingPhrases.length > 0) {
+      // Find related phrases from training data
+      const relatedPhrases = this.trainingPhrases.filter(phrase =>
+        userMessage.toLowerCase().includes("学習") ||
+        userMessage.toLowerCase().includes("network") ||
+        userMessage.toLowerCase().includes("ネット") ||
+        userMessage.toLowerCase().includes("モデル")
+      );
+
+      if (relatedPhrases.length > 0) {
+        const selected =
+          relatedPhrases[Math.floor(Math.random() * relatedPhrases.length)];
+        return selected;
+      }
+
+      // Fallback to random phrase from training data
+      return this.trainingPhrases[
+        Math.floor(Math.random() * this.trainingPhrases.length)
+      ];
+    }
+
     const defaults = isJapanese
       ? [
           "それは興味深い質問です。量子インスパイアードニューラルネットワークの観点から、より詳しい分析が可能です。",
