@@ -24,40 +24,44 @@ export HF_TOKEN="hf_your_token_here"
 
 ## Usage Modes
 
-### 1. Interactive Mode
+### 1. Interactive Mode (full-screen chat)
 
-Start a continuous chat conversation:
+Start the full-screen chat interface (like Claude Code / Codex CLI):
 
 ```bash
+qbnn
+# or, from source:
 npm start
 ```
 
-This opens an interactive prompt:
+This opens a chat screen with a header banner, scrolling conversation area,
+and an input box pinned to the bottom:
 
 ```
-╔════════════════════════════════════════════════════════════╗
-║         🤖 Qubit AI Interactive Chat CLI 🤖              ║
-╚════════════════════════════════════════════════════════════╝
+╭────────────────────────────────────────────────────────────╮
+│ ✶ Qubit AI  quantum-inspired chat · QBNN engine             │
+│ temp 0.7 · max 150 tokens · top-k 40 · top-p 0.9            │
+╰────────────────────────────────────────────────────────────╯
+ Type a message and press Enter. /help for commands, /exit to quit.
 
-ℹ️  Type 'help' for commands | 'exit' to quit
+› You
+  What is artificial intelligence?
+⏺ Qubit   1243ms
+  Artificial intelligence is the field of computer science...
 
-You: [Type your message here]
+› You
+  Can you explain it more simply?
+⏺ Qubit   987ms
+  Sure! AI is when computers can learn and make decisions...
+
+╭────────────────────────────────────────────────────────────╮
+│ › Send a message…                                           │
+╰────────────────────────────────────────────────────────────╯
+ temp 0.7 · 150 tokens · 4 msgs · Ctrl+C to quit
 ```
 
-Then interact naturally:
-
-```
-You: What is artificial intelligence?
-🤖 Assistant: Artificial intelligence is the field of computer science...
-ℹ️  Generated in 1243ms
-
-You: Can you explain it more simply?
-🤖 Assistant: Sure! AI is when computers can learn and make decisions...
-ℹ️  Generated in 987ms
-
-You: /exit
-✅ Chat session ended. (2 messages)
-```
+Type a message and press Enter to chat. Slash commands (`/help`, `/config`,
+`/temp`, …) work inline. Press `Ctrl+C` or type `/exit` to quit.
 
 ### 2. Single Query Mode
 
