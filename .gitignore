@@ -4,3 +4,5 @@ neuroq_checkpoint.pt
 logs/
 *_checkpoint.pt
 gguf_models/
+.qubit-qbnn-history/
+.qubit-history/
