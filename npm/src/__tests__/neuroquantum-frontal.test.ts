@@ -2,13 +2,10 @@
  * Tests for NeuroQuantumFrontalEngine
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
 import { NeuroQuantumFrontalEngine } from "../neuroquantum-frontal.js";
-import { NeuroQuantumAPIClient } from "../neuroquantum-api-client.js";
 import type { NeuroQuantumResponse } from "../neuroquantum-api-client.js";
 
-// Mock the NeuroQuantumAPIClient
-vi.mock("../neuroquantum-api-client.js");
+declare const jest: any;
 
 describe("NeuroQuantumFrontalEngine", () => {
   let mockClient: any;
@@ -28,23 +25,23 @@ describe("NeuroQuantumFrontalEngine", () => {
   beforeEach(() => {
     // Create mock client
     mockClient = {
-      judge: vi.fn().mockResolvedValue(mockResponse),
-      safetyCheck: vi.fn().mockResolvedValue({
+      judge: jest.fn().mockResolvedValue(mockResponse),
+      safetyCheck: jest.fn().mockResolvedValue({
         safe: true,
         result: mockResponse,
       }),
-      ethicsCheck: vi.fn().mockResolvedValue(mockResponse),
-      qualityEval: vi.fn().mockResolvedValue(mockResponse),
-      batchJudge: vi.fn().mockResolvedValue({
+      ethicsCheck: jest.fn().mockResolvedValue(mockResponse),
+      qualityEval: jest.fn().mockResolvedValue(mockResponse),
+      batchJudge: jest.fn().mockResolvedValue({
         results: [mockResponse],
         count: 1,
       }),
-      healthCheck: vi.fn().mockResolvedValue({
+      healthCheck: jest.fn().mockResolvedValue({
         status: "healthy",
         version: "1.0.0",
         neuroquantum_available: true,
       }),
-      waitForAvailable: vi.fn().mockResolvedValue(undefined),
+      waitForAvailable: jest.fn().mockResolvedValue(undefined),
     };
 
     engine = new NeuroQuantumFrontalEngine(mockClient);
