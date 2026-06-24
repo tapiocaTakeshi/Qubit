@@ -8,6 +8,7 @@ import type {
   ChatSession,
   GenerationConfig,
   ChatConfig,
+  ModelConfig,
 } from "./types.js";
 
 const DEFAULT_GENERATION_CONFIG: GenerationConfig = {
@@ -24,13 +25,33 @@ const DEFAULT_CHAT_CONFIG: ChatConfig = {
   enableHistory: true,
 };
 
+// Available models configuration
+const AVAILABLE_MODELS: Record<string, ModelConfig> = {
+  "qbnn": {
+    type: "qbnn",
+    endpoint: "neuroq-ai/quantum-llm",
+    description: "Quantum-inspired Bidirectional Neural Network (QBNN)",
+  },
+  "gemma-2": {
+    type: "gemma-2",
+    endpoint: "google/gemma-2-9b-it",
+    description: "Google Gemma 2 9B Instruct",
+  },
+  "gemma-7": {
+    type: "gemma-7",
+    endpoint: "google/gemma-7b-it",
+    description: "Google Gemma 7B Instruct",
+  },
+};
+
 export class QubitAIChat {
   private client: NeuroQuantumClient;
   private session: ChatSession;
   private config: ChatConfig;
   private fewShotExamples: Array<{ prompt: string; completion: string }> = [];
+  private currentModel: ModelConfig;
 
-  constructor(config: Partial<ChatConfig> = {}) {
+  constructor(config: Partial<ChatConfig> = {}, modelType: string = "qbnn") {
     const hfToken =
       process.env.HF_TOKEN || process.env.HUGGING_FACE_HUB_TOKEN || "";
 
@@ -39,6 +60,9 @@ export class QubitAIChat {
       timeoutMs: 60000,
       maxRetries: 3,
     });
+
+    // Set initial model
+    this.currentModel = AVAILABLE_MODELS[modelType] || AVAILABLE_MODELS["qbnn"];
 
     this.config = {
       ...DEFAULT_CHAT_CONFIG,
@@ -208,6 +232,31 @@ export class QubitAIChat {
   }
 
   /**
+   * Get current model
+   */
+  getCurrentModel(): ModelConfig {
+    return { ...this.currentModel };
+  }
+
+  /**
+   * Get available models
+   */
+  getAvailableModels(): Record<string, ModelConfig> {
+    return { ...AVAILABLE_MODELS };
+  }
+
+  /**
+   * Change model
+   */
+  setModel(modelType: string): boolean {
+    if (modelType in AVAILABLE_MODELS) {
+      this.currentModel = AVAILABLE_MODELS[modelType];
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Export conversation to JSON
    */
   exportConversation(): string {
@@ -243,9 +292,10 @@ export class QubitAIChat {
  * Factory function to create chat instance
  */
 export async function createChat(
-  config?: Partial<ChatConfig>
+  config?: Partial<ChatConfig>,
+  modelType: string = "qbnn"
 ): Promise<QubitAIChat> {
-  const chat = new QubitAIChat(config);
+  const chat = new QubitAIChat(config, modelType);
 
   // Try to load few-shot examples
   try {

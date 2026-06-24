@@ -7,6 +7,7 @@ A command-line chat application that uses the `qubit_ai` library to generate con
 ## Features
 
 ✨ **Real-time Conversation**: Chat interactively with quantum-inspired AI  
+🤖 **Model Selection**: Choose between QBNN, Gemma 2, and Gemma 7 models  
 💾 **Conversation History**: Automatically saves and manages chat history  
 ⚙️ **Configurable Parameters**: Adjust temperature, token limits, and sampling strategies  
 📊 **Performance Metrics**: See response generation time  
@@ -38,6 +39,38 @@ qubit-chat
 npm run dev                    # Run with ts-node
 ```
 
+## Models
+
+### Available Models
+
+The CLI supports three different models:
+
+| Model | Endpoint | Best For | Speed |
+|-------|----------|----------|-------|
+| **QBNN** | `neuroq-ai/quantum-llm` | Logical reasoning, code generation | Medium (100-150ms) |
+| **Gemma 2** | `google/gemma-2-9b-it` | General conversation, content creation | Good (150-200ms) |
+| **Gemma 7B** | `google/gemma-7b-it` | Real-time chat, low latency | Fast (80-120ms) |
+
+### Selecting a Model
+
+**Start with a specific model:**
+
+```bash
+npm start -- --model qbnn      # Default
+npm start -- --model gemma-2   # Google Gemma 2
+npm start -- --model gemma-7   # Google Gemma 7B
+```
+
+**Switch models during chat:**
+
+```
+You: /model
+# Shows available models
+
+You: /model gemma-2
+# Switches to Gemma 2 model
+```
+
 ## Usage
 
 ### Interactive Mode
@@ -48,6 +81,9 @@ Start the chat interface:
 npm start
 # or
 node dist/bin/cli.js
+
+# Or with specific model
+npm start -- --model gemma-2
 ```
 
 Then type your messages:
@@ -77,19 +113,35 @@ Type these commands during interactive mode:
 | Command | Description |
 |---------|-------------|
 | `/help` | Show available commands |
+| `/model` | Show available models and current selection |
+| `/model <name>` | Switch to a different model (qbnn, gemma-2, gemma-7) |
 | `/clear` | Clear conversation history |
 | `/history` | View conversation history |
 | `/export` | Save conversation to JSON |
-| `/config` | Show current configuration |
+| `/config` | Show current configuration (including model) |
 | `/temp <0-2>` | Set temperature (creativity) |
 | `/tokens <10-500>` | Set max tokens to generate |
 | `/exit` or `/quit` | Exit the chat |
 
 ### Examples
 
+**Start with a specific model:**
+```bash
+npm start -- --model gemma-2     # Start with Gemma 2
+npm start -- --model gemma-7     # Start with Gemma 7B
+npm start -- --model qbnn        # Start with QBNN (default)
+```
+
 **Get help:**
 ```
 You: /help
+```
+
+**View and switch models:**
+```
+You: /model              # Show all available models
+You: /model gemma-2      # Switch to Gemma 2
+You: /config             # Show current configuration with model
 ```
 
 **Adjust creativity:**
@@ -348,6 +400,39 @@ If the process crashes with memory errors:
 1. Clear history: `/clear`
 2. Reduce `contextWindowSize` in the config
 3. Exit and restart: `/exit`
+
+## Demo Scripts
+
+### Model Selection Demo
+
+Learn about available models and how to use them:
+
+```bash
+node demo-model-selection.js
+```
+
+This demonstrates:
+- Available models (QBNN, Gemma 2, Gemma 7B)
+- How to select models at startup
+- Runtime model switching
+- Model comparison and selection guide
+- Practical usage examples
+
+### Advanced Features Demo
+
+See long-form reasoning, code generation, and deep analysis:
+
+```bash
+node demo-advanced-features.js
+```
+
+### Chat Simulation Demo
+
+Watch an interactive chat simulation:
+
+```bash
+node demo-chat-simulation.js
+```
 
 ## Development
 

@@ -30,6 +30,12 @@ export interface ChatConfig {
   enableHistory: boolean;
 }
 
+export interface ModelConfig {
+  type: "qbnn" | "gemma-2" | "gemma-7" | "custom";
+  endpoint?: string;
+  description: string;
+}
+
 export interface CLIOptions {
   token?: string;
   temperature?: number;
@@ -37,4 +43,6 @@ export interface CLIOptions {
   quiet?: boolean;
   saveHistory?: boolean;
   historyFile?: string;
+  model?: "qbnn" | "gemma-2" | "gemma-7" | "custom";
+  endpoint?: string;
 }

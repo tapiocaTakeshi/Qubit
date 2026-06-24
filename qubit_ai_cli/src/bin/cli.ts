@@ -20,6 +20,7 @@ interface CLIState {
   saveHistory: boolean;
   historyFile: string;
   messageCount: number;
+  currentModel: string;
 }
 
 // Color codes for terminal output
@@ -61,7 +62,7 @@ function logUser(message: string): void {
 /**
  * Print welcome message
  */
-function printWelcome(): void {
+function printWelcome(chat: QubitAIChat): void {
   console.clear();
   log("", colors.reset);
   log("╔════════════════════════════════════════════════════════════╗", colors.bright);
@@ -74,6 +75,8 @@ function printWelcome(): void {
   log("╚════════════════════════════════════════════════════════════╝", colors.bright);
   log("", colors.reset);
 
+  const model = chat.getCurrentModel();
+  logInfo(`Using model: ${model.description}`);
   logInfo("Type 'help' for commands | 'exit' to quit\n");
 }
 
@@ -83,6 +86,7 @@ function printWelcome(): void {
 function printHelp(): void {
   log("\n📖 Available Commands:\n", colors.bright);
   log("  help          - Show this help message");
+  log("  model         - Show available models and switch models");
   log("  clear         - Clear conversation history");
   log("  history       - Show conversation history");
   log("  export        - Export conversation to JSON");
@@ -95,7 +99,8 @@ function printHelp(): void {
   log("  • Start questions with 'Q:' for better responses");
   log("  • Use complete sentences for better context");
   log("  • Lower temperature (0.3) = more factual");
-  log("  • Higher temperature (1.2) = more creative\n");
+  log("  • Higher temperature (1.2) = more creative");
+  log("  • Try different models with /model command\n");
 }
 
 /**
@@ -146,13 +151,50 @@ async function handleCommand(
 
     case "config": {
       const config = state.chat.getConfig();
+      const model = state.chat.getCurrentModel();
       log("\n⚙️  Current Configuration:\n", colors.bright);
+      log(`  Model: ${model.description}`);
+      log(`  Endpoint: ${model.endpoint}`);
       log(`  Temperature: ${config.temperature}`);
       log(`  Max Tokens: ${config.maxTokens}`);
       log(`  Top K: ${config.topK}`);
       log(`  Top P: ${config.topP}`);
       log(`  Repetition Penalty: ${config.repetitionPenalty}`);
       log("", colors.reset);
+      return true;
+    }
+
+    case "model": {
+      const availableModels = state.chat.getAvailableModels();
+      const currentModel = state.chat.getCurrentModel();
+      const modelName = args[1];
+
+      // If model name provided, try to switch
+      if (modelName) {
+        if (state.chat.setModel(modelName)) {
+          state.currentModel = modelName;
+          const newModel = state.chat.getCurrentModel();
+          logSuccess(`Model switched to: ${newModel.description}`);
+          logInfo(`Endpoint: ${newModel.endpoint}\n`);
+          return true;
+        } else {
+          logError(`Unknown model: ${modelName}`);
+          log(`Available models: ${Object.keys(availableModels).join(", ")}\n`, colors.yellow);
+          return true;
+        }
+      }
+
+      // Otherwise, show available models
+      log("\n🤖 Available Models:\n", colors.bright);
+
+      Object.entries(availableModels).forEach(([key, model]) => {
+        const indicator = key === state.currentModel ? "  ✓ " : "    ";
+        log(`${indicator}${key.padEnd(12)} - ${model.description}`);
+        log(`              Endpoint: ${model.endpoint}`);
+      });
+
+      log("\nUsage: /model <name>", colors.cyan);
+      log(`Current model: ${currentModel.description}\n`, colors.green);
       return true;
     }
 
@@ -256,7 +298,7 @@ function saveHistory(state: CLIState): void {
  * Start interactive chat mode
  */
 async function startInteractiveMode(state: CLIState): Promise<void> {
-  printWelcome();
+  printWelcome(state.chat);
 
   const askQuestion = (): void => {
     state.rl.question(`${colors.magenta}You: ${colors.reset}`, async (input) => {
@@ -320,26 +362,54 @@ function cleanup(state: CLIState): void {
 }
 
 /**
+ * Parse command-line arguments
+ */
+function parseArguments(args: string[]): { model: string; query: string } {
+  let model = "qbnn";
+  const queryParts: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--model" || arg === "-m") {
+      if (i + 1 < args.length) {
+        model = args[i + 1];
+        i++;
+      }
+    } else {
+      queryParts.push(arg);
+    }
+  }
+
+  return {
+    model,
+    query: queryParts.join(" ").trim(),
+  };
+}
+
+/**
  * Main function
  */
 async function main(): Promise<void> {
   try {
     // Parse arguments
     const args = process.argv.slice(2);
-    const query = args.join(" ").trim();
+    const { model: selectedModel, query } = parseArguments(args);
 
-    // Create chat instance
-    const chat = await createChat({
-      generation: {
-        maxTokens: 150,
-        temperature: 0.7,
-        topK: 40,
-        topP: 0.9,
-        repetitionPenalty: 1.2,
+    // Create chat instance with selected model
+    const chat = await createChat(
+      {
+        generation: {
+          maxTokens: 150,
+          temperature: 0.7,
+          topK: 40,
+          topP: 0.9,
+          repetitionPenalty: 1.2,
+        },
+        contextWindowSize: 5,
+        enableHistory: true,
       },
-      contextWindowSize: 5,
-      enableHistory: true,
-    });
+      selectedModel
+    );
 
     // Setup readline for interactive mode
     const rl = readline.createInterface({
@@ -362,6 +432,7 @@ async function main(): Promise<void> {
         `history-${Date.now()}.json`
       ),
       messageCount: 0,
+      currentModel: selectedModel,
     };
 
     // Run in appropriate mode
