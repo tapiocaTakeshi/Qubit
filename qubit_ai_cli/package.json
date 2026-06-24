@@ -1,6 +1,7 @@
 {
   "name": "qubit_ai_cli",
   "version": "1.0.0",
+  "type": "module",
   "description": "Interactive chat CLI for Qubit AI - quantum-inspired text generation",
   "main": "./dist/index.js",
   "bin": {
