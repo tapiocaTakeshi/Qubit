@@ -101,7 +101,18 @@ def tokenize_texts(texts, tokenizer, max_seq_len):
     return sequences
 
 
-def train_epoch(model, sequences, tokenizer, optimizer, batch_size, max_seq_len, epoch, device):
+def train_epoch(
+    model,
+    sequences,
+    tokenizer,
+    optimizer,
+    batch_size,
+    max_seq_len,
+    epoch,
+    device,
+    save_every=0,
+    on_save=None,
+):
     import random
 
     model.train()
@@ -142,6 +153,13 @@ def train_epoch(model, sequences, tokenizer, optimizer, batch_size, max_seq_len,
         n_batches += 1
         if n_batches % 25 == 0:
             progress.log_batch(epoch=epoch + 1, batch=n_batches, loss=total_loss / n_batches)
+        # 長時間の CPU 学習でも進捗を失わないよう、一定間隔で中間チェックポイントを保存する。
+        if save_every and on_save and n_batches % save_every == 0:
+            avg = total_loss / max(n_batches, 1)
+            progress.info(
+                f"[checkpoint] epoch {epoch + 1} batch {n_batches} avg_loss={avg:.4f} を保存中..."
+            )
+            on_save(epoch=epoch, batch=n_batches, loss=avg)
 
     return total_loss / max(n_batches, 1)
 
@@ -191,6 +209,12 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=None, help="未指定なら small 設定 (4) を使用")
     p.add_argument("--max-seq-len", type=int, default=None, help="未指定なら small 設定 (4096) を使用")
     p.add_argument("--ckpt-name", default=DEFAULT_CHECKPOINT_NAME)
+    p.add_argument(
+        "--save-every",
+        type=int,
+        default=500,
+        help="N バッチごとに中間チェックポイントを保存 (0 で無効)。長時間 CPU 学習の進捗保護用",
+    )
     p.add_argument("--upload", action="store_true", help="HF Hub にアップロードする")
     p.add_argument("--repo-id", default=DEFAULT_REPO_ID)
     p.add_argument("--hf-token", default=os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
@@ -261,42 +285,67 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     progress.start_training(epochs=args.epochs, total_sequences=len(sequences), batch_size=batch_size, lr=args.lr)
 
+    ckpt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), args.ckpt_name)
+
     training_log = []
+
+    def save_checkpoint(epoch, batch=None, loss=None, final=False):
+        """中間／最終チェックポイントを保存する共通処理。"""
+        checkpoint = {
+            "model_state": model.state_dict(),
+            "config": {
+                "vocab_size": actual_vocab,
+                "embed_dim": CONFIG["embed_dim"],
+                "hidden_dim": CONFIG["hidden_dim"],
+                "num_heads": CONFIG["num_heads"],
+                "num_layers": CONFIG["num_layers"],
+                "max_seq_len": max_seq_len,
+                "entangle_strength": CONFIG["entangle_strength"],
+                "dropout": CONFIG["dropout"],
+                "architecture": "neuroquantum",
+                "model_size": "small",
+            },
+            "training_log": training_log,
+            "trained_at": datetime.now(timezone.utc).isoformat(),
+            "datasets": [DATASET_ID],
+            "max_samples": effective_max_samples,
+            "epochs": args.epochs,
+            "lr": args.lr,
+            "progress": {
+                "epoch": epoch + 1,
+                "batch": batch,
+                "loss": loss,
+                "final": final,
+            },
+        }
+        torch.save(checkpoint, ckpt_path)
+        size_mb = os.path.getsize(ckpt_path) / 1024 / 1024
+        progress.info(f"Saved: {ckpt_path} ({size_mb:.1f} MB)")
+        sync_checkpoint_to_network_volume(ckpt_path, tokenizer_path=tokenizer_model_path)
+
     for epoch in range(args.epochs):
         progress.start_epoch(epoch + 1, args.epochs)
-        avg = train_epoch(model, sequences, tokenizer, optimizer, batch_size, max_seq_len, epoch, device)
+        avg = train_epoch(
+            model,
+            sequences,
+            tokenizer,
+            optimizer,
+            batch_size,
+            max_seq_len,
+            epoch,
+            device,
+            save_every=args.save_every,
+            on_save=save_checkpoint,
+        )
         scheduler.step()
         progress.log_epoch(epoch=epoch + 1, total_epochs=args.epochs, loss=avg)
         training_log.append({"epoch": epoch + 1, "loss": avg})
+        # 各エポック終了時にもチェックポイントを保存する。
+        save_checkpoint(epoch=epoch, loss=avg)
 
-    # ---- チェックポイント保存 ----
+    # ---- チェックポイント保存 (最終) ----
     progress.info("=== Saving checkpoint ===")
-    ckpt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), args.ckpt_name)
-    checkpoint = {
-        "model_state": model.state_dict(),
-        "config": {
-            "vocab_size": actual_vocab,
-            "embed_dim": CONFIG["embed_dim"],
-            "hidden_dim": CONFIG["hidden_dim"],
-            "num_heads": CONFIG["num_heads"],
-            "num_layers": CONFIG["num_layers"],
-            "max_seq_len": max_seq_len,
-            "entangle_strength": CONFIG["entangle_strength"],
-            "dropout": CONFIG["dropout"],
-            "architecture": "neuroquantum",
-            "model_size": "small",
-        },
-        "training_log": training_log,
-        "trained_at": datetime.now(timezone.utc).isoformat(),
-        "datasets": [DATASET_ID],
-        "max_samples": effective_max_samples,
-        "epochs": args.epochs,
-        "lr": args.lr,
-    }
-    torch.save(checkpoint, ckpt_path)
-    size_mb = os.path.getsize(ckpt_path) / 1024 / 1024
-    progress.info(f"Saved: {ckpt_path} ({size_mb:.1f} MB)")
-    sync_checkpoint_to_network_volume(ckpt_path, tokenizer_path=tokenizer_model_path)
+    save_checkpoint(epoch=args.epochs - 1, loss=training_log[-1]["loss"], final=True)
     progress.end_training(final_loss=training_log[-1]["loss"], checkpoint_path=ckpt_path)
 
     # ---- 学習履歴を保存 ----
