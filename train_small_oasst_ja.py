@@ -215,6 +215,12 @@ def parse_args():
         default=500,
         help="N バッチごとに中間チェックポイントを保存 (0 で無効)。長時間 CPU 学習の進捗保護用",
     )
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="既存チェックポイント (--ckpt-name) と保存済みトークナイザーから学習を再開する。"
+        " 完了済みエポックはスキップし、続きのエポックから継続する",
+    )
     p.add_argument("--upload", action="store_true", help="HF Hub にアップロードする")
     p.add_argument("--repo-id", default=DEFAULT_REPO_ID)
     p.add_argument("--hf-token", default=os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
@@ -246,15 +252,33 @@ def main():
     if not texts:
         raise RuntimeError("OASST からテキストを取得できませんでした")
 
-    # ---- トークナイザー構築 ----
-    progress.info("=== Building SentencePiece tokenizer ===")
-    tokenizer = NeuroQuantumTokenizer(vocab_size=args.vocab_size)
+    # ---- チェックポイントのロード (再開時) ----
+    ckpt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), args.ckpt_name)
+    resume_ckpt = None
+    if args.resume:
+        if os.path.isfile(ckpt_path):
+            progress.info(f"=== Resuming from checkpoint: {ckpt_path} ===")
+            resume_ckpt = torch.load(ckpt_path, map_location="cpu")
+        else:
+            progress.warning(
+                f"--resume 指定ですが {ckpt_path} が見つかりません。新規学習として開始します。"
+            )
+
+    # ---- トークナイザー構築 / ロード ----
     tokenizer_prefix = os.path.join(os.path.dirname(os.path.abspath(__file__)), args.tokenizer_prefix)
-    tokenizer.build_vocab(texts, model_prefix=tokenizer_prefix, character_coverage=0.9995)
+    tokenizer_model_path = tokenizer_prefix + ".model"
+    if resume_ckpt is not None and os.path.isfile(tokenizer_model_path):
+        # 再開時は既存トークナイザーを再利用し、語彙のズレと再構築コストを避ける。
+        progress.info(f"=== Loading existing tokenizer: {tokenizer_model_path} ===")
+        ckpt_vocab = resume_ckpt.get("config", {}).get("vocab_size", args.vocab_size)
+        tokenizer = NeuroQuantumTokenizer(vocab_size=ckpt_vocab, model_file=tokenizer_model_path)
+    else:
+        progress.info("=== Building SentencePiece tokenizer ===")
+        tokenizer = NeuroQuantumTokenizer(vocab_size=args.vocab_size)
+        tokenizer.build_vocab(texts, model_prefix=tokenizer_prefix, character_coverage=0.9995)
     actual_vocab = tokenizer.actual_vocab_size or tokenizer.vocab_size
     CONFIG["vocab_size"] = actual_vocab
     progress.info(f"Actual vocab size: {actual_vocab}")
-    tokenizer_model_path = tokenizer_prefix + ".model"
 
     # ---- モデル構築 ----
     progress.info("=== Building NeuroQuantum (small) ===")
@@ -272,6 +296,10 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     progress.info(f"Parameters: {n_params:,}")
 
+    if resume_ckpt is not None and "model_state" in resume_ckpt:
+        model.load_state_dict(resume_ckpt["model_state"], strict=False)
+        progress.info("Resumed model weights from checkpoint.")
+
     # ---- トークナイズ ----
     progress.info("=== Tokenizing ===")
     sequences = tokenize_texts(texts, tokenizer, max_seq_len)
@@ -283,16 +311,35 @@ def main():
     progress.info("=== Training ===")
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    progress.start_training(epochs=args.epochs, total_sequences=len(sequences), batch_size=batch_size, lr=args.lr)
-
-    ckpt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), args.ckpt_name)
 
     training_log = []
+    start_epoch = 0
+    if resume_ckpt is not None:
+        training_log = list(resume_ckpt.get("training_log", []))
+        # training_log には完了済みエポックのみ追加されるため、その数が次の開始エポック。
+        start_epoch = len(training_log)
+        if resume_ckpt.get("optimizer_state") is not None:
+            try:
+                optimizer.load_state_dict(resume_ckpt["optimizer_state"])
+                progress.info("Resumed optimizer state.")
+            except Exception as e:  # noqa: BLE001
+                progress.warning(f"optimizer state の復元に失敗 (新規optimizerで継続): {e}")
+        for _ in range(start_epoch):
+            scheduler.step()
+        progress.info(
+            f"Resuming at epoch {start_epoch + 1}/{args.epochs} "
+            f"(completed epochs: {start_epoch})"
+        )
+        if start_epoch >= args.epochs:
+            progress.info("既に全エポック完了済みのチェックポイントです。学習をスキップします。")
+
+    progress.start_training(epochs=args.epochs, total_sequences=len(sequences), batch_size=batch_size, lr=args.lr)
 
     def save_checkpoint(epoch, batch=None, loss=None, final=False):
         """中間／最終チェックポイントを保存する共通処理。"""
         checkpoint = {
             "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
             "config": {
                 "vocab_size": actual_vocab,
                 "embed_dim": CONFIG["embed_dim"],
@@ -323,7 +370,7 @@ def main():
         progress.info(f"Saved: {ckpt_path} ({size_mb:.1f} MB)")
         sync_checkpoint_to_network_volume(ckpt_path, tokenizer_path=tokenizer_model_path)
 
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         progress.start_epoch(epoch + 1, args.epochs)
         avg = train_epoch(
             model,
