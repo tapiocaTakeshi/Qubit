@@ -4,3 +4,5 @@ neuroq_checkpoint.pt
 logs/
 *_checkpoint.pt
 gguf_models/
+*.log
+training_history_small_oasst_ja.json
