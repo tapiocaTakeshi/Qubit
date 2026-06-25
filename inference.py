@@ -60,7 +60,7 @@ def find_file(candidates):
     return None
 
 
-def load_model(checkpoint_path=None):
+def load_model(checkpoint_path=None, tokenizer_path=None):
     """モデルとトークナイザーをロード。チェックポイントがなければ新規初期化。"""
     device = torch.device(
         "mps" if torch.backends.mps.is_available()
@@ -69,7 +69,14 @@ def load_model(checkpoint_path=None):
     )
 
     ckpt_path = checkpoint_path or find_file(CHECKPOINT_CANDIDATES)
-    tok_path = find_file(TOKENIZER_CANDIDATES)
+    # --tokenizer で明示指定があればそれを優先。チェックポイントと語彙が一致した
+    # トークナイザーを使わないと生成が破綻するため、専用学習時は明示指定が必要。
+    if tokenizer_path:
+        if not os.path.isfile(tokenizer_path):
+            raise FileNotFoundError(f"指定されたトークナイザーが見つかりません: {tokenizer_path}")
+        tok_path = tokenizer_path
+    else:
+        tok_path = find_file(TOKENIZER_CANDIDATES)
 
     if ckpt_path:
         print(f"[neuroQ] チェックポイントを読み込み中: {ckpt_path}")
@@ -237,6 +244,7 @@ def main():
     parser.add_argument("prompt", nargs="?", default=None, help="推論プロンプト")
     parser.add_argument("--prompt", dest="prompt_flag", default=None, help="推論プロンプト（オプション形式）")
     parser.add_argument("--checkpoint", default=None, help="チェックポイントファイルのパス (.pt)")
+    parser.add_argument("--tokenizer", default=None, help="トークナイザーモデルのパス (.model)。チェックポイントと語彙が一致するものを指定")
     parser.add_argument("--interactive", "-i", action="store_true", help="対話モードで起動")
     parser.add_argument("--max_new_tokens", type=int, default=100, help="最大生成トークン数 (デフォルト: 100)")
     parser.add_argument("--temperature", type=float, default=0.7, help="サンプリング温度 (デフォルト: 0.7)")
@@ -256,7 +264,7 @@ def main():
         print('  python inference.py --interactive')
         sys.exit(0)
 
-    model, tokenizer, config, device = load_model(args.checkpoint)
+    model, tokenizer, config, device = load_model(args.checkpoint, args.tokenizer)
 
     if args.interactive:
         interactive_mode(model, tokenizer, config, device, args)
