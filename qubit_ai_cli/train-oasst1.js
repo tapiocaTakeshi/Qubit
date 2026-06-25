@@ -1,63 +1,69 @@
 #!/usr/bin/env node
 
 /**
- * Train qubit_ai on OASST-1 dataset
+ * Train qubit_ai_cli's underlying qubit_ai model on OASST-1 dataset.
  *
  * Usage:
- *   node train-oasst1.js
- *   HF_TOKEN=hf_... node train-oasst1.js
+ *   node train-oasst1.js [maxSamples]
  *
- * Note: This uses qubit_ai@4.0.5 Pyodide backend for training.
+ * Loads pre-extracted OASST-1 Japanese conversation texts and trains the
+ * qubit_ai NeuroQuantum generator on them via the train(texts) API.
+ *
+ * The texts JSON is produced from kunishou/oasst1-chat-44k-ja
+ * (see scratchpad extraction or regenerate with the Python dataset utils).
  */
 
-import { trainOnHFDataset } from "qubit_ai";
+import { readFileSync } from "node:fs";
+import { getQubitAIGenerative } from "qubit_ai";
 
-const HF_TOKEN = process.env.HF_TOKEN;
+const TEXTS_PATH =
+  process.env.OASST_TEXTS_PATH ||
+  "/tmp/claude-0/-home-user-Qubit/d5f7f6b3-6374-5267-b637-339ca5e2b148/scratchpad/oasst_texts.json";
 
 async function main() {
-  console.log("🧠 Starting OASST-1 training on qubit_ai...");
-  console.log("📚 Dataset: kunishou/oasst1-chat-44k-ja (44k samples)");
+  const maxSamples = parseInt(process.argv[2] || "0", 10); // 0 = all
 
-  if (!HF_TOKEN) {
-    console.warn("⚠️  HF_TOKEN not set. Using default/public access (may be rate-limited).");
+  console.log("🧠 Training qubit_ai on OASST-1 (kunishou/oasst1-chat-44k-ja)");
+
+  let texts;
+  try {
+    texts = JSON.parse(readFileSync(TEXTS_PATH, "utf-8"));
+  } catch (e) {
+    console.error(`❌ Could not read texts from ${TEXTS_PATH}`);
+    console.error("   Set OASST_TEXTS_PATH or regenerate the JSON.");
+    process.exit(1);
   }
 
-  try {
-    console.log("\n⏱️  Training started...\n");
+  if (maxSamples > 0) {
+    texts = texts.slice(0, maxSamples);
+  }
+  console.log(`📚 Loaded ${texts.length} training texts`);
 
-    const result = await trainOnHFDataset({
-      hfToken: HF_TOKEN,
-      dataset: "kunishou/oasst1-chat-44k-ja",
-      split: "train",
-      maxSamples: 100, // Start small for testing (full: 44042)
-      epochs: 1,
-      batchSize: 4,
-      learningRate: 5e-5,
-      validateInterval: 25,
-      onProgress: (progress) => {
-        if (progress.samplesProcessed % 50 === 0 || progress.samplesProcessed === progress.totalSamples) {
-          const pct = Math.round((progress.samplesProcessed / progress.totalSamples) * 100);
-          const loss = progress.currentLoss?.toFixed(4) ?? "?";
-          console.log(
-            `  [${progress.epoch}/${progress.totalEpochs}] ` +
-            `${progress.samplesProcessed}/${progress.totalSamples} (${pct}%) loss=${loss}`,
-          );
-        }
-      },
-    });
+  const gen = getQubitAIGenerative();
 
-    console.log("\n✅ Training complete!");
-    console.log(`📊 Final loss: ${result.finalLoss?.toFixed(4)}`);
-    console.log(`⏱️  Duration: ${(result.trainingDuration / 1000).toFixed(1)}s`);
+  console.log("⏱️  Training started...");
+  const start = Date.now();
 
-    if (result.checkpoint) {
-      console.log("💾 Checkpoint:", result.checkpoint);
+  await gen.train(texts);
+
+  const duration = ((Date.now() - start) / 1000).toFixed(1);
+  console.log(`\n✅ Training complete in ${duration}s`);
+  console.log("📊 Status:", JSON.stringify(gen.getStatus()));
+
+  // Quick sanity-check generation after training
+  console.log("\n=== Post-training sample generation ===");
+  for (const prompt of ["量子コンピュータとは", "こんにちは"]) {
+    try {
+      const out = await gen.generate(prompt, { maxNewTokens: 40, temperature: 0.7 });
+      const text = typeof out === "string" ? out : out?.generatedText ?? JSON.stringify(out);
+      console.log(`  「${prompt}」→ ${text}`);
+    } catch (e) {
+      console.log(`  「${prompt}」→ (生成エラー: ${e.message})`);
     }
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error("\n❌ Training failed:", msg);
-    process.exit(1);
   }
 }
 
-main();
+main().catch((e) => {
+  console.error("❌ Failed:", e instanceof Error ? e.message : e);
+  process.exit(1);
+});
