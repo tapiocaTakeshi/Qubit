@@ -7,7 +7,9 @@
  * Requires HF_TOKEN environment variable
  */
 
-import { trainOnHFDataset, getQubitAIGenerative } from "qubit_ai";
+import * as qubitAi from "qubit_ai";
+
+const { trainOnHFDataset, getQubitAIGenerative } = qubitAi;
 
 const HF_TOKEN = process.env.HF_TOKEN;
 if (!HF_TOKEN) {
@@ -19,7 +21,7 @@ if (!HF_TOKEN) {
 async function main() {
   console.log("🧠 Training qubit_ai on OASST-1 dataset...");
   console.log("📚 Dataset: kunishou/oasst1-chat-44k-ja");
-  console.log("🎯 Target: Full 44k samples, 3 epochs");
+  console.log("🎯 Target: Full 44k samples, 30 epochs");
   console.log("");
 
   try {
@@ -28,7 +30,7 @@ async function main() {
       dataset: "kunishou/oasst1-chat-44k-ja",
       split: "train",
       maxSamples: 0, // 0 = all
-      epochs: 3,
+      epochs: 30,
       batchSize: 4,
       learningRate: 5e-5,
       validateInterval: 500,

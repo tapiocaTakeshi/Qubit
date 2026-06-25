@@ -12,6 +12,7 @@
     "dev": "tsx src/bin/cli.tsx",
     "build": "tsc",
     "start": "node dist/bin/cli.js",
+    "train:oasst1": "tsx train-oasst1.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
