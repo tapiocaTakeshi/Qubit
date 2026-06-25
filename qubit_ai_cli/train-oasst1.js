@@ -16,7 +16,7 @@ const HF_TOKEN = process.env.HF_TOKEN;
 
 async function main() {
   console.log("🧠 Starting OASST-1 training on qubit_ai...");
-  console.log("📚 Dataset: kunishou/oasst1-chat-44k-ja (44k samples)");
+  console.log("📚 Dataset: kunishou/oasst1-chat-44k-ja (full 44k samples, 30 epochs)");
 
   if (!HF_TOKEN) {
     console.warn("⚠️  HF_TOKEN not set. Using default/public access (may be rate-limited).");
@@ -29,13 +29,13 @@ async function main() {
       hfToken: HF_TOKEN,
       dataset: "kunishou/oasst1-chat-44k-ja",
       split: "train",
-      maxSamples: 100, // Start small for testing (full: 44042)
-      epochs: 1,
+      maxSamples: 0, // 0 = all (full: 44042)
+      epochs: 30,
       batchSize: 4,
       learningRate: 5e-5,
-      validateInterval: 25,
+      validateInterval: 500,
       onProgress: (progress) => {
-        if (progress.samplesProcessed % 50 === 0 || progress.samplesProcessed === progress.totalSamples) {
+        if (progress.samplesProcessed % 500 === 0 || progress.samplesProcessed === progress.totalSamples) {
           const pct = Math.round((progress.samplesProcessed / progress.totalSamples) * 100);
           const loss = progress.currentLoss?.toFixed(4) ?? "?";
           console.log(
