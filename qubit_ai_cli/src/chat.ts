@@ -99,6 +99,7 @@ export class QubitAIChat {
 
     const queryGrams = this.bigrams(userMessage);
     if (queryGrams.size === 0) return null;
+    const queryKeywords = this.keywords(userMessage);
 
     let best: { response: string; score: number } | null = null;
     for (const pair of this.qaPairs) {
@@ -108,15 +109,26 @@ export class QubitAIChat {
       // Dice coefficient over character bigrams
       let overlap = 0;
       for (const g of queryGrams) if (promptGrams.has(g)) overlap++;
-      const score = (2 * overlap) / (queryGrams.size + promptGrams.size);
+      const dice = (2 * overlap) / (queryGrams.size + promptGrams.size);
+
+      // Keyword (content-word) overlap weights topical relevance higher than
+      // shared function-word bigrams like "なぜ" or "教えて".
+      const promptKeywords = this.keywords(pair.prompt);
+      let kwOverlap = 0;
+      for (const k of queryKeywords) if (promptKeywords.has(k)) kwOverlap++;
+      const kwScore =
+        queryKeywords.size > 0 ? kwOverlap / queryKeywords.size : 0;
+
+      // Combined score: keyword match dominates, bigram refines.
+      const score = 0.65 * kwScore + 0.35 * dice;
 
       if (!best || score > best.score) {
         best = { response: pair.response, score };
       }
     }
 
-    // Require a minimum similarity to avoid irrelevant matches
-    return best && best.score >= 0.18 ? best.response : null;
+    // Require meaningful topical similarity to avoid irrelevant matches.
+    return best && best.score >= 0.3 ? best.response : null;
   }
 
   /** Character bigram set for lightweight Japanese similarity. */
@@ -127,6 +139,21 @@ export class QubitAIChat {
       grams.add(cleaned.slice(i, i + 2));
     }
     return grams;
+  }
+
+  /**
+   * Extract content-word-ish tokens: runs of kanji/katakana/latin/digits.
+   * Drops hiragana-only fragments (mostly particles/inflections) and very
+   * short tokens to focus on topical keywords.
+   */
+  private keywords(text: string): Set<string> {
+    const matches =
+      text.match(/[一-鿿々]+|[゠-ヿー]+|[A-Za-z0-9]+/g) || [];
+    const set = new Set<string>();
+    for (const tok of matches) {
+      if (tok.length >= 2) set.add(tok.toLowerCase());
+    }
+    return set;
   }
 
 
