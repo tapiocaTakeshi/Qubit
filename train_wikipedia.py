@@ -71,6 +71,9 @@ _max_samples_env = int(os.environ.get("WIKI_MAX_SAMPLES", "0"))
 MAX_SAMPLES = _max_samples_env if _max_samples_env > 0 else None
 TOKENIZER_SAMPLES = int(os.environ.get("WIKI_TOKENIZER_SAMPLES", "200000"))
 USE_STREAMING = os.environ.get("WIKI_STREAMING", "0") == "1"
+# 途中保存の間隔（バッチ数）。コンテナ再起動を跨いで再開できるよう、
+# エポック終了を待たず定期的にチェックポイントを保存する。
+CHECKPOINT_EVERY = int(os.environ.get("WIKI_CHECKPOINT_EVERY", "2000"))
 
 LR = 5e-4
 GRAD_CLIP = 1.0
@@ -236,9 +239,17 @@ def build_tokenizer(text_iter_factory):
     return tokenizer, actual
 
 
-def save_checkpoint(model, actual_vocab, training_log, total_articles, total_sequences):
+def save_checkpoint(model, optimizer, actual_vocab, training_log, total_articles,
+                    total_sequences, epoch, global_batch, quiet=False):
+    """チェックポイントを保存する。
+
+    再開に必要な optimizer 状態・現在エポック・累計バッチ数も含める。
+    途中保存（quiet=True）ではログを簡潔にする。一時ファイルに書いてから
+    rename することで、保存中の再起動による破損を防ぐ。
+    """
     checkpoint = {
         "model_state": model.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
         "config": {
             "vocab_size": actual_vocab,
             "embed_dim": CONFIG["embed_dim"],
@@ -255,11 +266,44 @@ def save_checkpoint(model, actual_vocab, training_log, total_articles, total_seq
         "datasets": [f"{DATASET_ID}:{c}" for c in WIKI_CONFIGS],
         "total_articles": total_articles,
         "total_sequences": total_sequences,
+        "epoch": epoch,                 # 0-indexed: 現在処理中（未完了）のエポック
+        "global_batch": global_batch,   # 累計学習バッチ数（進捗の目安）
     }
-    torch.save(checkpoint, CKPT_PATH)
-    size_mb = os.path.getsize(CKPT_PATH) / 1024 / 1024
-    progress.info(f"Saved checkpoint: {CKPT_PATH} ({size_mb:.1f} MB)")
-    sync_checkpoint_to_network_volume(CKPT_PATH, TOKENIZER_PREFIX + ".model")
+    tmp_path = CKPT_PATH + ".tmp"
+    torch.save(checkpoint, tmp_path)
+    os.replace(tmp_path, CKPT_PATH)
+    if not quiet:
+        size_mb = os.path.getsize(CKPT_PATH) / 1024 / 1024
+        progress.info(f"Saved checkpoint: {CKPT_PATH} ({size_mb:.1f} MB)")
+        sync_checkpoint_to_network_volume(CKPT_PATH, TOKENIZER_PREFIX + ".model")
+
+
+def try_resume(model, optimizer, device):
+    """既存チェックポイントがあれば model/optimizer に読み込み、再開情報を返す。
+
+    Returns:
+        (start_epoch, training_log, total_sequences, global_batch)
+        チェックポイントが無ければ (0, [], 0, 0)
+    """
+    if not os.path.isfile(CKPT_PATH):
+        return 0, [], 0, 0
+    try:
+        ckpt = torch.load(CKPT_PATH, map_location=device)
+        model.load_state_dict(ckpt["model_state"])
+        if "optimizer_state" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer_state"])
+        start_epoch = ckpt.get("epoch", 0)
+        training_log = ckpt.get("training_log", [])
+        total_sequences = ckpt.get("total_sequences", 0)
+        global_batch = ckpt.get("global_batch", 0)
+        progress.info(
+            f"=== Resuming from checkpoint: epoch={start_epoch} "
+            f"global_batch={global_batch} total_sequences={total_sequences} ==="
+        )
+        return start_epoch, training_log, total_sequences, global_batch
+    except Exception as e:
+        progress.info(f"Checkpoint found but failed to load ({e}). Starting fresh.")
+        return 0, [], 0, 0
 
 
 def main():
@@ -307,14 +351,15 @@ def main():
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.01)
 
+    # 既存チェックポイントがあれば再開（コンテナ再起動を跨いで継続）
+    start_epoch, training_log, total_sequences, global_batch = try_resume(model, optimizer, device)
+
     # Step 3: バッチ処理学習 (3 エポック = データ全体を 3 周)
     progress.info("=== Training (batched over full Wikipedia) ===")
     progress.start_training(epochs=EPOCHS, total_sequences=-1, batch_size=BATCH_SIZE, lr=LR)
-    training_log = []
     total_articles = 0
-    total_sequences = 0
 
-    for epoch in range(EPOCHS):
+    for epoch in range(start_epoch, EPOCHS):
         progress.start_epoch(epoch + 1, EPOCHS)
         model.train()
         batch_buf = []          # 学習用に貯める BATCH_SIZE 分のシーケンス
@@ -332,6 +377,7 @@ def main():
                     loss = train_batch(model, batch_buf, tokenizer, optimizer, device)
                     epoch_loss += loss
                     epoch_batches += 1
+                    global_batch += 1
                     batch_buf = []
                     if epoch_batches % 50 == 0:
                         progress.log_batch(
@@ -339,12 +385,20 @@ def main():
                             loss=epoch_loss / epoch_batches,
                             extra={"articles": epoch_articles},
                         )
+                    # 定期チェックポイント（再起動耐性）
+                    if global_batch % CHECKPOINT_EVERY == 0:
+                        save_checkpoint(
+                            model, optimizer, actual_vocab, training_log,
+                            epoch_articles, total_sequences, epoch, global_batch,
+                            quiet=True,
+                        )
 
         # 端数バッチを学習
         if batch_buf:
             loss = train_batch(model, batch_buf, tokenizer, optimizer, device)
             epoch_loss += loss
             epoch_batches += 1
+            global_batch += 1
             batch_buf = []
 
         avg_loss = epoch_loss / max(epoch_batches, 1)
@@ -353,8 +407,9 @@ def main():
         training_log.append({"epoch": epoch + 1, "loss": avg_loss, "articles": epoch_articles})
         total_articles = epoch_articles  # 各エポックで全件通過するので同数
 
-        # エポックごとにチェックポイント保存（中断しても続きから再開可）
-        save_checkpoint(model, actual_vocab, training_log, total_articles, total_sequences)
+        # エポック完了時に保存。epoch+1 を保存することで次回はこのエポックを飛ばして再開
+        save_checkpoint(model, optimizer, actual_vocab, training_log,
+                        total_articles, total_sequences, epoch + 1, global_batch)
 
     progress.end_training(
         final_loss=training_log[-1]["loss"] if training_log else 0.0,
