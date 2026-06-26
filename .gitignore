@@ -1,8 +1,10 @@
+*.log
+*_checkpoint.pt
+*_tokenizer.model
+*_tokenizer.vocab
 .env
 __pycache__/
-neuroq_checkpoint.pt
-logs/
-*_checkpoint.pt
 gguf_models/
-*.log
+logs/
+neuroq_checkpoint.pt
 training_history_small_oasst_ja.json
