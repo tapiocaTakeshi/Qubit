@@ -4,7 +4,8 @@
 *_tokenizer.vocab
 .env
 __pycache__/
-gguf_models/
-logs/
 neuroq_checkpoint.pt
+logs/
+!neuroq_small_oasst_ja_checkpoint.pt
+gguf_models/
 training_history_small_oasst_ja.json
