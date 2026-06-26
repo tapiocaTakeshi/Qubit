@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Chat backends for the Qubit TUI chatbot.
+Chat backends for the Qubit AI chatbot.
 
 A backend is anything that turns a user message (plus the running
 conversation) into an assistant reply string. Backends are intentionally
@@ -33,7 +33,7 @@ from datetime import datetime
 from typing import List, Protocol
 
 # Make sure the project root is importable when this module is run from
-# anywhere (e.g. ``python -m tui_chat.app`` or ``python tui_chat/app.py``).
+# anywhere (e.g. ``python -m qubit_ai_cli.app`` or ``python qubit_ai_cli/app.py``).
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
