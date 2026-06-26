@@ -2,21 +2,21 @@
 """
 Qubit Chat - a Textual-based TUI chatbot CLI.
 
-A full-screen terminal chat interface for the Qubit AI engine. Messages are
-rendered as chat bubbles, replies are generated off the UI thread so the
+A full-screen terminal chat interface for the NeuroQuantum engine. Messages
+are rendered as chat bubbles, replies are generated off the UI thread so the
 interface stays responsive, and a small set of slash commands control the
 session.
 
 Run it::
 
-    python -m tui_chat.app
-    python -m tui_chat.app --backend echo
+    python -m qubit_ai_cli.app
+    python -m qubit_ai_cli.app --backend echo
 
 Slash commands (type in the input box):
 
     /help            show available commands
     /clear           clear the conversation
-    /backend <name>  switch backend (quantum, echo)
+    /backend <name>  switch backend (neuroquantum, neuroquantum-model, quantum, echo)
     /quit            exit
 
 Keys:
@@ -252,7 +252,7 @@ class QubitChatApp(App):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Qubit TUI chatbot CLI")
+    parser = argparse.ArgumentParser(description="Qubit AI TUI chatbot CLI")
     parser.add_argument(
         "--backend",
         choices=available_backends(),
