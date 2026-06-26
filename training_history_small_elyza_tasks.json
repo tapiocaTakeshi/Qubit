@@ -1,0 +1,43 @@
+{
+  "architecture": "neuroquantum",
+  "model_size": "small",
+  "config": {
+    "embed_dim": 256,
+    "hidden_dim": 512,
+    "num_heads": 8,
+    "num_layers": 4,
+    "max_seq_len": 4096,
+    "dropout": 0.1,
+    "entangle_strength": 0.5,
+    "batch_size": 4,
+    "vocab_size": 4000,
+    "model_size": "small"
+  },
+  "datasets": [
+    "elyza/ELYZA-tasks-100"
+  ],
+  "total_texts": 100,
+  "total_sequences": 100,
+  "parameters": 9978388,
+  "training_log": [
+    {
+      "epoch": 1,
+      "loss": 7.5661634254455565,
+      "dataset": "elyza/ELYZA-tasks-100"
+    },
+    {
+      "epoch": 2,
+      "loss": 6.709259166717529,
+      "dataset": "elyza/ELYZA-tasks-100"
+    },
+    {
+      "epoch": 3,
+      "loss": 6.366351852416992,
+      "dataset": "elyza/ELYZA-tasks-100"
+    }
+  ],
+  "max_samples": 100,
+  "epochs": 3,
+  "lr": 0.0005,
+  "trained_at": "2026-06-26T05:47:27.416132+00:00"
+}
