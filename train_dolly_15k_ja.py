@@ -114,9 +114,12 @@ if __name__ == "__main__":
     
     training_log = []
     for epoch in range(args.epochs):
-        avg_loss = train_epoch(model, sequences, tokenizer, optimizer, batch_size, max_seq_len, epoch, device, save_every=0, on_save=save_checkpoint)
+        # save_every=500: エポック内でも500バッチごとに保存し、中断時の損失を防ぐ
+        avg_loss = train_epoch(model, sequences, tokenizer, optimizer, batch_size, max_seq_len, epoch, device, save_every=500, on_save=save_checkpoint)
         progress.info(f"Epoch {epoch + 1}/{args.epochs} | Loss: {avg_loss:.6f}")
         training_log.append({"epoch": epoch+1, "loss": avg_loss})
-    
-    save_checkpoint(final=True)
+        # エポック完了ごとに必ず保存
+        save_checkpoint(epoch=epoch, final=(epoch == args.epochs - 1))
+        progress.info(f"=== Epoch {epoch + 1} checkpoint saved ===")
+
     progress.info(f"Training complete! Checkpoint: {ckpt_path}")
