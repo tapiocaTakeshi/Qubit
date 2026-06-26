@@ -4,10 +4,20 @@ wikimedia/wikipedia 全データ学習スクリプト (NeuroQuantum アーキテ
 
 `wikimedia/wikipedia` データセットの **全記事** を 3 エポック学習する。
 
-全記事（日本語版で約140万件、英語版で約640万件）はメモリに載らないため、
-HuggingFace datasets の streaming モードでデータを逐次読み込み、
-一定サイズのバッファ単位で学習する「ストリーミング・シャード学習」方式を採る。
-これによりメモリ使用量を一定に保ったまま、データ全体を 3 回（3エポック）通過できる。
+## データ読み込み方式（バッチ処理）
+
+デフォルトは map-style（非streaming）でのバッチ処理。`wikimedia/wikipedia` は
+Parquet/Arrow 形式なので、`load_dataset` は Arrow ファイルをメモリマップする。
+全記事（日本語版で約140万件、英語版で約640万件）をRAMに載せず、ディスクから
+逐次読みながら、**バッチ単位でトークナイズして即学習・破棄**することで
+メモリ使用量を一定に保つ。
+
+streaming に対するバッチ処理の利点:
+  - 3 エポック回しても初回 DL 1 回でキャッシュを再利用（streaming は毎エポック再取得）
+  - 全記事を完全シャッフルできる（streaming はバッファ内シャッフルのみ）
+  - データ件数が既知なので進捗・スケジューリングが正確
+
+ディスク容量が厳しい場合は WIKI_STREAMING=1 で streaming にフォールバックできる。
 
 設定は環境変数で上書き可能:
     WIKI_CONFIG       学習対象の config 名 (デフォルト: 20231101.ja)
@@ -17,17 +27,17 @@ HuggingFace datasets の streaming モードでデータを逐次読み込み、
     WIKI_MAX_SAMPLES  各 config から使う最大記事数。デバッグ用。
                       未指定または 0 のとき「全データ」(デフォルト: 全データ)
     WIKI_TOKENIZER_SAMPLES  トークナイザ語彙構築に使う記事数 (デフォルト: 200000)
-    WIKI_BUFFER_SIZE  1 シャードあたりの学習シーケンス数 (デフォルト: 50000)
+    WIKI_STREAMING    1 で streaming フォールバック (デフォルト: 0 = バッチ処理)
 
 使い方:
     python train_wikipedia.py                       # 日本語版・全データ・3エポック
     WIKI_CONFIG=20231101.en python train_wikipedia.py
     WIKI_MAX_SAMPLES=5000 python train_wikipedia.py # 動作確認用に少量で
+    WIKI_STREAMING=1 python train_wikipedia.py      # ディスク節約 streaming
 """
 import os
 import sys
 import json
-import math
 import random
 from datetime import datetime, timezone
 
@@ -60,7 +70,7 @@ EPOCHS = int(os.environ.get("WIKI_EPOCHS", "3"))
 _max_samples_env = int(os.environ.get("WIKI_MAX_SAMPLES", "0"))
 MAX_SAMPLES = _max_samples_env if _max_samples_env > 0 else None
 TOKENIZER_SAMPLES = int(os.environ.get("WIKI_TOKENIZER_SAMPLES", "200000"))
-BUFFER_SIZE = int(os.environ.get("WIKI_BUFFER_SIZE", "50000"))
+USE_STREAMING = os.environ.get("WIKI_STREAMING", "0") == "1"
 
 LR = 5e-4
 GRAD_CLIP = 1.0
@@ -75,28 +85,50 @@ TOKENIZER_PREFIX = os.path.join(os.path.dirname(__file__), "neuroq_wikipedia_tok
 
 
 # ============================================================
-# データセット読み込み (streaming)
+# データセット読み込み
 # ============================================================
-def iter_wiki_texts(configs, max_samples=None):
-    """wikimedia/wikipedia の本文テキストを streaming で逐次 yield する。
+def load_map_datasets():
+    """各 config を map-style（非streaming）で読み込み、リストで返す。
 
-    Args:
-        configs: 読み込む config 名のリスト (例: ["20231101.ja"])
-        max_samples: 各 config から取り出す最大記事数。None で全件。
-
-    Yields:
-        記事本文 (str)
+    Arrow メモリマップにより、巨大データでも RAM 使用量を抑えつつランダムアクセス
+    （完全シャッフル）が可能。初回のみディスクへ DL し、以降はキャッシュを再利用する。
     """
-    for cfg in configs:
+    datasets = []
+    for cfg in WIKI_CONFIGS:
+        progress.info(f"Loading {DATASET_ID} ({cfg}) [map-style/batched]...")
+        try:
+            ds = safe_load_dataset(DATASET_ID, split="train", name=cfg)
+            progress.log_dataset_loaded(f"{DATASET_ID}:{cfg}", len(ds))
+            datasets.append((cfg, ds))
+        except Exception as e:
+            progress.log_dataset_error(f"{DATASET_ID}:{cfg}", str(e))
+    return datasets
+
+
+def iter_texts_mapstyle(datasets, epoch, max_samples=None):
+    """map-style データセットを完全シャッフルしてテキストを yield する。"""
+    for cfg, ds in datasets:
+        n = len(ds)
+        if max_samples is not None:
+            n = min(n, max_samples)
+        # 索引マッピングのみをシャッフル（データ本体はコピーしない）
+        shuffled = ds.shuffle(seed=epoch).select(range(n)) if n < len(ds) else ds.shuffle(seed=epoch)
+        for row in shuffled:
+            text = (row.get("text") or "").strip()
+            if len(text) > 4:
+                yield text
+
+
+def iter_texts_streaming(epoch, max_samples=None):
+    """streaming で各 config のテキストを逐次 yield する（フォールバック）。"""
+    for cfg in WIKI_CONFIGS:
         progress.info(f"Streaming {DATASET_ID} ({cfg})...")
         try:
-            ds = safe_load_dataset(
-                DATASET_ID, split="train", streaming=True, name=cfg
-            )
+            ds = safe_load_dataset(DATASET_ID, split="train", streaming=True, name=cfg)
+            ds = ds.shuffle(seed=epoch, buffer_size=10000)
         except Exception as e:
             progress.log_dataset_error(f"{DATASET_ID}:{cfg}", str(e))
             continue
-
         count = 0
         for row in ds:
             text = (row.get("text") or "").strip()
@@ -105,7 +137,6 @@ def iter_wiki_texts(configs, max_samples=None):
                 count += 1
                 if max_samples is not None and count >= max_samples:
                     break
-        progress.log_dataset_loaded(f"{DATASET_ID}:{cfg}", count)
 
 
 def tokenize_text(text, tokenizer, max_seq_len):
@@ -142,70 +173,53 @@ def tokenize_text(text, tokenizer, max_seq_len):
 # ============================================================
 # 学習
 # ============================================================
-def train_on_buffer(model, sequences, tokenizer, optimizer, device, epoch, shard):
-    """バッファ（シャード）内のシーケンスで 1 パス学習する。"""
-    model.train()
-    random.shuffle(sequences)
-    total_loss = 0.0
-    n_batches = 0
+def train_batch(model, batch_seqs, tokenizer, optimizer, device):
+    """BATCH_SIZE 件のシーケンスで 1 ステップ学習し、loss を返す。"""
+    max_len = min(max(len(s) for s in batch_seqs), MAX_SEQ_LEN)
+    input_ids, labels = [], []
+    for s in batch_seqs:
+        ids = s[:max_len]
+        pad_len = max_len - len(ids)
+        input_ids.append(ids + [tokenizer.pad_id] * pad_len)
+        labels.append(ids + [-100] * pad_len)
 
-    for i in range(0, len(sequences), BATCH_SIZE):
-        batch_seqs = sequences[i:i + BATCH_SIZE]
-        if not batch_seqs:
-            continue
+    input_ids = torch.tensor(input_ids, dtype=torch.long, device=device)
+    labels_t = torch.tensor(labels, dtype=torch.long, device=device)
 
-        max_len = min(max(len(s) for s in batch_seqs), MAX_SEQ_LEN)
-        input_ids, labels = [], []
-        for s in batch_seqs:
-            ids = s[:max_len]
-            pad_len = max_len - len(ids)
-            input_ids.append(ids + [tokenizer.pad_id] * pad_len)
-            labels.append(ids + [-100] * pad_len)
+    logits = model(input_ids)
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels_t[..., 1:].contiguous()
+    loss = F.cross_entropy(
+        shift_logits.view(-1, model.config.vocab_size),
+        shift_labels.view(-1),
+        ignore_index=-100,
+    )
 
-        input_ids = torch.tensor(input_ids, dtype=torch.long, device=device)
-        labels_t = torch.tensor(labels, dtype=torch.long, device=device)
-
-        logits = model(input_ids)
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels_t[..., 1:].contiguous()
-        loss = F.cross_entropy(
-            shift_logits.view(-1, model.config.vocab_size),
-            shift_labels.view(-1),
-            ignore_index=-100,
-        )
-
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
-        optimizer.step()
-
-        total_loss += loss.item()
-        n_batches += 1
-
-        if n_batches % 50 == 0:
-            avg = total_loss / n_batches
-            progress.log_batch(epoch=epoch + 1, batch=n_batches, loss=avg,
-                               extra={"shard": shard})
-
-    return total_loss, n_batches
+    optimizer.zero_grad()
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
+    optimizer.step()
+    return loss.item()
 
 
-def build_tokenizer(device):
+def build_tokenizer(text_iter_factory):
     """先頭 TOKENIZER_SAMPLES 件の記事から SentencePiece 語彙を構築する。
 
     既存の語彙ファイルがあれば再利用する。全データのトークナイズ前に語彙が必要なため、
-    語彙構築には先頭の記事サンプルを用いる（学習自体は全データで行う）。
+    語彙構築には記事サンプルを用いる（学習自体は全データで行う）。
+
+    Args:
+        text_iter_factory: テキストイテレータを返すファクトリ（引数なし）
     """
     model_file = TOKENIZER_PREFIX + ".model"
     if os.path.isfile(model_file):
         progress.info(f"Reusing existing tokenizer: {model_file}")
         tokenizer = NeuroQuantumTokenizer(vocab_size=CONFIG["vocab_size"], model_file=model_file)
-        actual = tokenizer.actual_vocab_size or tokenizer.vocab_size
-        return tokenizer, actual
+        return tokenizer, (tokenizer.actual_vocab_size or tokenizer.vocab_size)
 
     progress.info(f"=== Building SentencePiece tokenizer (sample={TOKENIZER_SAMPLES}) ===")
     sample_texts = []
-    for text in iter_wiki_texts(WIKI_CONFIGS, max_samples=TOKENIZER_SAMPLES):
+    for text in text_iter_factory():
         sample_texts.append(text)
         if len(sample_texts) >= TOKENIZER_SAMPLES:
             break
@@ -250,15 +264,29 @@ def save_checkpoint(model, actual_vocab, training_log, total_articles, total_seq
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    mode = "streaming" if USE_STREAMING else "map-style/batched"
     progress.info(f"Device: {device}")
     progress.info(
         f"Dataset: {DATASET_ID} configs={WIKI_CONFIGS} epochs={EPOCHS} "
         f"max_samples={'ALL' if MAX_SAMPLES is None else MAX_SAMPLES} "
-        f"batch_size={BATCH_SIZE} buffer={BUFFER_SIZE}"
+        f"batch_size={BATCH_SIZE} mode={mode}"
     )
 
+    # データソースの準備とテキストイテレータの定義
+    if USE_STREAMING:
+        map_datasets = None
+        def text_iter(epoch=0):
+            return iter_texts_streaming(epoch, max_samples=MAX_SAMPLES)
+    else:
+        map_datasets = load_map_datasets()
+        if not map_datasets:
+            progress.info("ERROR: no datasets loaded. Aborting.")
+            return
+        def text_iter(epoch=0):
+            return iter_texts_mapstyle(map_datasets, epoch, max_samples=MAX_SAMPLES)
+
     # Step 1: トークナイザ構築（先頭サンプルから）
-    tokenizer, actual_vocab = build_tokenizer(device)
+    tokenizer, actual_vocab = build_tokenizer(lambda: text_iter(epoch=0))
     CONFIG["vocab_size"] = actual_vocab
 
     # Step 2: モデル構築
@@ -279,8 +307,8 @@ def main():
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.01)
 
-    # Step 3: ストリーミング・シャード学習 (3 エポック = データ全体を 3 周)
-    progress.info("=== Training (streaming shards over full Wikipedia) ===")
+    # Step 3: バッチ処理学習 (3 エポック = データ全体を 3 周)
+    progress.info("=== Training (batched over full Wikipedia) ===")
     progress.start_training(epochs=EPOCHS, total_sequences=-1, batch_size=BATCH_SIZE, lr=LR)
     training_log = []
     total_articles = 0
@@ -288,45 +316,40 @@ def main():
 
     for epoch in range(EPOCHS):
         progress.start_epoch(epoch + 1, EPOCHS)
-        buffer = []
+        model.train()
+        batch_buf = []          # 学習用に貯める BATCH_SIZE 分のシーケンス
         epoch_loss = 0.0
         epoch_batches = 0
-        shard = 0
         epoch_articles = 0
 
-        for text in iter_wiki_texts(WIKI_CONFIGS, max_samples=MAX_SAMPLES):
+        for text in text_iter(epoch=epoch):
             epoch_articles += 1
             for seq in tokenize_text(text, tokenizer, MAX_SEQ_LEN):
-                buffer.append(seq)
+                batch_buf.append(seq)
+                total_sequences += 1
+                # BATCH_SIZE 溜まったら即学習して破棄（メモリは 1 バッチ分のみ）
+                if len(batch_buf) >= BATCH_SIZE:
+                    loss = train_batch(model, batch_buf, tokenizer, optimizer, device)
+                    epoch_loss += loss
+                    epoch_batches += 1
+                    batch_buf = []
+                    if epoch_batches % 50 == 0:
+                        progress.log_batch(
+                            epoch=epoch + 1, batch=epoch_batches,
+                            loss=epoch_loss / epoch_batches,
+                            extra={"articles": epoch_articles},
+                        )
 
-            if len(buffer) >= BUFFER_SIZE:
-                shard += 1
-                loss_sum, n_b = train_on_buffer(
-                    model, buffer, tokenizer, optimizer, device, epoch, shard
-                )
-                epoch_loss += loss_sum
-                epoch_batches += n_b
-                total_sequences += len(buffer)
-                progress.info(
-                    f"  Epoch {epoch+1} shard {shard} | articles~{epoch_articles} | "
-                    f"shard_loss={loss_sum / max(n_b, 1):.4f}"
-                )
-                buffer = []
-
-        # 残りバッファを学習
-        if buffer:
-            shard += 1
-            loss_sum, n_b = train_on_buffer(
-                model, buffer, tokenizer, optimizer, device, epoch, shard
-            )
-            epoch_loss += loss_sum
-            epoch_batches += n_b
-            total_sequences += len(buffer)
-            buffer = []
+        # 端数バッチを学習
+        if batch_buf:
+            loss = train_batch(model, batch_buf, tokenizer, optimizer, device)
+            epoch_loss += loss
+            epoch_batches += 1
+            batch_buf = []
 
         avg_loss = epoch_loss / max(epoch_batches, 1)
         progress.log_epoch(epoch=epoch + 1, total_epochs=EPOCHS, loss=avg_loss,
-                           extra={"articles": epoch_articles, "shards": shard})
+                           extra={"articles": epoch_articles, "batches": epoch_batches})
         training_log.append({"epoch": epoch + 1, "loss": avg_loss, "articles": epoch_articles})
         total_articles = epoch_articles  # 各エポックで全件通過するので同数
 
@@ -345,6 +368,7 @@ def main():
         "config": CONFIG,
         "datasets": [f"{DATASET_ID}:{c}" for c in WIKI_CONFIGS],
         "epochs": EPOCHS,
+        "mode": mode,
         "total_articles_per_epoch": total_articles,
         "total_sequences": total_sequences,
         "parameters": n_params,
