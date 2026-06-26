@@ -1,0 +1,43 @@
+{
+  "architecture": "neuroquantum",
+  "model_size": "small",
+  "config": {
+    "embed_dim": 256,
+    "hidden_dim": 512,
+    "num_heads": 8,
+    "num_layers": 4,
+    "max_seq_len": 4096,
+    "dropout": 0.1,
+    "entangle_strength": 0.5,
+    "batch_size": 4,
+    "vocab_size": 32000,
+    "model_size": "small"
+  },
+  "datasets": [
+    "llm-jp/databricks-dolly-15k-ja"
+  ],
+  "total_texts": 15011,
+  "total_sequences": 15119,
+  "parameters": 23527956,
+  "training_log": [
+    {
+      "epoch": 1,
+      "loss": 6.369362332139697,
+      "dataset": "llm-jp/databricks-dolly-15k-ja"
+    },
+    {
+      "epoch": 2,
+      "loss": 5.505975902395904,
+      "dataset": "llm-jp/databricks-dolly-15k-ja"
+    },
+    {
+      "epoch": 3,
+      "loss": 5.001331170273836,
+      "dataset": "llm-jp/databricks-dolly-15k-ja"
+    }
+  ],
+  "max_samples": 15011,
+  "epochs": 3,
+  "lr": 0.0005,
+  "trained_at": "2026-06-26T13:39:31.290850+00:00"
+}
