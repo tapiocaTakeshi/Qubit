@@ -8,3 +8,6 @@ runpod>=1.6.0
 replicate>=0.25.0
 modal>=0.73.0
 mcp>=0.5.0
+
+# TUI chatbot (tui_chat/)
+textual>=0.80.0
