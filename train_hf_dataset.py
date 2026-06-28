@@ -287,7 +287,7 @@ def parse_args():
     p.add_argument(
         "--save-every",
         type=int,
-        default=500,
+        default=0,
         help="N バッチごとに中間チェックポイントを保存 (0 で無効)",
     )
     p.add_argument(
