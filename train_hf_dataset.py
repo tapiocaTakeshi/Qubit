@@ -282,7 +282,7 @@ def parse_args():
     p.add_argument(
         "--ckpt-name",
         default=None,
-        help="チェックポイント名 (デフォルト: neuroq_small_<dataset-name>.pt)",
+        help="チェックポイント名 (デフォルト: neuroq_small_checkpoint.pt)",
     )
     p.add_argument(
         "--save-every",
@@ -306,19 +306,15 @@ def parse_args():
     p.add_argument(
         "--tokenizer-prefix",
         default=None,
-        help="トークナイザーのプリフィックス (デフォルト: neuroq_small_<dataset-name>_tokenizer)",
+        help="トークナイザーのプリフィックス (デフォルト: neuroq_small_tokenizer)",
     )
     return p.parse_args()
 
 
 def get_default_names(dataset_id: str):
-    """データセットIDから適切なチェックポイント名とトークナイザープリフィックスを生成。"""
-    # "org/name" から "name" または "name/subset" から "subset" を抽出
-    name_parts = dataset_id.split("/")
-    short_name = name_parts[-1].replace("-", "_")[:32]
-
-    ckpt_name = f"neuroq_small_{short_name}_checkpoint.pt"
-    tokenizer_prefix = f"neuroq_small_{short_name}_tokenizer"
+    """デフォルトのチェックポイント名とトークナイザープリフィックスを返す。"""
+    ckpt_name = "neuroq_small_checkpoint.pt"
+    tokenizer_prefix = "neuroq_small_tokenizer"
     return ckpt_name, tokenizer_prefix
 
 
