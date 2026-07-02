@@ -101,6 +101,40 @@ def tokenize_texts(texts, tokenizer, max_seq_len):
     return sequences
 
 
+def merge_checkpoint_to_main(intermediate_ckpt_path: str, main_ckpt_path: str):
+    """中間チェックポイントをメインチェックポイントにマージする。
+
+    Args:
+        intermediate_ckpt_path: 中間チェックポイントのパス
+        main_ckpt_path: メインチェックポイントのパス
+    """
+    intermediate_ckpt = torch.load(intermediate_ckpt_path, map_location="cpu")
+
+    main_ckpt = None
+    if os.path.isfile(main_ckpt_path):
+        main_ckpt = torch.load(main_ckpt_path, map_location="cpu")
+
+    merged_ckpt = {
+        "model_state": intermediate_ckpt.get("model_state"),
+        "optimizer_state": intermediate_ckpt.get("optimizer_state"),
+        "config": intermediate_ckpt.get("config"),
+        "batch": intermediate_ckpt.get("batch"),
+        "epoch": intermediate_ckpt.get("epoch"),
+        "loss": intermediate_ckpt.get("loss"),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if main_ckpt:
+        prev_log = main_ckpt.get("training_log", [])
+        current_log = intermediate_ckpt.get("training_log", [])
+        merged_ckpt["training_log"] = prev_log + current_log
+    else:
+        merged_ckpt["training_log"] = intermediate_ckpt.get("training_log", [])
+
+    torch.save(merged_ckpt, main_ckpt_path)
+    progress.info(f"Checkpoint merged to: {main_ckpt_path}")
+
+
 def train_epoch(
     model,
     sequences,
@@ -153,7 +187,6 @@ def train_epoch(
         n_batches += 1
         if n_batches % 25 == 0:
             progress.log_batch(epoch=epoch + 1, batch=n_batches, loss=total_loss / n_batches)
-        # 長時間の CPU 学習でも進捗を失わないよう、一定間隔で中間チェックポイントを保存する。
         if save_every and on_save and n_batches % save_every == 0:
             avg = total_loss / max(n_batches, 1)
             progress.info(
@@ -336,7 +369,7 @@ def main():
     progress.start_training(epochs=args.epochs, total_sequences=len(sequences), batch_size=batch_size, lr=args.lr)
 
     def save_checkpoint(epoch, batch=None, loss=None, final=False):
-        """中間／最終チェックポイントを保存する共通処理。"""
+        """チェックポイントを保存する。中間チェックポイントはマージして上書きする。"""
         checkpoint = {
             "model_state": model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
@@ -365,10 +398,24 @@ def main():
                 "final": final,
             },
         }
-        torch.save(checkpoint, ckpt_path)
-        size_mb = os.path.getsize(ckpt_path) / 1024 / 1024
-        progress.info(f"Saved: {ckpt_path} ({size_mb:.1f} MB)")
-        sync_checkpoint_to_network_volume(ckpt_path, tokenizer_path=tokenizer_model_path)
+
+        if batch is not None and not final:
+            ckpt_dir = os.path.join(os.path.dirname(ckpt_path), "checkpoints")
+            os.makedirs(ckpt_dir, exist_ok=True)
+            ckpt_basename = os.path.basename(ckpt_path)
+            ckpt_name_no_ext = os.path.splitext(ckpt_basename)[0]
+            intermediate_ckpt_path = os.path.join(
+                ckpt_dir, f"{ckpt_name_no_ext}_epoch{epoch:03d}_batch{batch:06d}.pt"
+            )
+            torch.save(checkpoint, intermediate_ckpt_path)
+            progress.info(f"Checkpoint saved: {intermediate_ckpt_path}")
+            merge_checkpoint_to_main(intermediate_ckpt_path, ckpt_path)
+        else:
+            torch.save(checkpoint, ckpt_path)
+            size_mb = os.path.getsize(ckpt_path) / 1024 / 1024
+            progress.info(f"Saved: {ckpt_path} ({size_mb:.1f} MB)")
+            if final:
+                sync_checkpoint_to_network_volume(ckpt_path, tokenizer_path=tokenizer_model_path)
 
     for epoch in range(start_epoch, args.epochs):
         progress.start_epoch(epoch + 1, args.epochs)
