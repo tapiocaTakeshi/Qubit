@@ -9,21 +9,25 @@ Hugging Face データセットIDを指定して学習するユニバーサル�
     # 1. 基本的な使用方法 (全データを学習):
     python train_hf_dataset.py --dataset-id "llm-jp/databricks-dolly-15k-ja" --epochs 3
 
-    # 2. 分割を指定して学習:
+    # 2. モデルサイズを指定して学習:
+    python train_hf_dataset.py --dataset-id "llm-jp/databricks-dolly-15k-ja" \
+        --model-size medium --epochs 3
+
+    # 3. 分割を指定して学習:
     python train_hf_dataset.py --dataset-id "openwebtext" --split "train" --epochs 5
 
-    # 3. マックスサンプルを制限してテスト:
+    # 4. マックスサンプルを制限してテスト:
     python train_hf_dataset.py --dataset-id "wikitext" --split "train" \
         --max-samples 1000 --epochs 1 --vocab-size 4000
 
-    # 4. HF Hub にアップロード:
+    # 5. HF Hub にアップロード:
     HF_TOKEN=hf_xxx python train_hf_dataset.py \
         --dataset-id "llm-jp/databricks-dolly-15k-ja" \
-        --epochs 3 --upload --repo-id tapiocatakeshi/Qubit
+        --model-size large --epochs 3 --upload --repo-id tapiocatakeshi/Qubit
 
-    # 5. 既存チェックポイントから追加学習:
+    # 6. 既存チェックポイントから追加学習:
     python train_hf_dataset.py --dataset-id "llm-jp/databricks-dolly-15k-ja" \
-        --resume --ckpt-name neuroq_small_oasst_ja_checkpoint.pt \
+        --model-size small --resume --ckpt-name neuroq_small_checkpoint.pt \
         --reset-epochs --epochs 3
 """
 import argparse
@@ -308,11 +312,16 @@ def parse_args():
         default=0,
         help="使用する最大サンプル数。0 または負値で全件を使用 (デフォルト)",
     )
+    p.add_argument(
+        "--model-size",
+        default="small",
+        help="モデルサイズ: small, medium, large, xlarge, megabyte_100mb, megabyte_300mb, megabyte_500mb, billion_1b, billion_3b, billion_7b, billion_13b, billion_30b, billion_70b (デフォルト: small)",
+    )
     p.add_argument("--epochs", type=int, default=3)
     p.add_argument("--lr", type=float, default=5e-4)
     p.add_argument("--vocab-size", type=int, default=32000)
-    p.add_argument("--batch-size", type=int, default=None, help="未指定なら small 設定 (4) を使用")
-    p.add_argument("--max-seq-len", type=int, default=None, help="未指定なら small 設定 (4096) を使用")
+    p.add_argument("--batch-size", type=int, default=None, help="未指定ならモデル設定の値を使用")
+    p.add_argument("--max-seq-len", type=int, default=None, help="未指定ならモデル設定の値を使用")
     p.add_argument(
         "--ckpt-name",
         default=None,
@@ -345,10 +354,11 @@ def parse_args():
     return p.parse_args()
 
 
-def get_default_names(dataset_id: str):
+def get_default_names(dataset_id: str, model_size: str = "small"):
     """デフォルトのチェックポイント名とトークナイザープリフィックスを返す。"""
-    ckpt_name = "neuroq_small_checkpoint.pt"
-    tokenizer_prefix = "neuroq_small_tokenizer"
+    size_suffix = model_size.replace("_", "")
+    ckpt_name = f"neuroq_{size_suffix}_checkpoint.pt"
+    tokenizer_prefix = f"neuroq_{size_suffix}_tokenizer"
     return ckpt_name, tokenizer_prefix
 
 
@@ -372,13 +382,14 @@ def main():
     progress.info(f"Device: {device}")
 
     # ---- チェックポイント名とトークナイザープリフィックスの確定 ----
-    ckpt_name = args.ckpt_name or get_default_names(args.dataset_id)[0]
-    tokenizer_prefix_arg = args.tokenizer_prefix or get_default_names(args.dataset_id)[1]
+    ckpt_name = args.ckpt_name or get_default_names(args.dataset_id, args.model_size)[0]
+    tokenizer_prefix_arg = args.tokenizer_prefix or get_default_names(args.dataset_id, args.model_size)[1]
 
-    # ---- small モデル設定 ----
-    CONFIG = get_model_config_by_size("small", vocab_size=args.vocab_size)
+    # ---- モデル設定 ----
+    CONFIG = get_model_config_by_size(args.model_size, vocab_size=args.vocab_size)
     batch_size = args.batch_size or CONFIG["batch_size"]
     max_seq_len = args.max_seq_len or CONFIG["max_seq_len"]
+    progress.info(f"Model size: {args.model_size} (params: embed_dim={CONFIG['embed_dim']}, hidden_dim={CONFIG['hidden_dim']}, num_layers={CONFIG['num_layers']})")
 
     # ---- split の自動検出 ----
     split = args.split or auto_detect_split(args.dataset_id)
@@ -425,7 +436,7 @@ def main():
     progress.info(f"Actual vocab size: {actual_vocab}")
 
     # ---- モデル構築 ----
-    progress.info("=== Building NeuroQuantum (small) ===")
+    progress.info(f"=== Building NeuroQuantum ({args.model_size}) ===")
     nq_config = NeuroQuantumConfig(
         vocab_size=actual_vocab,
         embed_dim=CONFIG["embed_dim"],
