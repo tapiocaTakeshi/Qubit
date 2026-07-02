@@ -287,8 +287,8 @@ def parse_args():
     p.add_argument(
         "--save-every",
         type=int,
-        default=0,
-        help="N バッチごとに中間チェックポイントを保存 (0 で無効)",
+        default=100,
+        help="N バッチごとに中間チェックポイントを保存 (デフォルト: 100)",
     )
     p.add_argument(
         "--resume",
@@ -460,10 +460,24 @@ def main():
             "loss": loss,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        torch.save(checkpoint, ckpt_path)
-        progress.info(f"Checkpoint saved: {ckpt_path}")
-        if final:
-            sync_checkpoint_to_network_volume(ckpt_path)
+
+        # 中間チェックポイントは checkpoints/ ディレクトリに保存
+        if batch is not None and not final:
+            ckpt_dir = os.path.join(os.path.dirname(ckpt_path), "checkpoints")
+            os.makedirs(ckpt_dir, exist_ok=True)
+            ckpt_basename = os.path.basename(ckpt_path)
+            ckpt_name_no_ext = os.path.splitext(ckpt_basename)[0]
+            intermediate_ckpt_path = os.path.join(
+                ckpt_dir, f"{ckpt_name_no_ext}_epoch{epoch:03d}_batch{batch:06d}.pt"
+            )
+            torch.save(checkpoint, intermediate_ckpt_path)
+            progress.info(f"Checkpoint saved: {intermediate_ckpt_path}")
+        else:
+            # エポック終了時と最終チェックポイントはメインパスに保存
+            torch.save(checkpoint, ckpt_path)
+            progress.info(f"Checkpoint saved: {ckpt_path}")
+            if final:
+                sync_checkpoint_to_network_volume(ckpt_path)
 
     for epoch in range(start_epoch, args.epochs):
         avg_loss = train_epoch(
