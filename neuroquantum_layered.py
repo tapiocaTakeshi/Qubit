@@ -186,7 +186,7 @@ def detect_gpu_tier() -> Tuple[str, str, dict]:
 
     Returns:
         (tier, device_name, gpu_info):
-            tier: "high" | "mid" | "low" | "cpu"
+            tier: "mega" | "ultra" | "high" | "mid" | "low" | "cpu"
             device_name: デバイス名の文字列
             gpu_info: VRAM・RAM等の詳細情報
     """
@@ -208,7 +208,9 @@ def detect_gpu_tier() -> Tuple[str, str, dict]:
         gpu_info["vram_gb"] = round(vram_gb, 1)
         gpu_info["compute_capability"] = f"{major}.{minor}"
 
-        if vram_gb >= 40:
+        if vram_gb >= 80:
+            return "mega", device_name, gpu_info
+        elif vram_gb >= 40:
             return "ultra", device_name, gpu_info
         elif vram_gb >= 16:
             return "high", device_name, gpu_info
@@ -221,15 +223,17 @@ def detect_gpu_tier() -> Tuple[str, str, dict]:
         gpu_info["device_type"] = "mps"
         device_name = "Apple Silicon (MPS)"
         # Apple Siliconは統合メモリ — RAMに基づいてティアを判定
-        if ram_gb >= 32:
+        if ram_gb >= 64:
             return "high", device_name, gpu_info
-        elif ram_gb >= 16:
+        elif ram_gb >= 32:
             return "mid", device_name, gpu_info
         else:
             return "low", device_name, gpu_info
 
     # CPU専用: RAMに基づいてティアを判定
-    if ram_gb >= 64:
+    if ram_gb >= 128:
+        return "mega", "CPU", gpu_info
+    elif ram_gb >= 64:
         return "mid", "CPU", gpu_info
     elif ram_gb >= 32:
         return "low", "CPU", gpu_info
@@ -242,6 +246,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
 
     ティア判定の基準:
         GPU環境:
+            mega  (VRAM >= 80GB): 数百MB規模モデル - メガスケール
             ultra (VRAM >= 40GB): A100最大設定 - 超大規模モデル
             high  (VRAM >= 16GB): フル設定 - 大規模モデル
             mid   (VRAM >= 8GB):  中規模設定
@@ -249,7 +254,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
         MPS (Apple Silicon):
             統合メモリ(RAM)に基づいてティアを判定
         CPU環境:
-            RAM >= 64GB → mid, RAM >= 32GB → low, それ以下 → cpu
+            RAM >= 128GB → mega, RAM >= 64GB → mid, RAM >= 32GB → low, それ以下 → cpu
 
     RAMによる追加調整:
         GPU環境でもRAMが潤沢な場合、batch_size や max_seq_len を増加。
@@ -263,6 +268,16 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
 
     # ティア別のベースニューロン数設定
     TIER_CONFIGS = {
+        "mega": {
+            "embed_dim": 1280,
+            "hidden_dim": 3072,
+            "num_heads": 16,
+            "num_layers": 16,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 4,
+        },
         "ultra": {
             "embed_dim": 768,
             "hidden_dim": 2048,
@@ -402,16 +417,49 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
 
 def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> dict:
     """
-    モデルサイズ（xlarge, large, medium, small）に基づいて最適なニューロン数・モデル設定を返す。
+    モデルサイズに基づいて最適なニューロン数・モデル設定を返す。
 
     Args:
-        size: モデルサイズ ("xlarge" | "large" | "medium" | "small")
+        size: モデルサイズ ("megabyte_500mb" | "megabyte_300mb" | "megabyte_100mb" | "xlarge" | "large" | "medium" | "small")
         vocab_size: 語彙サイズ
 
     Returns:
         dict: モデル設定パラメータを含む辞書
     """
     SIZE_CONFIGS = {
+        "megabyte_500mb": {
+            "embed_dim": 1536,
+            "hidden_dim": 4096,
+            "num_heads": 16,
+            "num_layers": 20,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 2,
+            "vocab_size": vocab_size,
+        },
+        "megabyte_300mb": {
+            "embed_dim": 1280,
+            "hidden_dim": 3072,
+            "num_heads": 16,
+            "num_layers": 16,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 4,
+            "vocab_size": vocab_size,
+        },
+        "megabyte_100mb": {
+            "embed_dim": 1024,
+            "hidden_dim": 2048,
+            "num_heads": 16,
+            "num_layers": 10,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 8,
+            "vocab_size": vocab_size,
+        },
         "xlarge": {
             "embed_dim": 768,
             "hidden_dim": 2048,
