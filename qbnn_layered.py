@@ -251,17 +251,18 @@ class EQBNNGenerativeModel(nn.Module):
     - 幾何学的制約による正則化
     """
     
-    def __init__(self, vocab_size, embed_dim=128, hidden_dims=[256, 256, 256], 
-                 entangle_strength=0.5, dropout=0.1):
+    def __init__(self, vocab_size, embed_dim=128, hidden_dims=[256, 256, 256],
+                 entangle_strength=0.5, dropout=0.1, max_seq_len=1024):
         super().__init__()
-        
+
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
         self.entangle_strength = entangle_strength
-        
+        self.max_seq_len = max_seq_len
+
         # 埋め込み
         self.embedding = nn.Embedding(vocab_size, embed_dim)
-        self.pos_encoding = nn.Parameter(torch.randn(512, embed_dim) * 0.02)
+        self.pos_encoding = nn.Parameter(torch.randn(max_seq_len, embed_dim) * 0.02)
         
         # E-QBNNレイヤー
         self.layers = nn.ModuleList()
@@ -364,8 +365,8 @@ class EQBNNGenerativeModel(nn.Module):
         for _ in range(max_length):
             # 入力準備
             x = tokens.unsqueeze(0)
-            if x.size(1) > 512:
-                x = x[:, -512:]
+            if x.size(1) > self.max_seq_len:
+                x = x[:, -self.max_seq_len:]
             
             # 順伝播
             logits = self(x)
