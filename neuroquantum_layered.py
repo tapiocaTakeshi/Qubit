@@ -165,9 +165,10 @@ class NeuroQuantumConfig:
         hidden_dim: int = 1024,
         num_heads: int = 8,
         num_layers: int = 6,
-        max_seq_len: int = 10000,
+        max_seq_len: int = 1024,
         dropout: float = 0.1,
         lambda_entangle: float = 0.5,  # QBNNもつれ強度
+        attention_window_size: int = 512,  # ローカルAttentionのウィンドウサイズ
     ):
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
@@ -177,6 +178,7 @@ class NeuroQuantumConfig:
         self.max_seq_len = max_seq_len
         self.dropout = dropout
         self.lambda_entangle = lambda_entangle
+        self.attention_window_size = attention_window_size
 
 
 def detect_gpu_tier() -> Tuple[str, str, dict]:
@@ -833,19 +835,26 @@ class QBNNLayer(nn.Module):
 # Part 2: QBNN-Attention（transformersライブラリベース + QBNN拡張）
 # ========================================
 
-class QBNNAttention(nn.Module):
+class QBNNLocalAttention(nn.Module):
     """
-    QBNN拡張Self-Attention（純PyTorch実装）
+    QBNN拡張Local-Attention（ハイブリッド設計）
 
-    Multi-Head Causal Self-AttentionにQBNN量子もつれ補正を追加
+    - Local Window Attention: メモリ効率的な局所注意
+    - QBNN量子もつれ補正: 長距離依存の代替メカニズム
+
+    戦略:
+    - Attention: 補助的な役割（局所的な文脈選択）
+    - QBNN: 主役（状態遷移と長距離依存の圧縮）
     """
 
     def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.1,
-                 lambda_val: float = 0.5, max_positions: int = 1024):
+                 lambda_val: float = 0.5, max_positions: int = 1024, window_size: int = 512):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
+        self.window_size = window_size
+        self.max_positions = max_positions
 
         assert self.head_dim * num_heads == embed_dim, "embed_dimはnum_headsで割り切れる必要があります"
 
@@ -861,7 +870,7 @@ class QBNNAttention(nn.Module):
 
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Multi-Head Causal Self-Attention（QBNN拡張版）
+        Local Window Attention with QBNN補正
 
         Args:
             x: (batch, seq, embed_dim)
@@ -876,20 +885,28 @@ class QBNNAttention(nn.Module):
         K = self.k_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         V = self.v_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
+        # Local window attention: 各位置ごとに左側window_sizeまでのみ参照
         attn_scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
 
-        # QBNN拡張: 量子もつれ補正
+        # Local window mask (Causal + Window)
+        local_mask = torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool)
+        for i in range(seq_len):
+            # 位置iは、max(0, i-window_size+1)からiまでを参照可能
+            start = max(0, i - self.window_size + 1)
+            local_mask[i, :start] = False
+            local_mask[i, i+1:] = False
+
+        local_mask = local_mask.unsqueeze(0).unsqueeze(0)
+        attn_scores = attn_scores.masked_fill(~local_mask, float('-inf'))
+
+        # QBNN拡張: 量子もつれ補正 (局所ウィンドウ内で適用)
         Q_norm = torch.tanh(Q)
         K_norm = torch.tanh(K)
         delta = torch.einsum('bhid,hde,bhje->bhij', Q_norm, self.J_attn, K_norm)
         attn_scores = attn_scores + self.lambda_attn * delta
 
-        # Causal Mask
-        if mask is None:
-            causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
-            causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
-            attn_scores = attn_scores.masked_fill(causal_mask, float('-inf'))
-        else:
+        # Custom mask適用
+        if mask is not None:
             if mask.dim() == 2:
                 mask = mask.unsqueeze(0).unsqueeze(0)
             attn_scores = attn_scores.masked_fill(mask == 0, float('-inf'))
@@ -909,32 +926,40 @@ class QBNNAttention(nn.Module):
 
 class QBNNTransformerBlock(nn.Module):
     """
-    GPTデコーダーブロック（QBNN拡張版）
-    
-    GPT標準構造:
+    GPTデコーダーブロック（ハイブリッド QBNN + 局所Attention）
+
+    設計戦略:
+    - use_attention=True: Local Attention (補助) + QBNN (主役)
+    - use_attention=False: QBNN のみ (メモリ効率重視)
+
+    構造:
     1. Pre-norm LayerNorm
-    2. Multi-Head Causal Self-Attention (QBNN拡張)
+    2. [Optional] Multi-Head Local Attention (ウィンドウ=512)
     3. Residual Connection
     4. Pre-norm LayerNorm
     5. Feed-Forward Network (標準FFN + QBNN拡張)
     6. Residual Connection
     """
-    
-    def __init__(self, config: NeuroQuantumConfig):
+
+    def __init__(self, config: NeuroQuantumConfig, use_attention: bool = False, window_size: int = 512):
         super().__init__()
-        
+
         # Pre-norm LayerNorm
         self.norm1 = nn.LayerNorm(config.embed_dim)
         self.norm2 = nn.LayerNorm(config.embed_dim)
-        
-        # QBNN-Attention
-        self.attention = QBNNAttention(
-            embed_dim=config.embed_dim,
-            num_heads=config.num_heads,
-            dropout=config.dropout,
-            lambda_val=config.lambda_entangle
-        )
-        
+
+        self.use_attention = use_attention
+
+        # QBNN-Local Attention (補助的)
+        if use_attention:
+            self.attention = QBNNLocalAttention(
+                embed_dim=config.embed_dim,
+                num_heads=config.num_heads,
+                dropout=config.dropout,
+                lambda_val=config.lambda_entangle,
+                window_size=window_size
+            )
+
         # GPT標準FFN: Linear → GELU → Linear
         self.ffn_standard = nn.Sequential(
             nn.Linear(config.embed_dim, config.hidden_dim),
@@ -943,10 +968,10 @@ class QBNNTransformerBlock(nn.Module):
             nn.Linear(config.hidden_dim, config.embed_dim),
             nn.Dropout(config.dropout)
         )
-        
+
         # QBNN拡張FFN（個別レイヤーにアクセス可能にするため、Sequentialではなく個別に定義）
         self.ffn_qbnn_layer1 = QBNNLayer(
-            config.embed_dim, config.hidden_dim, 
+            config.embed_dim, config.hidden_dim,
             lambda_min=config.lambda_entangle * 0.5,
             lambda_max=config.lambda_entangle * 1.5
         )
@@ -956,42 +981,43 @@ class QBNNTransformerBlock(nn.Module):
             lambda_min=config.lambda_entangle * 0.5,
             lambda_max=config.lambda_entangle * 1.5
         )
-        
+
         self.dropout = nn.Dropout(config.dropout)
-    
+
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        GPTデコーダーフォワード
-        
+        GPTデコーダーフォワード (ハイブリッド QBNN + Local Attention)
+
         Args:
             x: (batch, seq, embed_dim)
             mask: Optional attention mask
-        
+
         Returns:
             (batch, seq, embed_dim)
         """
-        # 1. Pre-norm + Multi-Head Causal Self-Attention + Residual
-        residual = x
-        x = self.norm1(x)
-        attn_out = self.attention(x, mask)
-        x = residual + self.dropout(attn_out)
-        
+        # 1. [Optional] Pre-norm + Local Attention + Residual
+        if self.use_attention:
+            residual = x
+            x = self.norm1(x)
+            attn_out = self.attention(x, mask)
+            x = residual + self.dropout(attn_out)
+
         # 2. Pre-norm + Feed-Forward Network + Residual
         residual = x
         x = self.norm2(x)
-        
+
         # 標準FFN + QBNN拡張（ブレンド）
         ffn_standard_out = self.ffn_standard(x)
         # QBNN拡張FFN
         ffn_qbnn_out = self.ffn_qbnn_layer1(x)
         ffn_qbnn_out = self.ffn_qbnn_dropout(ffn_qbnn_out)
         ffn_qbnn_out = self.ffn_qbnn_layer2(ffn_qbnn_out)
-        
+
         # ブレンド比率: 標準FFN 70% + QBNN拡張 30%
         ffn_out = 0.7 * ffn_standard_out + 0.3 * ffn_qbnn_out
-        
+
         x = residual + ffn_out
-        
+
         return x
 
 
@@ -1583,11 +1609,19 @@ class NeuroQuantum(nn.Module):
         self.dropout = self.embedding_dropout  # 後方互換性
         
         # ========================================
-        # [4-9] Transformerブロック × N回
+        # [4-9] ハイブリッドTransformerブロック × N回
         # ========================================
-        self.transformer_blocks = nn.ModuleList([
-            QBNNTransformerBlock(config) for _ in range(config.num_layers)
-        ])
+        # 戦略: Global Attention は 0層と中層のみ、他はQBNN
+        self.transformer_blocks = nn.ModuleList()
+        for i in range(config.num_layers):
+            # Global Attention: 層0と層num_layers//2のみ使用
+            use_attn = (i == 0) or (i == config.num_layers // 2)
+            block = QBNNTransformerBlock(
+                config,
+                use_attention=use_attn,
+                window_size=config.attention_window_size
+            )
+            self.transformer_blocks.append(block)
         
         # ========================================
         # [10] 最後のLayerNorm (Final LayerNorm)
@@ -1724,18 +1758,21 @@ class NeuroQuantum(nn.Module):
         for block_idx, block in enumerate(self.transformer_blocks):
             h_input = hidden_states.clone() if verbose else None
             hidden_states = block(hidden_states, mask)
-            
+
             if verbose:
                 logger.info(f"[Block {block_idx + 1}/{self.config.num_layers}]")
                 logger.info(f"  - 入力: mean={h_input.mean().item():.4f}, std={h_input.std().item():.4f}")
                 logger.info(f"  - 出力: mean={hidden_states.mean().item():.4f}, std={hidden_states.std().item():.4f}")
-                
-                # QBNN量子統計情報
-                try:
-                    lambda_attn = block.attention.lambda_attn.item()
-                    logger.info(f"  - QBNN Attention λ: {lambda_attn:.4f}")
-                except Exception as e:
-                    logger.debug(f"  - 量子統計取得エラー: {e}")
+
+                # Attentionの状態を表示
+                if block.use_attention:
+                    try:
+                        lambda_attn = block.attention.lambda_attn.item()
+                        logger.info(f"  - Local Attention λ: {lambda_attn:.4f}")
+                    except Exception as e:
+                        logger.debug(f"  - Attention統計取得エラー: {e}")
+                else:
+                    logger.info(f"  - Mode: QBNN Only")
         
         # ========================================
         # [10] 最後のLayerNorm (Final LayerNorm)
@@ -1959,8 +1996,13 @@ class NeuroQuantum(nn.Module):
         for i, block in enumerate(self.transformer_blocks):
             block_info = {
                 'block': i,
-                'attn_lambda': block.attention.lambda_attn.item(),
+                'has_attention': block.use_attention,
             }
+            if block.use_attention:
+                try:
+                    block_info['attn_lambda'] = block.attention.lambda_attn.item()
+                except:
+                    pass
             info.append(block_info)
         return info
 
