@@ -225,6 +225,40 @@ def train_epoch(
     return total_loss / max(n_batches, 1)
 
 
+def merge_checkpoint_to_main(intermediate_ckpt_path: str, main_ckpt_path: str):
+    """中間チェックポイントをメインチェックポイントにマージする。
+
+    Args:
+        intermediate_ckpt_path: 中間チェックポイントのパス
+        main_ckpt_path: メインチェックポイントのパス
+    """
+    intermediate_ckpt = torch.load(intermediate_ckpt_path, map_location="cpu")
+
+    main_ckpt = None
+    if os.path.isfile(main_ckpt_path):
+        main_ckpt = torch.load(main_ckpt_path, map_location="cpu")
+
+    merged_ckpt = {
+        "model_state": intermediate_ckpt.get("model_state"),
+        "optimizer_state": intermediate_ckpt.get("optimizer_state"),
+        "config": intermediate_ckpt.get("config"),
+        "batch": intermediate_ckpt.get("batch"),
+        "epoch": intermediate_ckpt.get("epoch"),
+        "loss": intermediate_ckpt.get("loss"),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if main_ckpt:
+        prev_log = main_ckpt.get("training_log", [])
+        current_log = intermediate_ckpt.get("training_log", [])
+        merged_ckpt["training_log"] = prev_log + current_log
+    else:
+        merged_ckpt["training_log"] = intermediate_ckpt.get("training_log", [])
+
+    torch.save(merged_ckpt, main_ckpt_path)
+    progress.info(f"Checkpoint merged to: {main_ckpt_path}")
+
+
 def upload_checkpoint_to_hf(ckpt_path: str, repo_id: str, hf_token: str, tokenizer_path: str | None = None):
     """チェックポイントを HuggingFace Hub にアップロードする。"""
     from huggingface_hub import HfApi
@@ -472,6 +506,7 @@ def main():
             )
             torch.save(checkpoint, intermediate_ckpt_path)
             progress.info(f"Checkpoint saved: {intermediate_ckpt_path}")
+            merge_checkpoint_to_main(intermediate_ckpt_path, ckpt_path)
         else:
             # エポック終了時と最終チェックポイントはメインパスに保存
             torch.save(checkpoint, ckpt_path)
