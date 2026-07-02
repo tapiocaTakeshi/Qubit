@@ -178,6 +178,8 @@ def train_epoch(
     device,
     save_every=0,
     on_save=None,
+    gradient_accumulation_steps=1,
+    use_bf16=False,
 ):
     import random
 
@@ -185,6 +187,7 @@ def train_epoch(
     random.shuffle(sequences)
     total_loss = 0.0
     n_batches = 0
+    accumulation_counter = 0
 
     for i in range(0, len(sequences), batch_size):
         batch = sequences[i : i + batch_size]
@@ -201,21 +204,27 @@ def train_epoch(
         input_ids = torch.tensor(input_ids, dtype=torch.long, device=device)
         labels_t = torch.tensor(labels, dtype=torch.long, device=device)
 
-        logits = model(input_ids)
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels_t[..., 1:].contiguous()
-        loss = F.cross_entropy(
-            shift_logits.view(-1, model.config.vocab_size),
-            shift_labels.view(-1),
-            ignore_index=-100,
-        )
+        with torch.cuda.amp.autocast(enabled=use_bf16, dtype=torch.bfloat16 if use_bf16 else torch.float32):
+            logits = model(input_ids)
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels_t[..., 1:].contiguous()
+            loss = F.cross_entropy(
+                shift_logits.view(-1, model.config.vocab_size),
+                shift_labels.view(-1),
+                ignore_index=-100,
+            )
+            loss = loss / gradient_accumulation_steps
 
-        optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
+        accumulation_counter += 1
 
-        total_loss += loss.item()
+        if accumulation_counter >= gradient_accumulation_steps:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            optimizer.zero_grad()
+            accumulation_counter = 0
+
+        total_loss += loss.item() * gradient_accumulation_steps
         n_batches += 1
         if n_batches % 25 == 0:
             progress.log_batch(epoch=epoch + 1, batch=n_batches, loss=total_loss / n_batches)
@@ -225,6 +234,11 @@ def train_epoch(
                 f"[checkpoint] epoch {epoch + 1} batch {n_batches} avg_loss={avg:.4f} を保存中..."
             )
             on_save(epoch=epoch, batch=n_batches, loss=avg)
+
+    if accumulation_counter > 0:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        optimizer.zero_grad()
 
     return total_loss / max(n_batches, 1)
 
@@ -322,6 +336,9 @@ def parse_args():
     p.add_argument("--vocab-size", type=int, default=32000)
     p.add_argument("--batch-size", type=int, default=None, help="未指定ならモデル設定の値を使用")
     p.add_argument("--max-seq-len", type=int, default=None, help="未指定ならモデル設定の値を使用")
+    p.add_argument("--gradient-accumulation-steps", type=int, default=8, help="勾配蓄積ステップ (VRAMを増やさずに実効バッチを増加)")
+    p.add_argument("--use-bf16", action="store_true", default=True, help="BF16 混合精度学習を使用")
+    p.add_argument("--gradient-checkpointing", action="store_true", default=True, help="勾配チェックポイント（メモリ削減）を使用")
     p.add_argument(
         "--ckpt-name",
         default=None,
@@ -389,7 +406,11 @@ def main():
     CONFIG = get_model_config_by_size(args.model_size, vocab_size=args.vocab_size)
     batch_size = args.batch_size or CONFIG["batch_size"]
     max_seq_len = args.max_seq_len or CONFIG["max_seq_len"]
+    gradient_accumulation_steps = args.gradient_accumulation_steps
+    use_bf16 = args.use_bf16
+    gradient_checkpointing = args.gradient_checkpointing
     progress.info(f"Model size: {args.model_size} (params: embed_dim={CONFIG['embed_dim']}, hidden_dim={CONFIG['hidden_dim']}, num_layers={CONFIG['num_layers']})")
+    progress.info(f"Training config: batch_size={batch_size}, max_seq_len={max_seq_len}, gradient_accumulation_steps={gradient_accumulation_steps}, use_bf16={use_bf16}, gradient_checkpointing={gradient_checkpointing}")
 
     # ---- split の自動検出 ----
     split = args.split or auto_detect_split(args.dataset_id)
@@ -537,6 +558,8 @@ def main():
             device,
             save_every=args.save_every,
             on_save=save_checkpoint,
+            gradient_accumulation_steps=gradient_accumulation_steps,
+            use_bf16=use_bf16,
         )
         scheduler.step()
         training_log.append({"epoch": epoch, "avg_loss": avg_loss})

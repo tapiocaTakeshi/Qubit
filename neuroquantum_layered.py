@@ -169,6 +169,8 @@ class NeuroQuantumConfig:
         attention_window: int = 512,
         dropout: float = 0.1,
         lambda_entangle: float = 0.5,  # QBNNもつれ強度
+        gradient_checkpointing: bool = True,
+        use_bf16: bool = True,
     ):
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
@@ -179,6 +181,8 @@ class NeuroQuantumConfig:
         self.attention_window = attention_window
         self.dropout = dropout
         self.lambda_entangle = lambda_entangle
+        self.gradient_checkpointing = gradient_checkpointing
+        self.use_bf16 = use_bf16
 
 
 def detect_gpu_tier() -> Tuple[str, str, dict]:
@@ -611,10 +615,10 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "hidden_dim": 2048,
             "num_heads": 16,
             "num_layers": 10,
-            "max_seq_len": 1024,
+            "max_seq_len": 512,
             "dropout": 0.1,
             "entangle_strength": 0.5,
-            "batch_size": 8,
+            "batch_size": 1,
             "vocab_size": vocab_size,
         },
         "xlarge": {
