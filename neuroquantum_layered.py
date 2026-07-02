@@ -186,7 +186,7 @@ def detect_gpu_tier() -> Tuple[str, str, dict]:
 
     Returns:
         (tier, device_name, gpu_info):
-            tier: "mega" | "ultra" | "high" | "mid" | "low" | "cpu"
+            tier: "billion_70b" | "billion_30b" | "billion_13b" | "billion_7b" | "billion_3b" | "billion_1b" | "mega" | "ultra" | "high" | "mid" | "low" | "cpu"
             device_name: デバイス名の文字列
             gpu_info: VRAM・RAM等の詳細情報
     """
@@ -208,36 +208,56 @@ def detect_gpu_tier() -> Tuple[str, str, dict]:
         gpu_info["vram_gb"] = round(vram_gb, 1)
         gpu_info["compute_capability"] = f"{major}.{minor}"
 
-        if vram_gb >= 80:
-            return "mega", device_name, gpu_info
+        if vram_gb >= 240:
+            return "billion_70b", device_name, gpu_info
+        elif vram_gb >= 120:
+            return "billion_30b", device_name, gpu_info
+        elif vram_gb >= 80:
+            return "billion_13b", device_name, gpu_info
         elif vram_gb >= 40:
+            return "billion_7b", device_name, gpu_info
+        elif vram_gb >= 20:
+            return "billion_3b", device_name, gpu_info
+        elif vram_gb >= 10:
+            return "billion_1b", device_name, gpu_info
+        elif vram_gb >= 6:
+            return "mega", device_name, gpu_info
+        elif vram_gb >= 3:
             return "ultra", device_name, gpu_info
-        elif vram_gb >= 16:
+        elif vram_gb >= 1.5:
             return "high", device_name, gpu_info
-        elif vram_gb >= 8:
-            return "mid", device_name, gpu_info
         else:
-            return "low", device_name, gpu_info
+            return "mid", device_name, gpu_info
 
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         gpu_info["device_type"] = "mps"
         device_name = "Apple Silicon (MPS)"
         # Apple Siliconは統合メモリ — RAMに基づいてティアを判定
-        if ram_gb >= 64:
-            return "high", device_name, gpu_info
+        if ram_gb >= 120:
+            return "billion_7b", device_name, gpu_info
+        elif ram_gb >= 64:
+            return "mega", device_name, gpu_info
         elif ram_gb >= 32:
+            return "high", device_name, gpu_info
+        elif ram_gb >= 16:
             return "mid", device_name, gpu_info
         else:
             return "low", device_name, gpu_info
 
     # CPU専用: RAMに基づいてティアを判定
-    if ram_gb >= 128:
-        return "mega", "CPU", gpu_info
+    if ram_gb >= 512:
+        return "billion_70b", "CPU", gpu_info
+    elif ram_gb >= 256:
+        return "billion_30b", "CPU", gpu_info
+    elif ram_gb >= 128:
+        return "billion_13b", "CPU", gpu_info
     elif ram_gb >= 64:
-        return "mid", "CPU", gpu_info
+        return "billion_3b", "CPU", gpu_info
     elif ram_gb >= 32:
-        return "low", "CPU", gpu_info
-    return "cpu", "CPU", gpu_info
+        return "mega", "CPU", gpu_info
+    elif ram_gb >= 16:
+        return "mid", "CPU", gpu_info
+    return "low", "CPU", gpu_info
 
 
 def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
@@ -246,15 +266,21 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
 
     ティア判定の基準:
         GPU環境:
-            mega  (VRAM >= 80GB): 数百MB規模モデル - メガスケール
-            ultra (VRAM >= 40GB): A100最大設定 - 超大規模モデル
-            high  (VRAM >= 16GB): フル設定 - 大規模モデル
-            mid   (VRAM >= 8GB):  中規模設定
-            low   (VRAM < 8GB):   軽量設定
+            billion_70b  (VRAM >= 240GB): 70Bパラメータモデル
+            billion_30b  (VRAM >= 120GB): 30Bパラメータモデル
+            billion_13b  (VRAM >= 80GB):  13Bパラメータモデル
+            billion_7b   (VRAM >= 40GB):  7Bパラメータモデル
+            billion_3b   (VRAM >= 20GB):  3Bパラメータモデル
+            billion_1b   (VRAM >= 10GB):  1Bパラメータモデル
+            mega         (VRAM >= 6GB):   数百MB規模モデル
+            ultra        (VRAM >= 3GB):   超大規模モデル
+            high         (VRAM >= 1.5GB): 大規模モデル
+            mid          (VRAM < 1.5GB):  中規模設定
         MPS (Apple Silicon):
             統合メモリ(RAM)に基づいてティアを判定
         CPU環境:
-            RAM >= 128GB → mega, RAM >= 64GB → mid, RAM >= 32GB → low, それ以下 → cpu
+            RAM >= 512GB → 70B, RAM >= 256GB → 30B, RAM >= 128GB → 13B,
+            RAM >= 64GB → 3B, RAM >= 32GB → mega, RAM >= 16GB → mid, それ以下 → low
 
     RAMによる追加調整:
         GPU環境でもRAMが潤沢な場合、batch_size や max_seq_len を増加。
@@ -268,6 +294,66 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
 
     # ティア別のベースニューロン数設定
     TIER_CONFIGS = {
+        "billion_70b": {
+            "embed_dim": 8192,
+            "hidden_dim": 28672,
+            "num_heads": 64,
+            "num_layers": 80,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 1,
+        },
+        "billion_30b": {
+            "embed_dim": 6656,
+            "hidden_dim": 17920,
+            "num_heads": 52,
+            "num_layers": 48,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 1,
+        },
+        "billion_13b": {
+            "embed_dim": 5120,
+            "hidden_dim": 13824,
+            "num_heads": 40,
+            "num_layers": 40,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 2,
+        },
+        "billion_7b": {
+            "embed_dim": 4096,
+            "hidden_dim": 11008,
+            "num_heads": 32,
+            "num_layers": 32,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 2,
+        },
+        "billion_3b": {
+            "embed_dim": 2560,
+            "hidden_dim": 6912,
+            "num_heads": 20,
+            "num_layers": 26,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 4,
+        },
+        "billion_1b": {
+            "embed_dim": 1792,
+            "hidden_dim": 4864,
+            "num_heads": 16,
+            "num_layers": 24,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 8,
+        },
         "mega": {
             "embed_dim": 1280,
             "hidden_dim": 3072,
@@ -420,13 +506,82 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
     モデルサイズに基づいて最適なニューロン数・モデル設定を返す。
 
     Args:
-        size: モデルサイズ ("megabyte_500mb" | "megabyte_300mb" | "megabyte_100mb" | "xlarge" | "large" | "medium" | "small")
+        size: モデルサイズ
+            ビリオンスケール: "billion_70b" | "billion_30b" | "billion_13b" | "billion_7b" | "billion_3b" | "billion_1b"
+            メガスケール: "megabyte_500mb" | "megabyte_300mb" | "megabyte_100mb"
+            その他: "xlarge" | "large" | "medium" | "small"
         vocab_size: 語彙サイズ
 
     Returns:
         dict: モデル設定パラメータを含む辞書
     """
     SIZE_CONFIGS = {
+        "billion_70b": {
+            "embed_dim": 8192,
+            "hidden_dim": 28672,
+            "num_heads": 64,
+            "num_layers": 80,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 1,
+            "vocab_size": vocab_size,
+        },
+        "billion_30b": {
+            "embed_dim": 6656,
+            "hidden_dim": 17920,
+            "num_heads": 52,
+            "num_layers": 48,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 1,
+            "vocab_size": vocab_size,
+        },
+        "billion_13b": {
+            "embed_dim": 5120,
+            "hidden_dim": 13824,
+            "num_heads": 40,
+            "num_layers": 40,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 2,
+            "vocab_size": vocab_size,
+        },
+        "billion_7b": {
+            "embed_dim": 4096,
+            "hidden_dim": 11008,
+            "num_heads": 32,
+            "num_layers": 32,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 2,
+            "vocab_size": vocab_size,
+        },
+        "billion_3b": {
+            "embed_dim": 2560,
+            "hidden_dim": 6912,
+            "num_heads": 20,
+            "num_layers": 26,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 4,
+            "vocab_size": vocab_size,
+        },
+        "billion_1b": {
+            "embed_dim": 1792,
+            "hidden_dim": 4864,
+            "num_heads": 16,
+            "num_layers": 24,
+            "max_seq_len": 16384,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 8,
+            "vocab_size": vocab_size,
+        },
         "megabyte_500mb": {
             "embed_dim": 1536,
             "hidden_dim": 4096,
