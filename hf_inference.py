@@ -3,9 +3,11 @@
 HuggingFace Inference Endpoint client for neuroQ.
 
 Usage:
-    python hf_inference.py "あなたの質問"
-    python hf_inference.py --interactive
-    python hf_inference.py --prompt "質問内容" --max_new_tokens 200 --temperature 0.8
+    python hf_inference.py infer "あなたの質問"
+    python hf_inference.py infer "質問内容" --model-size medium --max_new_tokens 200
+    python hf_inference.py chat
+    python hf_inference.py chat --model-size large
+    python hf_inference.py train --action train_qa_dataset --model-size small
 """
 
 import argparse
@@ -139,6 +141,8 @@ def main():
     # --- infer (default) ---
     p_infer = sub.add_parser("infer", help="Run inference")
     p_infer.add_argument("prompt", help="Prompt text")
+    p_infer.add_argument("--model-size", default="small",
+                         help="Model size: small, medium, large, xlarge, megabyte_100mb, megabyte_300mb, megabyte_500mb, billion_1b, billion_3b, billion_7b, billion_13b, billion_30b, billion_70b (default: small)")
     p_infer.add_argument("--max_new_tokens", type=int, default=100)
     p_infer.add_argument("--temperature", type=float, default=0.7)
     p_infer.add_argument("--top_k", type=int, default=40)
@@ -148,6 +152,8 @@ def main():
 
     # --- interactive ---
     p_int = sub.add_parser("chat", help="Interactive chat mode")
+    p_int.add_argument("--model-size", default="small",
+                       help="Model size: small, medium, large, xlarge, megabyte_100mb, megabyte_300mb, megabyte_500mb, billion_1b, billion_3b, billion_7b, billion_13b, billion_30b, billion_70b (default: small)")
     p_int.add_argument("--max_new_tokens", type=int, default=100)
     p_int.add_argument("--temperature", type=float, default=0.7)
     p_int.add_argument("--top_k", type=int, default=40)
@@ -159,6 +165,8 @@ def main():
     p_train.add_argument("--action", default="train_qa_dataset",
                          choices=["train", "train_qa", "train_qa_dataset", "train_split", "train_split_next"],
                          help="Training action (default: train_qa_dataset)")
+    p_train.add_argument("--model-size", default="small",
+                         help="Model size: small, medium, large, xlarge, megabyte_100mb, megabyte_300mb, megabyte_500mb, billion_1b, billion_3b, billion_7b, billion_13b, billion_30b, billion_70b (default: small)")
     p_train.add_argument("--epochs", type=int, default=None)
     p_train.add_argument("--lr", type=float, default=None)
     p_train.add_argument("--batch_size", type=int, default=None)
@@ -188,9 +196,11 @@ def main():
         print(json.dumps(result, indent=2, ensure_ascii=False))
 
     elif args.command == "chat":
+        print(f"Model size: {args.model_size}")
         interactive_mode(args)
 
     elif args.command == "infer":
+        print(f"Model size: {args.model_size}")
         result = infer(
             args.prompt,
             max_new_tokens=args.max_new_tokens,
@@ -207,11 +217,11 @@ def main():
     elif args.command == "train":
         params = {}
         for key in ("epochs", "lr", "batch_size", "grad_accum_steps", "warmup_steps",
-                     "max_samples_per_dataset", "dataset_id"):
+                     "max_samples_per_dataset", "dataset_id", "model_size"):
             val = getattr(args, key, None)
             if val is not None:
                 params[key] = val
-        print(f"Starting training (action={args.action})...")
+        print(f"Starting training (action={args.action}, model_size={args.model_size})...")
         result = train(action=args.action, **params)
         print(json.dumps(result, indent=2, ensure_ascii=False))
 
