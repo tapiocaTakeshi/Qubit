@@ -11,6 +11,9 @@ from dataset_utils import safe_load_dataset, sync_checkpoint_to_network_volume
 from datetime import datetime, timezone
 import json
 
+# Memory optimization for large model training
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
 sys.path.insert(0, os.path.dirname(__file__))
 from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, get_gpu_adaptive_config
 from progress_logger import ProgressLogger
@@ -32,6 +35,9 @@ EPOCHS = 3
 LR = 5e-4
 BATCH_SIZE = CONFIG["batch_size"]
 MAX_SEQ_LEN = CONFIG["max_seq_len"]
+GRADIENT_ACCUMULATION_STEPS = 8
+USE_GRADIENT_CHECKPOINTING = True
+USE_BF16 = True
 
 
 def extract_texts(ds, text_column, max_samples):
@@ -94,14 +100,20 @@ def tokenize_texts(texts, tokenizer, max_seq_len):
 
 
 def train_epoch(model, sequences, tokenizer, optimizer, epoch, device):
-    """Train one epoch."""
+    """Train one epoch with gradient accumulation."""
     model.train()
     total_loss = 0
     n_batches = 0
+    accumulated_loss = 0
+    accumulation_step = 0
 
     # Shuffle
     import random
     random.shuffle(sequences)
+
+    # Enable gradient checkpointing for memory efficiency
+    if USE_GRADIENT_CHECKPOINTING and hasattr(model, 'gradient_checkpointing_enable'):
+        model.gradient_checkpointing_enable()
 
     for i in range(0, len(sequences), BATCH_SIZE):
         batch_seqs = sequences[i:i + BATCH_SIZE]
@@ -120,29 +132,59 @@ def train_epoch(model, sequences, tokenizer, optimizer, epoch, device):
             input_ids.append(ids)
             labels.append(lbl)
 
-        input_ids = torch.tensor(input_ids, dtype=torch.long, device=device)
-        labels_t = torch.tensor(labels, dtype=torch.long, device=device)
+        # Convert to appropriate dtype
+        if USE_BF16:
+            input_ids = torch.tensor(input_ids, dtype=torch.long, device=device)
+            labels_t = torch.tensor(labels, dtype=torch.long, device=device)
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+                logits = model(input_ids)
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels_t[..., 1:].contiguous()
+                loss = F.cross_entropy(
+                    shift_logits.view(-1, model.config.vocab_size),
+                    shift_labels.view(-1),
+                    ignore_index=-100
+                )
+        else:
+            input_ids = torch.tensor(input_ids, dtype=torch.long, device=device)
+            labels_t = torch.tensor(labels, dtype=torch.long, device=device)
+            logits = model(input_ids)
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels_t[..., 1:].contiguous()
+            loss = F.cross_entropy(
+                shift_logits.view(-1, model.config.vocab_size),
+                shift_labels.view(-1),
+                ignore_index=-100
+            )
 
-        logits = model(input_ids)
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels_t[..., 1:].contiguous()
-        loss = F.cross_entropy(
-            shift_logits.view(-1, model.config.vocab_size),
-            shift_labels.view(-1),
-            ignore_index=-100
-        )
-
-        optimizer.zero_grad()
+        # Gradient accumulation
+        loss = loss / GRADIENT_ACCUMULATION_STEPS
         loss.backward()
+        accumulated_loss += loss.item()
+        accumulation_step += 1
+
+        # Update weights every GRADIENT_ACCUMULATION_STEPS
+        if accumulation_step == GRADIENT_ACCUMULATION_STEPS:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            optimizer.zero_grad()
+
+            total_loss += accumulated_loss
+            accumulated_loss = 0
+            accumulation_step = 0
+            n_batches += 1
+
+            if n_batches % 50 == 0:
+                avg = total_loss / n_batches
+                progress.log_batch(epoch=epoch + 1, batch=n_batches, loss=avg)
+
+    # Handle remaining accumulated gradients
+    if accumulation_step > 0:
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
-
-        total_loss += loss.item()
+        optimizer.zero_grad()
+        total_loss += accumulated_loss
         n_batches += 1
-
-        if n_batches % 50 == 0:
-            avg = total_loss / n_batches
-            progress.log_batch(epoch=epoch + 1, batch=n_batches, loss=avg)
 
     return total_loss / max(n_batches, 1)
 

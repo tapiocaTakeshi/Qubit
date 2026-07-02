@@ -37,6 +37,9 @@ import sys
 from datetime import datetime, timezone
 from typing import Optional
 
+# Memory optimization for large model training
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
 import torch
 import torch.nn.functional as F
 
@@ -178,6 +181,9 @@ def train_epoch(
     device,
     save_every=0,
     on_save=None,
+    gradient_accumulation_steps=8,
+    use_bf16=True,
+    use_gradient_checkpointing=True,
 ):
     import random
 
@@ -185,6 +191,12 @@ def train_epoch(
     random.shuffle(sequences)
     total_loss = 0.0
     n_batches = 0
+    accumulated_loss = 0.0
+    accumulation_step = 0
+
+    # Enable gradient checkpointing for memory efficiency
+    if use_gradient_checkpointing and hasattr(model, 'gradient_checkpointing_enable'):
+        model.gradient_checkpointing_enable()
 
     for i in range(0, len(sequences), batch_size):
         batch = sequences[i : i + batch_size]
@@ -201,30 +213,60 @@ def train_epoch(
         input_ids = torch.tensor(input_ids, dtype=torch.long, device=device)
         labels_t = torch.tensor(labels, dtype=torch.long, device=device)
 
-        logits = model(input_ids)
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels_t[..., 1:].contiguous()
-        loss = F.cross_entropy(
-            shift_logits.view(-1, model.config.vocab_size),
-            shift_labels.view(-1),
-            ignore_index=-100,
-        )
+        # Compute loss with optional BF16 precision
+        if use_bf16:
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+                logits = model(input_ids)
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels_t[..., 1:].contiguous()
+                loss = F.cross_entropy(
+                    shift_logits.view(-1, model.config.vocab_size),
+                    shift_labels.view(-1),
+                    ignore_index=-100,
+                )
+        else:
+            logits = model(input_ids)
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels_t[..., 1:].contiguous()
+            loss = F.cross_entropy(
+                shift_logits.view(-1, model.config.vocab_size),
+                shift_labels.view(-1),
+                ignore_index=-100,
+            )
 
-        optimizer.zero_grad()
+        # Gradient accumulation
+        loss = loss / gradient_accumulation_steps
         loss.backward()
+        accumulated_loss += loss.item()
+        accumulation_step += 1
+
+        # Update weights every gradient_accumulation_steps
+        if accumulation_step == gradient_accumulation_steps:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            optimizer.zero_grad()
+
+            total_loss += accumulated_loss
+            accumulated_loss = 0.0
+            accumulation_step = 0
+            n_batches += 1
+
+            if n_batches % 25 == 0:
+                progress.log_batch(epoch=epoch + 1, batch=n_batches, loss=total_loss / n_batches)
+            if save_every and on_save and n_batches % save_every == 0:
+                avg = total_loss / max(n_batches, 1)
+                progress.info(
+                    f"[checkpoint] epoch {epoch + 1} batch {n_batches} avg_loss={avg:.4f} を保存中..."
+                )
+                on_save(epoch=epoch, batch=n_batches, loss=avg)
+
+    # Handle remaining accumulated gradients
+    if accumulation_step > 0:
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
-
-        total_loss += loss.item()
+        optimizer.zero_grad()
+        total_loss += accumulated_loss
         n_batches += 1
-        if n_batches % 25 == 0:
-            progress.log_batch(epoch=epoch + 1, batch=n_batches, loss=total_loss / n_batches)
-        if save_every and on_save and n_batches % save_every == 0:
-            avg = total_loss / max(n_batches, 1)
-            progress.info(
-                f"[checkpoint] epoch {epoch + 1} batch {n_batches} avg_loss={avg:.4f} を保存中..."
-            )
-            on_save(epoch=epoch, batch=n_batches, loss=avg)
 
     return total_loss / max(n_batches, 1)
 
@@ -537,6 +579,9 @@ def main():
             device,
             save_every=args.save_every,
             on_save=save_checkpoint,
+            gradient_accumulation_steps=8,
+            use_bf16=True,
+            use_gradient_checkpointing=True,
         )
         scheduler.step()
         training_log.append({"epoch": epoch, "avg_loss": avg_loss})
