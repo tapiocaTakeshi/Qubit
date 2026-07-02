@@ -165,7 +165,8 @@ class NeuroQuantumConfig:
         hidden_dim: int = 1024,
         num_heads: int = 8,
         num_layers: int = 6,
-        max_seq_len: int = 10000,
+        max_seq_len: int = 1024,
+        attention_window: int = 512,
         dropout: float = 0.1,
         lambda_entangle: float = 0.5,  # QBNNもつれ強度
     ):
@@ -175,6 +176,7 @@ class NeuroQuantumConfig:
         self.num_heads = num_heads
         self.num_layers = num_layers
         self.max_seq_len = max_seq_len
+        self.attention_window = attention_window
         self.dropout = dropout
         self.lambda_entangle = lambda_entangle
 
@@ -299,7 +301,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             "hidden_dim": 28672,
             "num_heads": 64,
             "num_layers": 80,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 1,
@@ -309,7 +311,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             "hidden_dim": 17920,
             "num_heads": 52,
             "num_layers": 48,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 1,
@@ -319,7 +321,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             "hidden_dim": 13824,
             "num_heads": 40,
             "num_layers": 40,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 2,
@@ -329,7 +331,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             "hidden_dim": 11008,
             "num_heads": 32,
             "num_layers": 32,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 2,
@@ -339,7 +341,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             "hidden_dim": 6912,
             "num_heads": 20,
             "num_layers": 26,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 4,
@@ -349,7 +351,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             "hidden_dim": 4864,
             "num_heads": 16,
             "num_layers": 24,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 8,
@@ -359,7 +361,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             "hidden_dim": 3072,
             "num_heads": 16,
             "num_layers": 16,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 4,
@@ -369,7 +371,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             "hidden_dim": 2048,
             "num_heads": 12,
             "num_layers": 12,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 16,
@@ -379,7 +381,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             "hidden_dim": 1024,
             "num_heads": 8,
             "num_layers": 6,
-            "max_seq_len": 10000,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 8,
@@ -389,7 +391,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             "hidden_dim": 768,
             "num_heads": 8,
             "num_layers": 6,
-            "max_seq_len": 10000,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 4,
@@ -399,7 +401,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             "hidden_dim": 512,
             "num_heads": 8,
             "num_layers": 4,
-            "max_seq_len": 4096,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 2,
@@ -409,7 +411,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             "hidden_dim": 256,
             "num_heads": 4,
             "num_layers": 3,
-            "max_seq_len": 2048,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 1,
@@ -427,7 +429,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             config["hidden_dim"] = 1024
             config["num_heads"] = 8
             config["num_layers"] = 6
-            config["max_seq_len"] = 10000
+            config["max_seq_len"] = 1024
             config["batch_size"] = 4
         elif ram_gb >= 64:
             # mid ティア（detect_gpu_tier で判定済み）— さらに微調整
@@ -435,7 +437,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             config["hidden_dim"] = 768
             config["num_heads"] = 8
             config["num_layers"] = 6
-            config["max_seq_len"] = 10000
+            config["max_seq_len"] = 1024
             config["batch_size"] = 2
         elif ram_gb >= 32:
             # low ティア（detect_gpu_tier で判定済み）
@@ -443,7 +445,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             config["hidden_dim"] = 512
             config["num_heads"] = 8
             config["num_layers"] = 4
-            config["max_seq_len"] = 4096
+            config["max_seq_len"] = 1024
             config["batch_size"] = 2
         elif ram_gb >= 16:
             # RAM 16GB: cpu デフォルトより少し大きめ
@@ -451,7 +453,7 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             config["hidden_dim"] = 384
             config["num_heads"] = 4
             config["num_layers"] = 3
-            config["max_seq_len"] = 2048
+            config["max_seq_len"] = 1024
             config["batch_size"] = 1
         # ram_gb < 16: デフォルトの cpu ティア設定をそのまま使用
 
@@ -462,11 +464,11 @@ def get_gpu_adaptive_config(vocab_size: int = 32000) -> dict:
             config["hidden_dim"] = 1024
             config["num_heads"] = 8
             config["num_layers"] = 6
-            config["max_seq_len"] = 10000
+            config["max_seq_len"] = 1024
             config["batch_size"] = 8
         elif ram_gb >= 32:
             config["batch_size"] = min(config["batch_size"] + 2, 8)
-            config["max_seq_len"] = 10000
+            config["max_seq_len"] = 1024
 
     else:
         # CUDA GPU環境: RAMが十分にある場合、batch_size を増加
@@ -521,7 +523,7 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "hidden_dim": 28672,
             "num_heads": 64,
             "num_layers": 80,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 1,
@@ -532,7 +534,7 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "hidden_dim": 17920,
             "num_heads": 52,
             "num_layers": 48,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 1,
@@ -543,7 +545,7 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "hidden_dim": 13824,
             "num_heads": 40,
             "num_layers": 40,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 2,
@@ -554,7 +556,7 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "hidden_dim": 11008,
             "num_heads": 32,
             "num_layers": 32,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 2,
@@ -565,7 +567,7 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "hidden_dim": 6912,
             "num_heads": 20,
             "num_layers": 26,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 4,
@@ -576,7 +578,7 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "hidden_dim": 4864,
             "num_heads": 16,
             "num_layers": 24,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 8,
@@ -587,7 +589,7 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "hidden_dim": 4096,
             "num_heads": 16,
             "num_layers": 20,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 2,
@@ -598,7 +600,7 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "hidden_dim": 3072,
             "num_heads": 16,
             "num_layers": 16,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 4,
@@ -609,7 +611,7 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "hidden_dim": 2048,
             "num_heads": 16,
             "num_layers": 10,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 8,
@@ -620,7 +622,7 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "hidden_dim": 2048,
             "num_heads": 12,
             "num_layers": 12,
-            "max_seq_len": 16384,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 16,
@@ -631,7 +633,7 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "hidden_dim": 1024,
             "num_heads": 8,
             "num_layers": 6,
-            "max_seq_len": 10000,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 8,
@@ -642,7 +644,7 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "hidden_dim": 512,
             "num_heads": 8,
             "num_layers": 4,
-            "max_seq_len": 4096,
+            "max_seq_len": 1024,
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 4,
@@ -830,6 +832,109 @@ class QBNNLayer(nn.Module):
 
 
 # ========================================
+# Part 1.5: Local Attention (Limited Attention)
+# ========================================
+
+class LocalAttention(nn.Module):
+    """
+    Local Attention (Restricted Window Attention)
+
+    遠くの単語を見る必要性をサポートしながら、
+    メモリ効率を保つための限定的なAttention実装。
+
+    固定ウィンドウ内のみで Self-Attention を計算。
+    """
+
+    def __init__(self, embed_dim: int, num_heads: int, attention_window: int = 512, dropout: float = 0.1):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.attention_window = attention_window
+        self.head_dim = embed_dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        assert embed_dim % num_heads == 0, f"embed_dim ({embed_dim}) must be divisible by num_heads ({num_heads})"
+
+        self.q_proj = nn.Linear(embed_dim, embed_dim)
+        self.k_proj = nn.Linear(embed_dim, embed_dim)
+        self.v_proj = nn.Linear(embed_dim, embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Local Self-Attention with limited window
+
+        Args:
+            x: (batch, seq_len, embed_dim)
+            mask: Optional causal mask
+
+        Returns:
+            output: (batch, seq_len, embed_dim)
+        """
+        batch, seq_len, embed_dim = x.shape
+
+        # Project to Q, K, V
+        q = self.q_proj(x).view(batch, seq_len, self.num_heads, self.head_dim)
+        k = self.k_proj(x).view(batch, seq_len, self.num_heads, self.head_dim)
+        v = self.v_proj(x).view(batch, seq_len, self.num_heads, self.head_dim)
+
+        # Transpose to (batch, num_heads, seq_len, head_dim)
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        # Compute local attention with sliding window
+        output = self._local_attention(q, k, v, mask)
+
+        # Reshape back to (batch, seq_len, embed_dim)
+        output = output.transpose(1, 2).contiguous()
+        output = output.view(batch, seq_len, embed_dim)
+
+        # Output projection
+        output = self.out_proj(output)
+
+        return output
+
+    def _local_attention(self, q, k, v, mask):
+        """Compute local attention with sliding window"""
+        batch, num_heads, seq_len, head_dim = q.shape
+        window = self.attention_window
+
+        # Initialize output
+        output = torch.zeros_like(q)
+
+        # Process each position with local window
+        for i in range(seq_len):
+            # Define window boundaries: [max(0, i-window+1), i+1]
+            start = max(0, i - window + 1)
+            end = i + 1
+
+            # Extract local context
+            q_i = q[:, :, i:i+1, :]  # (batch, num_heads, 1, head_dim)
+            k_local = k[:, :, start:end, :]  # (batch, num_heads, window_size, head_dim)
+            v_local = v[:, :, start:end, :]  # (batch, num_heads, window_size, head_dim)
+
+            # Compute attention scores
+            scores = torch.matmul(q_i, k_local.transpose(-2, -1)) * self.scale  # (batch, num_heads, 1, window_size)
+
+            # Apply causal mask if provided
+            if mask is not None:
+                window_mask = mask[:, :, i:i+1, start:end]  # (batch, 1, 1, window_size)
+                scores = scores.masked_fill(window_mask == 0, float('-inf'))
+
+            # Apply softmax
+            attn_weights = F.softmax(scores, dim=-1)  # (batch, num_heads, 1, window_size)
+            attn_weights = self.dropout(attn_weights)
+
+            # Apply attention to values
+            attn_output = torch.matmul(attn_weights, v_local)  # (batch, num_heads, 1, head_dim)
+            output[:, :, i:i+1, :] = attn_output
+
+        return output
+
+
+# ========================================
 # Part 2: QBNN-FeedForward (Attention-Free Layer)
 # ========================================
 
@@ -876,19 +981,35 @@ class QBNNFeedForwardBlock(nn.Module):
 
 class QBNNTransformerBlock(nn.Module):
     """
-    GPTデコーダーブロック（Attention-Free版）
+    GPTデコーダーブロック（Local Attention + QBNN FFN ハイブリッド版）
 
-    標準構造（Attention除去）:
+    ユーザー推奨構成:
+    - Local Attention: 補助的 (attention_window=512)
+    - QBNN層: 主役 (状態圧縮・メモリ効率)
+
+    構造:
     1. Pre-norm LayerNorm
-    2. Feed-Forward Network (標準FFN + QBNN拡張)
+    2. Local Self-Attention (限定的)
     3. Residual Connection
+    4. Pre-norm LayerNorm
+    5. Feed-Forward Network (標準FFN + QBNN拡張)
+    6. Residual Connection
     """
 
     def __init__(self, config: NeuroQuantumConfig):
         super().__init__()
 
-        # Pre-norm LayerNorm
-        self.norm = nn.LayerNorm(config.embed_dim)
+        # Pre-norm LayerNorms
+        self.norm1 = nn.LayerNorm(config.embed_dim)
+        self.norm2 = nn.LayerNorm(config.embed_dim)
+
+        # Local Attention (補助役)
+        self.local_attention = LocalAttention(
+            embed_dim=config.embed_dim,
+            num_heads=config.num_heads,
+            attention_window=config.attention_window,
+            dropout=config.dropout
+        )
 
         # GPT標準FFN: Linear → GELU → Linear
         self.ffn_standard = nn.Sequential(
@@ -916,18 +1037,24 @@ class QBNNTransformerBlock(nn.Module):
 
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        GPTデコーダーフォワード (Attention-Free)
+        ハイブリッドデコーダーフォワード (Local Attention + QBNN)
 
         Args:
             x: (batch, seq, embed_dim)
-            mask: Optional attention mask (unused)
+            mask: Optional causal mask
 
         Returns:
             (batch, seq, embed_dim)
         """
-        # Pre-norm + Feed-Forward Network + Residual
+        # === Attention SubLayer ===
         residual = x
-        x = self.norm(x)
+        x = self.norm1(x)
+        attn_out = self.local_attention(x, mask)
+        x = residual + self.dropout(attn_out)
+
+        # === Feed-Forward SubLayer ===
+        residual = x
+        x = self.norm2(x)
 
         # 標準FFN + QBNN拡張（ブレンド）
         ffn_standard_out = self.ffn_standard(x)
@@ -939,7 +1066,7 @@ class QBNNTransformerBlock(nn.Module):
         # ブレンド比率: 標準FFN 70% + QBNN拡張 30%
         ffn_out = 0.7 * ffn_standard_out + 0.3 * ffn_qbnn_out
 
-        x = residual + ffn_out
+        x = residual + self.dropout(ffn_out)
 
         return x
 
