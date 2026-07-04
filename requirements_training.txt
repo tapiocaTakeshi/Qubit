@@ -1,0 +1,16 @@
+# PyTorch
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# データセット・テキスト処理
+datasets>=2.13.0
+sentencepiece>=0.1.99
+transformers>=4.30.0
+
+# HuggingFace Hub
+huggingface-hub>=0.16.0
+
+# ユーティリティ
+numpy>=1.24.0
+tqdm>=4.65.0
