@@ -515,7 +515,7 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
         size: モデルサイズ
             ビリオンスケール: "billion_70b" | "billion_30b" | "billion_13b" | "billion_7b" | "billion_3b" | "billion_1b"
             メガスケール: "megabyte_500mb" | "megabyte_300mb" | "megabyte_100mb"
-            その他: "xlarge" | "large" | "medium" | "small"
+            その他: "xxlarge" | "xlarge" | "large" | "medium" | "small"
         vocab_size: 語彙サイズ
 
     Returns:
@@ -619,6 +619,17 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
             "dropout": 0.1,
             "entangle_strength": 0.5,
             "batch_size": 1,
+            "vocab_size": vocab_size,
+        },
+        "xxlarge": {
+            "embed_dim": 1024,
+            "hidden_dim": 3072,
+            "num_heads": 16,
+            "num_layers": 18,
+            "max_seq_len": 1024,
+            "dropout": 0.1,
+            "entangle_strength": 0.5,
+            "batch_size": 8,
             "vocab_size": vocab_size,
         },
         "xlarge": {
