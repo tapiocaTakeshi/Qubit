@@ -7,3 +7,14 @@ logs/
 gguf_models/
 *.log
 training_history_small_oasst_ja.json
+
+# Training artifacts
+*.pt
+*.model
+*.vocab
+neuroq_*_checkpoint.pt
+neuroq_*_tokenizer.*
+training_log*.txt
+checkpoints/
+.venv/
+venv/
