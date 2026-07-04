@@ -29,13 +29,18 @@ Hugging Face データセットIDを指定して学習するユニバーサル�
     python train_hf_dataset.py --dataset-id "llm-jp/databricks-dolly-15k-ja" \
         --model-size small --resume --ckpt-name neuroq_small_checkpoint.pt \
         --reset-epochs --epochs 3
+
+    # 7. 日本語データセットの学習（自動最適化）:
+    python train_hf_dataset.py --dataset-id "wikimedia/wikipedia" --split "ja" \
+        --model-size medium --epochs 5 --enable-warmup --warmup-steps 1000
 """
 import argparse
 import json
 import os
 import sys
+import unicodedata
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, List
 
 import torch
 import torch.nn.functional as F
@@ -55,24 +60,81 @@ DEFAULT_REPO_ID = "tapiocatakeshi/Qubit"
 progress = ProgressLogger("train_hf_dataset")
 
 
+# ========================================
+# 日本語テキスト処理関数
+# ========================================
+
+def normalize_japanese_text(text: str) -> str:
+    """日本語テキストを正規化する。
+
+    - Unicode正規化（NFKC）
+    - 余分な空白の削除
+    - 制御文字の削除
+    """
+    if not isinstance(text, str):
+        return ""
+
+    text = text.strip()
+    text = unicodedata.normalize("NFKC", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Cc")
+    text = " ".join(text.split())
+    return text
+
+
+def is_japanese_dataset(dataset_id: str) -> bool:
+    """データセットIDから日本語データセットかどうかを判定する。"""
+    japanese_keywords = [
+        "ja", "japanese", "nihongo", "noto",
+        "databricks-dolly-15k-ja",
+        "wikipedia", "wikimedia",
+        "mc4", "oscar",
+        "jglue", "jnli", "commonqa",
+        "jaquad", "squad", "qa",
+        "oasst", "elyza", "fujii",
+        "aozorabunko", "livedoor",
+    ]
+    return any(kw in dataset_id.lower() for kw in japanese_keywords)
+
+
+def optimize_for_japanese_dataset(config: dict, dataset_id: str) -> dict:
+    """日本語データセット用に設定を最適化する。
+
+    Args:
+        config: モデル設定
+        dataset_id: データセットID
+
+    Returns:
+        最適化された設定
+    """
+    if is_japanese_dataset(dataset_id):
+        progress.info(f"🇯🇵 日本語データセット '{dataset_id}' を検出しました。設定を最適化します。")
+
+        config["dropout"] = min(config["dropout"], 0.05)
+        config["entangle_strength"] = 0.4
+
+        progress.info(f"   - dropout を {config['dropout']} に設定")
+        progress.info(f"   - entangle_strength を {config['entangle_strength']} に設定")
+
+    return config
+
+
 def _first_str(row, keys):
     """row から keys の最初に見つかった非空文字列を返す。無ければ None。"""
     for k in keys:
         val = row.get(k)
         if isinstance(val, str) and val.strip():
-            return val.strip()
+            return normalize_japanese_text(val.strip())
     return None
 
 
 def detect_text_column(row):
     """行から適切なテキスト列を自動検出する。"""
-    # テキスト列の候補を優先順位付きで試す
     text_candidates = [
-        ("text",),  # wikitext, openwebtext などはこれ
-        ("document", "content"),
+        ("text",),
+        ("content",),
+        ("document", "body"),
         ("passage", "article"),
         ("sentence",),
-        ("body",),
         ("description", "desc"),
         ("summary",),
     ]
@@ -81,7 +143,6 @@ def detect_text_column(row):
 
 def extract_dialogue_format(row):
     """行から対話形式のテキストを抽出する。"""
-    # instruction+output 形式
     instruction = _first_str(row, ("instruction", "prompt", "question", "query"))
     context = _first_str(row, ("context", "input"))
     output = _first_str(row, ("output", "response", "answer", "completion"))
@@ -98,20 +159,19 @@ def extract_dialogue_format(row):
 
 def extract_generic_text(row):
     """行からテキストを抽出する（形式自動検出）。"""
-    # まず対話形式を試す
     dialogue = extract_dialogue_format(row)
     if dialogue:
         return dialogue
 
-    # 次に単純なテキスト列を試す
     text = detect_text_column(row)
     if text:
         return text
 
-    # 最後に非空の文字列値を探す
     for v in row.values():
         if isinstance(v, str) and v.strip() and len(v.strip()) > 4:
-            return v.strip()
+            normalized = normalize_japanese_text(v.strip())
+            if len(normalized) > 4:
+                return normalized
 
     return None
 
@@ -180,6 +240,8 @@ def train_epoch(
     on_save=None,
     gradient_accumulation_steps=1,
     use_bf16=False,
+    scheduler=None,
+    max_grad_norm=1.0,
 ):
     import random
 
@@ -188,11 +250,13 @@ def train_epoch(
     total_loss = 0.0
     n_batches = 0
     accumulation_counter = 0
+    valid_batches = 0
 
     for i in range(0, len(sequences), batch_size):
         batch = sequences[i : i + batch_size]
         if not batch:
             continue
+
         max_len = min(max(len(s) for s in batch), max_seq_len)
         input_ids, labels = [], []
         for s in batch:
@@ -204,7 +268,10 @@ def train_epoch(
         input_ids = torch.tensor(input_ids, dtype=torch.long, device=device)
         labels_t = torch.tensor(labels, dtype=torch.long, device=device)
 
-        with torch.cuda.amp.autocast(enabled=use_bf16, dtype=torch.bfloat16 if use_bf16 else torch.float32):
+        with torch.cuda.amp.autocast(
+            enabled=use_bf16,
+            dtype=torch.bfloat16 if use_bf16 else torch.float32
+        ):
             logits = model(input_ids)
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels_t[..., 1:].contiguous()
@@ -219,28 +286,43 @@ def train_epoch(
         accumulation_counter += 1
 
         if accumulation_counter >= gradient_accumulation_steps:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             optimizer.step()
+            if scheduler is not None:
+                scheduler.step()
             optimizer.zero_grad()
             accumulation_counter = 0
+            valid_batches += 1
 
         total_loss += loss.item() * gradient_accumulation_steps
         n_batches += 1
+
         if n_batches % 25 == 0:
-            progress.log_batch(epoch=epoch + 1, batch=n_batches, loss=total_loss / n_batches)
-        if save_every and on_save and n_batches % save_every == 0:
-            avg = total_loss / max(n_batches, 1)
-            progress.info(
-                f"[checkpoint] epoch {epoch + 1} batch {n_batches} avg_loss={avg:.4f} を保存中..."
+            avg_loss = total_loss / max(valid_batches, 1)
+            current_lr = optimizer.param_groups[0]["lr"]
+            progress.log_batch(
+                epoch=epoch + 1,
+                batch=n_batches,
+                loss=avg_loss,
+                lr=current_lr
             )
-            on_save(epoch=epoch, batch=n_batches, loss=avg)
+
+        if save_every and on_save and valid_batches % save_every == 0:
+            avg = total_loss / max(valid_batches, 1)
+            progress.info(
+                f"[checkpoint] epoch {epoch + 1} batch {valid_batches} "
+                f"avg_loss={avg:.4f} を保存中..."
+            )
+            on_save(epoch=epoch, batch=valid_batches, loss=avg)
 
     if accumulation_counter > 0:
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
         optimizer.zero_grad()
 
-    return total_loss / max(n_batches, 1)
+    return total_loss / max(valid_batches, 1) if valid_batches > 0 else 0.0
 
 
 def merge_checkpoint_to_main(intermediate_ckpt_path: str, main_ckpt_path: str):
@@ -337,8 +419,20 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=None, help="未指定ならモデル設定の値を使用")
     p.add_argument("--max-seq-len", type=int, default=None, help="未指定ならモデル設定の値を使用")
     p.add_argument("--gradient-accumulation-steps", type=int, default=8, help="勾配蓄積ステップ (VRAMを増やさずに実効バッチを増加)")
+    p.add_argument("--max-grad-norm", type=float, default=1.0, help="勾配クリッピングの最大ノルム")
     p.add_argument("--use-bf16", action="store_true", default=True, help="BF16 混合精度学習を使用")
     p.add_argument("--gradient-checkpointing", action="store_true", default=True, help="勾配チェックポイント（メモリ削減）を使用")
+    p.add_argument(
+        "--enable-warmup",
+        action="store_true",
+        help="学習率のウォームアップを有効にする",
+    )
+    p.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=500,
+        help="ウォームアップステップ数 (デフォルト: 500)",
+    )
     p.add_argument(
         "--ckpt-name",
         default=None,
@@ -404,6 +498,9 @@ def main():
 
     # ---- モデル設定 ----
     CONFIG = get_model_config_by_size(args.model_size, vocab_size=args.vocab_size)
+
+    CONFIG = optimize_for_japanese_dataset(CONFIG, args.dataset_id)
+
     batch_size = args.batch_size or CONFIG["batch_size"]
     max_seq_len = args.max_seq_len or CONFIG["max_seq_len"]
     gradient_accumulation_steps = args.gradient_accumulation_steps
@@ -485,8 +582,26 @@ def main():
 
     # ---- 学習 ----
     progress.info("=== Training ===")
+
+    total_steps = (len(sequences) // (batch_size * gradient_accumulation_steps)) * args.epochs
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+
+    # スケジューラーの構築
+    if args.enable_warmup:
+        from torch.optim.lr_scheduler import LambdaLR
+
+        warmup_steps = min(args.warmup_steps, total_steps // 10)
+
+        def lr_lambda(current_step: int):
+            if current_step < warmup_steps:
+                return float(current_step) / float(max(1, warmup_steps))
+            return max(0.0, float(total_steps - current_step) / float(max(1, total_steps - warmup_steps)))
+
+        scheduler = LambdaLR(optimizer, lr_lambda)
+        progress.info(f"ウォームアップスケジューラーを有効化（warmup_steps={warmup_steps}）")
+    else:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+        progress.info("CosineAnnealing スケジューラーを使用")
 
     training_log = []
     start_epoch = 0
@@ -560,8 +675,11 @@ def main():
             on_save=save_checkpoint,
             gradient_accumulation_steps=gradient_accumulation_steps,
             use_bf16=use_bf16,
+            scheduler=scheduler,
+            max_grad_norm=args.max_grad_norm,
         )
-        scheduler.step()
+        if not args.enable_warmup:
+            scheduler.step()
         training_log.append({"epoch": epoch, "avg_loss": avg_loss})
         save_checkpoint(epoch=epoch, loss=avg_loss)
         progress.log_epoch(epoch=epoch + 1, loss=avg_loss)
