@@ -22,8 +22,8 @@ from train_hf_dataset import (
     extract_texts,
     tokenize_texts,
     train_epoch,
-    save_checkpoint,
     upload_checkpoint_to_hf,
+    merge_checkpoint_to_main,
     get_default_names,
     auto_detect_split,
     is_japanese_dataset,
@@ -263,7 +263,10 @@ def main():
         training_log = list(resume_ckpt.get("training_log", []))
 
     def save_checkpoint_func(epoch, batch=None, loss=None, final=False):
-        """チェックポイントを保存。"""
+        """チェックポイントを保存。
+
+        毎回、中間チェックポイントをメインチェックポイントにマージします。
+        """
         checkpoint = {
             "model_state": model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
@@ -285,6 +288,8 @@ def main():
             )
             torch.save(checkpoint, intermediate_ckpt_path)
             progress.info(f"Checkpoint saved: {intermediate_ckpt_path}")
+
+            merge_checkpoint_to_main(intermediate_ckpt_path, ckpt_path)
         else:
             torch.save(checkpoint, ckpt_path)
             progress.info(f"Checkpoint saved: {ckpt_path}")
