@@ -1,0 +1,149 @@
+{
+  "model": {
+    "name": "megabyte_100mb",
+    "description": "100MB scale NeuroQuantum with embedding-gemma-300m",
+    "vocab_size": 32000,
+    "use_google_embedding": true,
+    "google_model": "models/embedding-gemma-300m",
+    "embedding_dimension": 300,
+    "model_dimension": 1024,
+    "hidden_dimension": 2048,
+    "num_heads": 16,
+    "num_layers": 10,
+    "max_sequence_length": 512
+  },
+  "training": {
+    "epochs": 1,
+    "batch_size": 2,
+    "learning_rate": 1e-4,
+    "weight_decay": 0.01,
+    "gradient_clip": 1.0,
+    "use_bf16": true,
+    "device": "auto",
+    "save_every_n_steps": 1000,
+    "checkpoint_dir": "./checkpoints"
+  },
+  "datasets": [
+    {
+      "id": "wikimedia/wikipedia",
+      "split": "20220301.ja",
+      "max_samples": 5000,
+      "description": "Japanese Wikipedia"
+    },
+    {
+      "id": "google/wiki40b",
+      "split": "ja",
+      "max_samples": 5000,
+      "description": "40-language Wikipedia - Japanese"
+    },
+    {
+      "id": "allenai/c4",
+      "split": "en",
+      "max_samples": 5000,
+      "description": "Common Crawl - English"
+    },
+    {
+      "id": "mc4",
+      "split": "ja",
+      "max_samples": 5000,
+      "description": "Multilingual Common Crawl - Japanese"
+    },
+    {
+      "id": "Open-Orca/OpenOrca",
+      "split": null,
+      "max_samples": 5000,
+      "description": "Open-source instruction-following dataset"
+    },
+    {
+      "id": "HuggingFaceH4/ultrachat_200k",
+      "split": null,
+      "max_samples": 5000,
+      "description": "Conversational chat dataset"
+    },
+    {
+      "id": "open-thoughts/OpenThoughts-114k",
+      "split": null,
+      "max_samples": 5000,
+      "description": "Thinking process and reasoning dataset"
+    },
+    {
+      "id": "argilla/ultrafeedback-binarized-preferences",
+      "split": null,
+      "max_samples": 5000,
+      "description": "Quality feedback and preferences"
+    },
+    {
+      "id": "bigcode/the-stack-v2",
+      "split": null,
+      "max_samples": 5000,
+      "description": "Large-scale code dataset"
+    },
+    {
+      "id": "ise-uiuc/Magicoder-OSS-Instruct-75K",
+      "split": null,
+      "max_samples": 5000,
+      "description": "Code instruction dataset"
+    },
+    {
+      "id": "WizardLMTeam/WizardCoder-Python-34K",
+      "split": null,
+      "max_samples": 5000,
+      "description": "Python code specific dataset"
+    },
+    {
+      "id": "HuggingFaceH4/CodeAlpaca_20K",
+      "split": null,
+      "max_samples": 5000,
+      "description": "Code Alpaca dataset"
+    },
+    {
+      "id": "meta-math/MetaMathQA",
+      "split": null,
+      "max_samples": 5000,
+      "description": "Mathematical problem solving"
+    },
+    {
+      "id": "AI-MO/NuminaMath-CoT",
+      "split": null,
+      "max_samples": 5000,
+      "description": "Mathematical reasoning with chain-of-thought"
+    },
+    {
+      "id": "gsm8k",
+      "split": "main",
+      "max_samples": 5000,
+      "description": "Grade school math word problems"
+    }
+  ],
+  "embedding": {
+    "model": "embedding-gemma-300m",
+    "provider": "Google Generative AI",
+    "dimensions": 300,
+    "task_type": "RETRIEVAL_DOCUMENT",
+    "api_key_env": "GOOGLE_API_KEY",
+    "supports_languages": ["ja", "en", "ko", "zh", "es", "fr", "de", "it", "ru", "and 90+ more"],
+    "note": "Requires Google API key from https://makersuite.google.com/app/apikey"
+  },
+  "optimization": {
+    "dtype": "bfloat16",
+    "gradient_accumulation_steps": 1,
+    "max_grad_norm": 1.0,
+    "warmup_steps": 100,
+    "scheduler": "linear",
+    "optimizer": "AdamW"
+  },
+  "environment": {
+    "GOOGLE_API_KEY": "REQUIRED_IF_USE_GOOGLE_EMBEDDING",
+    "CUDA_VISIBLE_DEVICES": "auto",
+    "OMP_NUM_THREADS": 4,
+    "TF_CPP_MIN_LOG_LEVEL": 2
+  },
+  "notes": {
+    "compute_requirements": "4-8GB VRAM (RTX 4090) or 24GB VRAM (A100)",
+    "estimated_training_time": "6-48 hours depending on GPU and dataset size",
+    "memory_usage": "4-6GB per GPU",
+    "dataset_count": 15,
+    "languages": ["English", "Japanese", "Code", "Math"],
+    "use_case": "Multilingual instruction-following and code generation"
+  }
+}

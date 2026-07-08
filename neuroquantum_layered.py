@@ -120,6 +120,13 @@ except ImportError:
     TRANSLATION_PIPELINE_AVAILABLE = False
     # オプションなので警告を表示しない
 
+# sentence-transformers（ローカル埋め込み用）
+try:
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+
 # ========================================
 # qbnn_layered.py からコアコンポーネントをインポート
 # ========================================
@@ -1157,11 +1164,12 @@ class GoogleEmbeddingWrapper:
     Google Generative AI (Gemini) のテキストエンベディングAPIを使用
     """
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "models/text-embedding-004", task_type: str = "RETRIEVAL_DOCUMENT"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "models/embedding-gemma-300m", task_type: str = "RETRIEVAL_DOCUMENT"):
         """
         Args:
             api_key: Google API キー（Noneの場合はGOOGLE_API_KEY環境変数を使用）
             model: エンベディングモデル名
+                - "models/embedding-gemma-300m": 300次元（日本語対応、推奨）
                 - "models/text-embedding-004": 768次元（デフォルト、最新）
                 - "models/embedding-001": 768次元
             task_type: タスクタイプ
@@ -1180,7 +1188,11 @@ class GoogleEmbeddingWrapper:
         genai.configure(api_key=self.api_key)
         self.model = model
         self.task_type = task_type
-        self.embed_dim = 768  # Google text-embedding-004 のデフォルト次元
+        # モデルごとのデフォルト次元
+        if "gemma-300m" in model:
+            self.embed_dim = 300  # embedding-gemma-300m は 300 次元
+        else:
+            self.embed_dim = 768  # その他は 768 次元がデフォルト
 
     def get_embeddings(self, texts: List[str], batch_size: int = 100) -> np.ndarray:
         """
@@ -1219,6 +1231,58 @@ class GoogleEmbeddingWrapper:
         return embeddings
 
 
+class SentenceTransformersEmbeddingWrapper:
+    """
+    Sentence-Transformers ラッパー（ローカル埋め込み）
+
+    HuggingFace Hub のモデルを使用してローカルでテキストエンベディングを生成
+
+    対応モデル例:
+    - "google/embeddinggemma-300m": 300次元（日本語対応、推奨）
+    - "sentence-transformers/paraphrase-multilingual-mpnet-base-v2": 384次元
+    - "sentence-transformers/all-MiniLM-L6-v2": 384次元
+    """
+
+    def __init__(self, model_name: str = "google/embeddinggemma-300m", device: str = "cuda"):
+        """
+        Args:
+            model_name: HuggingFace Hub のモデルID
+            device: 実行デバイス ("cuda" または "cpu")
+        """
+        if not SENTENCE_TRANSFORMERS_AVAILABLE:
+            raise ImportError("sentence-transformers がインストールされていません。pip install sentence-transformers を実行してください。")
+
+        self.model_name = model_name
+        self.device = device
+
+        print(f"Loading embedding model: {model_name}")
+        self.model = SentenceTransformer(model_name, device=device)
+        self.embed_dim = self.model.get_sentence_embedding_dimension()
+        print(f"✓ Model loaded. Embedding dimension: {self.embed_dim}")
+
+    def get_embeddings(self, texts: list, batch_size: int = 32) -> np.ndarray:
+        """
+        テキストのリストからエンベディングを取得
+
+        Args:
+            texts: テキストのリスト
+            batch_size: バッチサイズ
+
+        Returns:
+            (N, embed_dim) エンベディング配列
+        """
+        try:
+            embeddings = self.model.encode(
+                texts,
+                batch_size=batch_size,
+                convert_to_numpy=True,
+                show_progress_bar=True
+            )
+            return embeddings
+        except Exception as e:
+            raise RuntimeError(f"Embedding生成エラー: {e}")
+
+
 class NeuroQuantumEmbedding(nn.Module):
     """
     ニューロQ 埋め込み層
@@ -1237,21 +1301,48 @@ class NeuroQuantumEmbedding(nn.Module):
         use_google_embedding: bool = False,
         google_api_key: Optional[str] = None,
         google_model: str = "models/text-embedding-004",
+        use_sentence_transformers: bool = False,
+        sentence_transformers_model: str = "google/embeddinggemma-300m",
         tokenizer = None  # トークン化済みテキストを復元するためのトークナイザー
     ):
         super().__init__()
 
         self.use_openai_embedding = use_openai_embedding
         self.use_google_embedding = use_google_embedding
-        self.use_external_embedding = use_openai_embedding or use_google_embedding
+        self.use_sentence_transformers = use_sentence_transformers
+        self.use_external_embedding = use_openai_embedding or use_google_embedding or use_sentence_transformers
         self.config = config
         self.tokenizer = tokenizer
 
         self.openai_wrapper = None
         self.google_wrapper = None
+        self.sentence_transformers_wrapper = None
         self.projection = None
 
-        if use_google_embedding:
+        if use_sentence_transformers:
+            if not SENTENCE_TRANSFORMERS_AVAILABLE:
+                warnings.warn("sentence-transformers がインストールされていません。従来の埋め込みを使用します。")
+                self.use_sentence_transformers = False
+                self.use_external_embedding = use_openai_embedding or use_google_embedding
+
+            if self.use_sentence_transformers:
+                import torch
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                self.sentence_transformers_wrapper = SentenceTransformersEmbeddingWrapper(
+                    model_name=sentence_transformers_model,
+                    device=device
+                )
+                actual_embed_dim = self.sentence_transformers_wrapper.embed_dim
+                if actual_embed_dim != config.embed_dim:
+                    warnings.warn(
+                        f"Sentence-Transformers埋め込み次元({actual_embed_dim})が設定次元({config.embed_dim})と異なります。"
+                        f"射影層を追加します。"
+                    )
+                    self.projection = nn.Linear(actual_embed_dim, config.embed_dim)
+                else:
+                    self.projection = nn.Identity()
+
+        elif use_google_embedding:
             if not GOOGLE_GENAI_AVAILABLE:
                 warnings.warn("Google Generative AI APIが利用できません。従来の埋め込みを使用します。")
                 self.use_google_embedding = False
@@ -1323,8 +1414,8 @@ class NeuroQuantumEmbedding(nn.Module):
             token_ids = token_ids[:, :self.config.max_seq_len]
             seq_len = self.config.max_seq_len
 
-        # 外部エンベディング（Google or OpenAI）を使用するかチェック
-        external_wrapper = self.google_wrapper or self.openai_wrapper
+        # 外部エンベディング（Sentence-Transformers / Google / OpenAI）を使用するかチェック
+        external_wrapper = self.sentence_transformers_wrapper or self.google_wrapper or self.openai_wrapper
 
         if self.use_external_embedding and external_wrapper is not None:
             if texts is None:
@@ -1613,13 +1704,16 @@ class NeuroQuantum(nn.Module):
         use_google_embedding: bool = False,
         google_api_key: Optional[str] = None,
         google_model: str = "models/text-embedding-004",
+        use_sentence_transformers: bool = False,
+        sentence_transformers_model: str = "google/embeddinggemma-300m",
         tokenizer = None
     ):
         super().__init__()
         self.config = config
         self.use_openai_embedding = use_openai_embedding
         self.use_google_embedding = use_google_embedding
-        use_external = use_openai_embedding or use_google_embedding
+        self.use_sentence_transformers = use_sentence_transformers
+        use_external = use_openai_embedding or use_google_embedding or use_sentence_transformers
 
         # ========================================
         # [1] トークン埋め込み層 (Token Embedding)
@@ -1634,6 +1728,8 @@ class NeuroQuantum(nn.Module):
                 use_google_embedding=use_google_embedding,
                 google_api_key=google_api_key,
                 google_model=google_model,
+                use_sentence_transformers=use_sentence_transformers,
+                sentence_transformers_model=sentence_transformers_model,
                 tokenizer=tokenizer
             )
             self.token_embedding = None  # 外部Embedding使用時は不要
@@ -1723,12 +1819,13 @@ class NeuroQuantum(nn.Module):
         # ========================================
         # [1] トークン埋め込み層 + [2] 位置埋め込み層
         # ========================================
-        use_external = (self.use_openai_embedding or self.use_google_embedding) and self.embedding is not None
+        use_external = (self.use_openai_embedding or self.use_google_embedding or self.use_sentence_transformers) and self.embedding is not None
         if use_external:
             hidden_states = self.embedding(token_ids, texts=None)
             if verbose:
                 logger.info("-" * 50)
-                logger.info(f"[1-2] 外部Embedding（Google/OpenAI）")
+                embedding_source = "Sentence-Transformers" if self.use_sentence_transformers else ("Google" if self.use_google_embedding else "OpenAI")
+                logger.info(f"[1-2] 外部Embedding（{embedding_source}）")
                 logger.info(f"  - 出力: {hidden_states.shape}")
                 logger.info(f"  - 統計: mean={hidden_states.mean().item():.4f}, std={hidden_states.std().item():.4f}")
         else:
@@ -2089,6 +2186,10 @@ class NeuroQuantumTokenizer:
         self.token_to_idx = {token: i for i, token in enumerate(special_tokens)}
         self.idx_to_token = {i: token for token, i in self.token_to_idx.items()}
         self.actual_vocab_size = len(self.token_to_idx)
+
+    def __len__(self) -> int:
+        """語彙サイズを返す"""
+        return self.actual_vocab_size if self.actual_vocab_size is not None else self.vocab_size
 
     def build_vocab(self, texts: List[str], min_freq: int = 2,
                     character_coverage: float = 0.9995, model_prefix: str = "neuroq_tokenizer"):
