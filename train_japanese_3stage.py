@@ -24,6 +24,31 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+
+def safe_save(state_dict, path: str, retries: int = 3, retry_delay: float = 5.0) -> bool:
+    """
+    ネットワークボリューム上での一時的なI/O障害でクラッシュしないよう、
+    一時ファイルへ書き込んでからアトミックにrenameし、失敗時はリトライする。
+    保存に失敗してもプロセスは継続する（例外を投げない）。
+    """
+    tmp_path = f"{path}.tmp{os.getpid()}"
+    for attempt in range(1, retries + 1):
+        try:
+            torch.save(state_dict, tmp_path)
+            os.replace(tmp_path, path)
+            return True
+        except Exception as e:
+            print(f"         ⚠️  チェックポイント保存失敗 (試行 {attempt}/{retries}): {e}")
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+            if attempt < retries:
+                time.sleep(retry_delay)
+    print(f"         ✗ チェックポイント保存を諦めました: {path}")
+    return False
+
 from neuroquantum_layered import (
     NeuroQuantum,
     NeuroQuantumConfig,
@@ -59,6 +84,10 @@ EVALUATION_DATASETS = [
 
 CHUNK_SIZE = 20000          # 一度に処理するテキスト件数
 CHECKPOINT_EVERY_N_CHUNKS = 5  # 何チャンクごとにチェックポイントを保存するか
+CHECKPOINT_DIR = "/workspace/checkpoints"  # ネットワークボリューム（ポッド再起動でも消えない）
+
+EARLY_STOP_PATIENCE = 8     # 何チャンク連続で改善がなければ打ち切るか
+EARLY_STOP_MIN_DELTA = 0.01  # 「改善」とみなす最小のLoss減少幅
 
 
 def extract_text(sample: dict) -> Optional[str]:
@@ -154,17 +183,24 @@ class _ProducerError:
 
 
 def _produce_chunks(datasets: list, tokenizer, max_seq_len: int, chunk_size: int,
-                     out_queue: "queue.Queue", max_samples_per_dataset: int = None):
+                     out_queue: "queue.Queue", max_samples_per_dataset: int = None,
+                     stop_event: Optional[threading.Event] = None):
     """
     バックグラウンドスレッドで実行される関数。
     HTTPストリーミング接続を学習側の都合で止めないよう、
     ダウンロード→トークン化を絶え間なく行い、結果をキューに積み続ける。
+    stop_event がセットされたら、次のチャンクに進む前に早期終了する
+    （アーリーストッピング発動時に呼び出し側からセットされる）。
     """
     try:
         for dataset_id, split, desc in datasets:
+            if stop_event is not None and stop_event.is_set():
+                break
             out_queue.put(("desc", desc))
             try:
                 for texts in stream_text_chunks(dataset_id, split, chunk_size, max_samples_per_dataset):
+                    if stop_event is not None and stop_event.is_set():
+                        break
                     sequences = tokenize_texts(texts, tokenizer, max_seq_len)
                     out_queue.put(("chunk", len(texts), sequences))
             except Exception as e:
@@ -177,9 +213,16 @@ def _produce_chunks(datasets: list, tokenizer, max_seq_len: int, chunk_size: int
 
 
 def merge_checkpoints_final(pattern: str, output_name: str):
-    """チェックポイントをマージ"""
-    checkpoint_dir = Path("./checkpoints")
-    checkpoint_files = sorted(checkpoint_dir.glob(f"{pattern}*.pt"))
+    """チェックポイントをマージ（クラッシュ復旧用の_latest.ptと_best.ptは対象外、エポック単位のみ）"""
+    checkpoint_dir = Path(CHECKPOINT_DIR)
+    # pattern末尾の"*"と後続の"*.pt"が連続すると pathlib が
+    # "Invalid pattern: '**' can only be an entire path component" で例外を出すため、
+    # 末尾の"*"を除去してから"*.pt"を付与する
+    glob_pattern = pattern.rstrip("*") + "*.pt"
+    checkpoint_files = sorted(
+        f for f in checkpoint_dir.glob(glob_pattern)
+        if "_latest" not in f.name and "_best" not in f.name
+    )
 
     if len(checkpoint_files) < 2:
         print(f"      ℹ️  マージ対象が1個以下のため、スキップします")
@@ -207,10 +250,9 @@ def merge_checkpoints_final(pattern: str, output_name: str):
             averaged_state[key] = averaged_state[key] / len(checkpoint_files)
 
     output_path = checkpoint_dir / f"{output_name}_merged.pt"
-    torch.save(dict(averaged_state), output_path)
-
-    output_size_mb = output_path.stat().st_size / (1024**2)
-    print(f"      ✅ マージ完了: {output_path.name} ({output_size_mb:.1f}MB)")
+    if safe_save(dict(averaged_state), str(output_path)):
+        output_size_mb = output_path.stat().st_size / (1024**2)
+        print(f"      ✅ マージ完了: {output_path.name} ({output_size_mb:.1f}MB)")
 
 
 def train_on_sequences(model, sequences: List[List[int]], tokenizer, optimizer, device: str,
@@ -224,6 +266,7 @@ def train_on_sequences(model, sequences: List[List[int]], tokenizer, optimizer, 
 
     total_loss = 0.0
     batch_count = 0
+    skipped_batches = 0
     total_batches = (len(sequences) + batch_size - 1) // batch_size
     t_start = time.time()
 
@@ -243,8 +286,20 @@ def train_on_sequences(model, sequences: List[List[int]], tokenizer, optimizer, 
             logits = model(input_ids)
             loss = F.cross_entropy(logits.view(-1, model.config.vocab_size), labels.view(-1))
 
+        # NaN/Infガード: 異常なlossが出たバッチはモデルを汚染する前にスキップする
+        if not torch.isfinite(loss):
+            skipped_batches += 1
+            optimizer.zero_grad(set_to_none=True)
+            continue
+
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        if not torch.isfinite(grad_norm):
+            skipped_batches += 1
+            optimizer.zero_grad(set_to_none=True)
+            continue
+
         optimizer.step()
 
         total_loss += loss.item()
@@ -253,9 +308,13 @@ def train_on_sequences(model, sequences: List[List[int]], tokenizer, optimizer, 
         if batch_count % progress_every == 0:
             elapsed = time.time() - t_start
             sec_per_batch = elapsed / batch_count
+            skip_info = f" | skip {skipped_batches}" if skipped_batches else ""
             print(f"           …batch {batch_count}/{total_batches} "
                   f"| Loss = {loss.item():.4f} | {sec_per_batch*1000:.0f}ms/batch "
-                  f"| 経過 {elapsed:.1f}s", flush=True)
+                  f"| 経過 {elapsed:.1f}s{skip_info}", flush=True)
+
+    if skipped_batches:
+        print(f"           ⚠️  NaN/Inf検出により {skipped_batches} バッチをスキップしました", flush=True)
 
     return total_loss, batch_count
 
@@ -269,9 +328,17 @@ def stream_train_stage(model, tokenizer, optimizer, scheduler, datasets: list,
     キューに結果を積み続ける。メインスレッド（GPU学習）はキューから取り出して学習するだけなので、
     学習中にHTTPストリーミング接続がアイドル状態になって固まる問題を回避できる。
     """
-    os.makedirs("./checkpoints", exist_ok=True)
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
+    # アーリーストッピング用の状態（エポックをまたいでステージ全体で追跡）
+    best_loss = float('inf')
+    chunks_without_improvement = 0
+    early_stopped = False
 
     for epoch in range(epochs):
+        if early_stopped:
+            break
+
         print(f"\n       📍 {stage_name} Epoch {epoch + 1}/{epochs}")
 
         epoch_total_loss = 0.0
@@ -282,9 +349,11 @@ def stream_train_stage(model, tokenizer, optimizer, scheduler, datasets: list,
 
         # プロデューサースレッドを起動（キューサイズ2 = 最大2チャンク先読み）
         chunk_queue: "queue.Queue" = queue.Queue(maxsize=2)
+        stop_event = threading.Event()
         producer = threading.Thread(
             target=_produce_chunks,
-            args=(datasets, tokenizer, config.max_seq_len, chunk_size, chunk_queue, max_samples_per_dataset),
+            args=(datasets, tokenizer, config.max_seq_len, chunk_size, chunk_queue,
+                  max_samples_per_dataset, stop_event),
             daemon=True,
         )
         producer.start()
@@ -324,10 +393,23 @@ def stream_train_stage(model, tokenizer, optimizer, scheduler, datasets: list,
             avg_loss = loss_sum / max(batch_count, 1)
             lr = optimizer.param_groups[0]['lr']
             elapsed = time.time() - t_epoch_start
+
+            # アーリーストッピング判定
+            if avg_loss < best_loss - EARLY_STOP_MIN_DELTA:
+                best_loss = avg_loss
+                chunks_without_improvement = 0
+                if checkpoint_prefix:
+                    best_ckpt_path = f"{CHECKPOINT_DIR}/{checkpoint_prefix}_best.pt"
+                    safe_save(model.state_dict(), best_ckpt_path)
+                improve_tag = " 🌟best更新"
+            else:
+                chunks_without_improvement += 1
+                improve_tag = f" (改善なし {chunks_without_improvement}/{EARLY_STOP_PATIENCE})"
+
             print(f"         chunk {chunk_idx:4d}: {n_texts:6d} 件 → {len(sequences):6d} seqs "
                   f"| Loss = {avg_loss:.4f} | LR = {lr:.2e} "
                   f"| train {t_train:.1f}s "
-                  f"| 累計 {total_seqs_trained} seqs / {elapsed:.0f}s経過")
+                  f"| 累計 {total_seqs_trained} seqs / {elapsed:.0f}s経過{improve_tag}")
 
             # チャンクのデータを破棄してメモリを解放
             del sequences
@@ -335,26 +417,46 @@ def stream_train_stage(model, tokenizer, optimizer, scheduler, datasets: list,
             if device == "cuda":
                 torch.cuda.empty_cache()
 
-            # 定期チェックポイント保存
+            # 定期チェックポイント保存（ファイルを増やさず、1つの「最新」ファイルに上書き）
             if checkpoint_prefix and chunk_idx % CHECKPOINT_EVERY_N_CHUNKS == 0:
-                ckpt_path = f"./checkpoints/{checkpoint_prefix}_epoch{epoch+1}_chunk{chunk_idx}.pt"
-                torch.save(model.state_dict(), ckpt_path)
-                print(f"         💾 {ckpt_path}")
+                ckpt_path = f"{CHECKPOINT_DIR}/{checkpoint_prefix}_latest.pt"
+                if safe_save(model.state_dict(), ckpt_path):
+                    print(f"         💾 {ckpt_path} (chunk {chunk_idx} 時点で上書き保存)")
 
-        producer.join(timeout=5)
+            if chunks_without_improvement >= EARLY_STOP_PATIENCE:
+                print(f"\n       🛑 アーリーストッピング発動: "
+                      f"{EARLY_STOP_PATIENCE}チャンク連続でLoss改善なし（best={best_loss:.4f}）")
+                stop_event.set()
+                # プロデューサーがput()でブロックしていれば解除するためキューを空にする
+                while True:
+                    try:
+                        drained = chunk_queue.get_nowait()
+                        if drained[0] == "stop":
+                            break
+                    except queue.Empty:
+                        break
+                early_stopped = True
+                break
+
+        producer.join(timeout=10)
 
         if scheduler:
             scheduler.step()
 
         avg_epoch_loss = epoch_total_loss / max(epoch_batch_count, 1)
-        print(f"\n       ✅ {stage_name} Epoch {epoch + 1} 完了: "
+        print(f"\n       ✅ {stage_name} Epoch {epoch + 1} "
+              f"{'（アーリーストップ）' if early_stopped else '完了'}: "
               f"Average Loss = {avg_epoch_loss:.4f} | 総シーケンス数 = {total_seqs_trained}")
 
         # エポック終了時チェックポイント保存
         if checkpoint_prefix:
-            ckpt_path = f"./checkpoints/{checkpoint_prefix}_epoch{epoch+1}.pt"
-            torch.save(model.state_dict(), ckpt_path)
-            print(f"       💾 {ckpt_path}")
+            ckpt_path = f"{CHECKPOINT_DIR}/{checkpoint_prefix}_epoch{epoch+1}.pt"
+            if safe_save(model.state_dict(), ckpt_path):
+                print(f"       💾 {ckpt_path}")
+
+    if early_stopped:
+        print(f"\n       ℹ️  {stage_name}: アーリーストッピングによりステージを終了しました "
+              f"(best_loss={best_loss:.4f})")
 
         if total_seqs_trained == 0:
             print(f"       ⚠️  このエポックで学習できたシーケンスがありません")
@@ -405,9 +507,14 @@ def main():
         lambda_entangle=0.5,
     )
 
-    # モデル
-    print("\n🧠 Initializing model...")
-    model = NeuroQuantum(config=config, tokenizer=tokenizer).to(device)
+    # モデル（embedding-gemma-300mを常時使用）
+    print("\n🧠 Initializing model (embedding-gemma-300m 使用)...")
+    model = NeuroQuantum(
+        config=config,
+        tokenizer=tokenizer,
+        use_sentence_transformers=True,
+        sentence_transformers_model="google/embeddinggemma-300m",
+    ).to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"    Parameters: {n_params:,}")
 
@@ -418,14 +525,24 @@ def main():
     print("📚 STAGE 1: Pre-training (事前学習) - チャンク・ストリーミング方式")
     print("▓" * 90)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
+    # 既にStage 1が完了・マージ済みならスキップして再開する
+    # （ネットワークI/O障害などでクラッシュした場合に、長時間かかるStage 1を
+    #   毎回やり直さずに済むようにするため）
+    pretraining_merged_path = f"{CHECKPOINT_DIR}/megabyte_100mb_pretraining_merged.pt"
+    if os.path.exists(pretraining_merged_path):
+        print(f"\n  ℹ️  既存のStage 1成果物を検出、スキップして再開します: {pretraining_merged_path}")
+        model.load_state_dict(torch.load(pretraining_merged_path, map_location=device))
+    else:
+        # embedding-gemmaは語彙埋め込みの事前計算・初期化のみに使用し、実行時は通常の
+        # 学習可能Embeddingとして扱われるため、純粋なQBNN版と同じ学習率で問題ない
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
 
-    stream_train_stage(model, tokenizer, optimizer, scheduler, PRETRAINING_DATASETS,
-                        "Pre-training", epochs=3, device=device, config=config,
-                        checkpoint_prefix="megabyte_100mb_pretraining")
+        stream_train_stage(model, tokenizer, optimizer, scheduler, PRETRAINING_DATASETS,
+                            "Pre-training", epochs=3, device=device, config=config,
+                            checkpoint_prefix="megabyte_100mb_pretraining")
 
-    merge_checkpoints_final("*pretraining*", "megabyte_100mb_pretraining")
+        merge_checkpoints_final("*pretraining*", "megabyte_100mb_pretraining")
 
     # ========================================
     # STAGE 2: SFT (Supervised Fine-Tuning)
@@ -434,15 +551,20 @@ def main():
     print("📝 STAGE 2: SFT - Supervised Fine-Tuning (指示追従学習) - チャンク・ストリーミング方式")
     print("▓" * 90)
 
-    # 学習率を下げる
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50)
+    sft_merged_path = f"{CHECKPOINT_DIR}/megabyte_100mb_sft_merged.pt"
+    if os.path.exists(sft_merged_path):
+        print(f"\n  ℹ️  既存のStage 2成果物を検出、スキップして再開します: {sft_merged_path}")
+        model.load_state_dict(torch.load(sft_merged_path, map_location=device))
+    else:
+        # 学習率を下げる
+        optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50)
 
-    stream_train_stage(model, tokenizer, optimizer, scheduler, [SFT_DATASET],
-                        "SFT", epochs=2, device=device, config=config,
-                        checkpoint_prefix="megabyte_100mb_sft", chunk_size=5000)
+        stream_train_stage(model, tokenizer, optimizer, scheduler, [SFT_DATASET],
+                            "SFT", epochs=2, device=device, config=config,
+                            checkpoint_prefix="megabyte_100mb_sft", chunk_size=5000)
 
-    merge_checkpoints_final("*sft*", "megabyte_100mb_sft")
+        merge_checkpoints_final("*sft*", "megabyte_100mb_sft")
 
     # ========================================
     # STAGE 3: Evaluation
@@ -523,7 +645,7 @@ def main():
     print(f"  Stage 3 - Evaluation: {batch_count} batches ✓")
 
     print(f"\n💾 Checkpoints:")
-    ckpt_dir = Path("./checkpoints")
+    ckpt_dir = Path(CHECKPOINT_DIR)
     merged_files = sorted(ckpt_dir.glob("*merged.pt"))
     for ckpt in merged_files:
         size_mb = ckpt.stat().st_size / (1024**2)

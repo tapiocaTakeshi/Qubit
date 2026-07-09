@@ -872,13 +872,16 @@ class LocalAttention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim)
         self.dropout = nn.Dropout(dropout)
 
+        # ウィンドウ制約マスクのキャッシュ（seq_lenごとに1回だけ構築すれば良い）
+        self._window_mask_cache: Dict[int, torch.Tensor] = {}
+
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Local Self-Attention with limited window
 
         Args:
             x: (batch, seq_len, embed_dim)
-            mask: Optional causal mask
+            mask: Optional causal mask, shape (*, *, seq_len, seq_len), 1=keep / 0=masked
 
         Returns:
             output: (batch, seq_len, embed_dim)
@@ -895,7 +898,7 @@ class LocalAttention(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        # Compute local attention with sliding window
+        # Compute local attention with sliding window (fully vectorized, no Python loop)
         output = self._local_attention(q, k, v, mask)
 
         # Reshape back to (batch, seq_len, embed_dim)
@@ -907,40 +910,47 @@ class LocalAttention(nn.Module):
 
         return output
 
+    def _get_window_mask(self, seq_len: int, device, dtype) -> torch.Tensor:
+        """
+        因果 + ローカルウィンドウ制約を表す加算バイアス行列 (seq_len, seq_len) を返す。
+        許可される位置は 0.0、禁止される位置は -inf。seq_lenごとにキャッシュする。
+        """
+        cached = self._window_mask_cache.get(seq_len)
+        if cached is not None and cached.device == device and cached.dtype == dtype:
+            return cached
+
+        idx = torch.arange(seq_len, device=device)
+        i = idx.view(-1, 1)
+        j = idx.view(1, -1)
+        allowed = (j <= i) & (j > i - self.attention_window)  # causal かつ ウィンドウ内
+
+        bias = torch.zeros(seq_len, seq_len, device=device, dtype=dtype)
+        bias = bias.masked_fill(~allowed, float('-inf'))
+
+        self._window_mask_cache[seq_len] = bias
+        return bias
+
     def _local_attention(self, q, k, v, mask):
-        """Compute local attention with sliding window"""
+        """
+        ローカルウィンドウ付きSelf-Attentionをベクトル化して一括計算する。
+        トークンごとのPythonループを排除し、F.scaled_dot_product_attention
+        （Flash Attention相当）で全トークンを同時に処理する。
+        """
         batch, num_heads, seq_len, head_dim = q.shape
-        window = self.attention_window
 
-        # Initialize output
-        output = torch.zeros_like(q)
+        attn_bias = self._get_window_mask(seq_len, q.device, q.dtype)  # (seq_len, seq_len)
 
-        # Process each position with local window
-        for i in range(seq_len):
-            # Define window boundaries: [max(0, i-window+1), i+1]
-            start = max(0, i - window + 1)
-            end = i + 1
+        if mask is not None:
+            # 外部マスク（1=keep, 0=masked）を加算バイアスに変換し、ウィンドウ制約と合成
+            ext_bias = torch.zeros_like(mask, dtype=q.dtype)
+            ext_bias = ext_bias.masked_fill(mask == 0, float('-inf'))
+            attn_bias = attn_bias + ext_bias  # ブロードキャストで (batch, heads, seq, seq) 相当に拡張
 
-            # Extract local context
-            q_i = q[:, :, i:i+1, :]  # (batch, num_heads, 1, head_dim)
-            k_local = k[:, :, start:end, :]  # (batch, num_heads, window_size, head_dim)
-            v_local = v[:, :, start:end, :]  # (batch, num_heads, window_size, head_dim)
+        dropout_p = self.dropout.p if self.training else 0.0
 
-            # Compute attention scores
-            scores = torch.matmul(q_i, k_local.transpose(-2, -1)) * self.scale  # (batch, num_heads, 1, window_size)
-
-            # Apply causal mask if provided
-            if mask is not None:
-                window_mask = mask[:, :, i:i+1, start:end]  # (batch, 1, 1, window_size)
-                scores = scores.masked_fill(window_mask == 0, float('-inf'))
-
-            # Apply softmax
-            attn_weights = F.softmax(scores, dim=-1)  # (batch, num_heads, 1, window_size)
-            attn_weights = self.dropout(attn_weights)
-
-            # Apply attention to values
-            attn_output = torch.matmul(attn_weights, v_local)  # (batch, num_heads, 1, head_dim)
-            output[:, :, i:i+1, :] = attn_output
+        output = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=attn_bias, dropout_p=dropout_p, scale=self.scale
+        )
 
         return output
 
@@ -1262,7 +1272,7 @@ class SentenceTransformersEmbeddingWrapper:
 
     def get_embeddings(self, texts: list, batch_size: int = 32) -> np.ndarray:
         """
-        テキストのリストからエンベディングを取得
+        テキストのリストからエンベディングを取得（1回の呼び出しでバッチ全体を処理）
 
         Args:
             texts: テキストのリスト
@@ -1276,7 +1286,7 @@ class SentenceTransformersEmbeddingWrapper:
                 texts,
                 batch_size=batch_size,
                 convert_to_numpy=True,
-                show_progress_bar=True
+                show_progress_bar=False,
             )
             return embeddings
         except Exception as e:
@@ -1318,6 +1328,7 @@ class NeuroQuantumEmbedding(nn.Module):
         self.google_wrapper = None
         self.sentence_transformers_wrapper = None
         self.projection = None
+        self._vocab_embedding_initialized = False
 
         if use_sentence_transformers:
             if not SENTENCE_TRANSFORMERS_AVAILABLE:
@@ -1326,18 +1337,44 @@ class NeuroQuantumEmbedding(nn.Module):
                 self.use_external_embedding = use_openai_embedding or use_google_embedding
 
             if self.use_sentence_transformers:
+                # embedding-gemmaはトークン単位ではなく文単位のエンベディングモデルのため、
+                # 毎フォワードでAPI呼び出しをすると (1) 全トークン位置に同一ベクトルが
+                # コピーされてしまいトークン固有の情報が失われる (2) 実行時オーバーヘッドが
+                # 大きく学習が不安定・低速になる、という問題がある。
+                # そこで語彙の各サブワード片を1回だけembedding-gemmaでベクトル化し、
+                # 通常の学習可能Embedding層の初期値として使う（以降は通常のlookupのみ）。
                 import torch
                 device = "cuda" if torch.cuda.is_available() else "cpu"
-                self.sentence_transformers_wrapper = SentenceTransformersEmbeddingWrapper(
+                wrapper = SentenceTransformersEmbeddingWrapper(
                     model_name=sentence_transformers_model,
                     device=device
                 )
-                actual_embed_dim = self.sentence_transformers_wrapper.embed_dim
-                if actual_embed_dim != config.embed_dim:
-                    warnings.warn(
-                        f"Sentence-Transformers埋め込み次元({actual_embed_dim})が設定次元({config.embed_dim})と異なります。"
-                        f"射影層を追加します。"
+                actual_embed_dim = wrapper.embed_dim
+
+                vocab_size = config.vocab_size
+                pieces = None
+                if tokenizer is not None and getattr(tokenizer, "sp", None) is not None:
+                    pieces = [tokenizer.sp.IdToPiece(i) for i in range(vocab_size)]
+                    pieces = [p.replace("▁", " ").strip() or "." for p in pieces]
+                if pieces is None:
+                    pieces = [str(i) for i in range(vocab_size)]
+
+                print(f"   🔤 embedding-gemmaで語彙 {vocab_size} 件のトークン埋め込みを事前計算中...")
+                vocab_vectors = wrapper.get_embeddings(pieces, batch_size=256)
+
+                self.text_embedding = nn.Embedding(vocab_size, actual_embed_dim)
+                with torch.no_grad():
+                    self.text_embedding.weight.copy_(
+                        torch.tensor(np.array(vocab_vectors), dtype=torch.float32)
                     )
+                self._vocab_embedding_initialized = True
+                print(f"   ✅ 事前計算完了（以降はembedding-gemmaへの実行時呼び出しなし）")
+
+                # 事前計算後は外部呼び出し不要。forward()では通常のtext_embedding経路を使う
+                self.use_external_embedding = False
+                del wrapper
+
+                if actual_embed_dim != config.embed_dim:
                     self.projection = nn.Linear(actual_embed_dim, config.embed_dim)
                 else:
                     self.projection = nn.Identity()
@@ -1384,8 +1421,8 @@ class NeuroQuantumEmbedding(nn.Module):
                 else:
                     self.projection = nn.Identity()
 
-        if not self.use_external_embedding:
-            # 従来のテキストエンベディング
+        if not self.use_external_embedding and not self._vocab_embedding_initialized:
+            # 従来のテキストエンベディング（embedding-gemmaで事前計算済みの場合は上書きしない）
             self.text_embedding = nn.Embedding(config.vocab_size, config.embed_dim)
 
         # 位置埋め込み（学習可能）- 外部Embedding使用時も必要
@@ -1434,14 +1471,12 @@ class NeuroQuantumEmbedding(nn.Module):
             # APIからエンベディングを取得
             # 注意: APIは文全体のエンベディングを返すため、
             # トークン単位ではなく文単位で処理
-            embeddings_list = []
-            for text in texts:
-                embedding = external_wrapper.get_embeddings([text])[0]
-                embeddings_list.append(embedding)
+            # バッチ全体を1回の呼び出しで処理（サンプルごとのループを回避し高速化）
+            embeddings_array = external_wrapper.get_embeddings(texts)
 
             # テンソルに変換
             text_embeds = torch.tensor(
-                np.array(embeddings_list),
+                np.array(embeddings_array),
                 device=token_ids.device,
                 dtype=torch.float32
             )
@@ -1453,9 +1488,11 @@ class NeuroQuantumEmbedding(nn.Module):
             if text_embeds.dim() == 2:
                 text_embeds = text_embeds.unsqueeze(1).expand(-1, seq_len, -1)
         else:
-            # 従来のテキストエンベディング
+            # 従来のテキストエンベディング（embedding-gemma事前計算版の場合は次元射影も適用）
             text_embeds = self.text_embedding(token_ids)
-        
+            if self._vocab_embedding_initialized and self.projection is not None:
+                text_embeds = self.projection(text_embeds)
+
         # 位置埋め込み
         positions = torch.arange(seq_len, device=token_ids.device).unsqueeze(0).expand(batch_size, -1)
         # Clamp positions to valid range [0, max_seq_len-1]

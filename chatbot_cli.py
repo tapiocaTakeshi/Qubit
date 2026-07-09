@@ -6,9 +6,15 @@ Claude Code / Codex CLI 風のターミナルUI
 
 import sys
 import os
+import glob
 import time
 import shutil
-import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+CHECKPOINT_DIR = "/workspace/checkpoints"
+# 優先順位: SFT（指示追従学習済み）> Pre-training（事前学習のみ）
+CHECKPOINT_PREFIXES = ["megabyte_100mb_sft", "megabyte_100mb_pretraining"]
 
 # ========================================
 # ANSI カラーコード
@@ -74,6 +80,7 @@ def print_help():
     print(f"\n{c.BOLD} コマンド{c.RESET}")
     print(f"  {c.CYAN}/help{c.RESET}      このヘルプを表示")
     print(f"  {c.CYAN}/model{c.RESET}     使用モデルを表示")
+    print(f"  {c.CYAN}/temp [値]{c.RESET}  生成のtemperatureを表示/設定 (例: /temp 0.7)")
     print(f"  {c.CYAN}/clear{c.RESET}     画面をクリア")
     print(f"  {c.CYAN}/stats{c.RESET}     会話統計を表示")
     print(f"  {c.CYAN}/exit{c.RESET}      終了 {c.GRAY}(quit, さようなら も可){c.RESET}\n")
@@ -116,50 +123,154 @@ def print_prompt():
     print()
     return input(f"{c.BRIGHT_GREEN}{c.BOLD}❯{c.RESET} ")
 
+def find_latest_checkpoint():
+    """
+    /workspace/checkpoints/ から使用するチェックポイントを自動検出する。
+    優先順位: SFT > Pre-training、各段階内では _best.pt > _merged.pt > _latest.pt > 最新の *_epochN.pt
+    """
+    for prefix in CHECKPOINT_PREFIXES:
+        candidates = [
+            f"{CHECKPOINT_DIR}/{prefix}_best.pt",
+            f"{CHECKPOINT_DIR}/{prefix}_merged.pt",
+            f"{CHECKPOINT_DIR}/{prefix}_latest.pt",
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                return path
+
+        epoch_files = sorted(glob.glob(f"{CHECKPOINT_DIR}/{prefix}_epoch*.pt"))
+        if epoch_files:
+            return epoch_files[-1]
+
+    return None
+
 # ========================================
 # チャットエンジン（embedding-Gemma使用）
 # ========================================
 class ChatEngine:
     def __init__(self):
-        self.model = None
         self.history = []
         self.turn_count = 0
-        self.knowledge = {
-            "こんにちは": "こんにちは！何かお手伝いできることはありますか？",
-            "あなたは誰": "私はNeuroQuantumです。QBNNとembedding-Gemma-300mを使用したAIアシスタントです。",
-            "何ができる": "テキストの意味理解、質問応答、感情分析などができます。日本語に対応しています。",
-            "機械学習とは": "機械学習は、データから自動的にパターンを学習し、予測や分類を行う技術です。",
-            "量子とは": "量子は物理学における最小のエネルギー単位です。QBNNではこの概念を神経ネットワークに応用しています。",
-            "日本について": "日本は東アジアに位置する島国で、豊かな伝統文化と最先端技術が共存しています。",
-            "プログラミングとは": "プログラミングはコンピュータに指示を与えて問題を解決するスキルです。",
-            "ありがとう": "どういたしまして！他に何かあればお気軽にどうぞ。",
-        }
+        self.temperature = 0.8
+        self.max_tokens = 60
 
-    def load_model(self):
-        from sentence_transformers import SentenceTransformer
-        self.model = SentenceTransformer("google/embeddinggemma-300m")
+        # NeuroQuantum (QBNN) 本体モデル（embedding-gemmaは内部の語彙初期化にのみ使用）
+        self.qbnn_model = None
+        self.qbnn_tokenizer = None
+        self.qbnn_config = None
+        self.qbnn_device = "cpu"
+        self.qbnn_checkpoint_path = None
+
+    def load_qbnn(self):
+        """
+        /workspace/checkpoints/ から学習済みNeuroQuantum(QBNN)モデルを読み込む。
+        チェックポイントが見つからない場合はQBNN生成機能を無効化する。
+        """
+        import torch
+        from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer
+
+        ckpt_path = find_latest_checkpoint()
+        if ckpt_path is None:
+            return False
+
+        self.qbnn_device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.qbnn_tokenizer = NeuroQuantumTokenizer(vocab_size=32000, model_file="neuroq_tokenizer.model")
+        self.qbnn_config = NeuroQuantumConfig(
+            vocab_size=32000, embed_dim=1024, hidden_dim=2048,
+            num_heads=16, num_layers=6, max_seq_len=512,
+        )
+        self.qbnn_model = NeuroQuantum(
+            config=self.qbnn_config,
+            tokenizer=self.qbnn_tokenizer,
+            use_sentence_transformers=True,
+            sentence_transformers_model="google/embeddinggemma-300m",
+        ).to(self.qbnn_device)
+
+        state_dict = torch.load(ckpt_path, map_location=self.qbnn_device)
+        self.qbnn_model.load_state_dict(state_dict)
+        self.qbnn_model.eval()
+
+        self.qbnn_checkpoint_path = ckpt_path
+        return True
+
+    def generate_qbnn(self, prompt: str, max_tokens: int = None, temperature: float = None,
+                       repetition_penalty: float = 1.3, no_repeat_last_n: int = 32,
+                       min_tokens: int = 6) -> str:
+        """
+        学習済みQBNNモデルでテキスト生成する（応答本体）。
+
+        repetition_penalty: 既出トークンのロジットを弱める強さ（1.0で無効、大きいほど繰り返しを避ける）
+        no_repeat_last_n: 直近何トークン分を繰り返し判定の対象にするか
+        min_tokens: 新しいBOSの直後などでモデルが即座にEOSを出して空応答になるのを防ぐため、
+                    最低限生成させるトークン数（この間はEOS/PAD/EOFを無視する）
+        """
+        import torch
+
+        if self.qbnn_model is None:
+            return ""
+
+        max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+        temperature = temperature if temperature is not None else self.temperature
+
+        input_ids = self.qbnn_tokenizer.encode(prompt, add_special=False)
+        # ユーザー発話をBOS...EOSで一区切りとして閉じ、続けて新しいBOSから
+        # 応答の生成を開始する（学習時のBOS〜EOS単位の文書構造に合わせる）
+        generated = (
+            [self.qbnn_tokenizer.bos_id] + input_ids + [self.qbnn_tokenizer.eos_id]
+            + [self.qbnn_tokenizer.bos_id]
+        )
+        prompt_len = len(generated)
+        stop_ids = (self.qbnn_tokenizer.eos_id, self.qbnn_tokenizer.pad_id, self.qbnn_tokenizer.eof_id)
+
+        with torch.no_grad():
+            for step in range(max_tokens):
+                seq_len = len(generated)
+                if seq_len >= self.qbnn_config.max_seq_len:
+                    break
+                padded = generated + [self.qbnn_tokenizer.pad_id] * (self.qbnn_config.max_seq_len - seq_len)
+                input_tensor = torch.tensor([padded], dtype=torch.long, device=self.qbnn_device)
+                logits = self.qbnn_model(input_tensor)
+                next_logits = logits[0, seq_len - 1, :].clone()
+
+                # 繰り返しペナルティ: 直近に出たトークンのロジットを弱める（CTRL方式）
+                if repetition_penalty != 1.0:
+                    recent_tokens = set(generated[-no_repeat_last_n:])
+                    for tok_id in recent_tokens:
+                        if next_logits[tok_id] > 0:
+                            next_logits[tok_id] /= repetition_penalty
+                        else:
+                            next_logits[tok_id] *= repetition_penalty
+
+                # 最低生成トークン数に達するまでは終端トークンを選ばせない（空応答防止）
+                if step < min_tokens:
+                    for tok_id in stop_ids:
+                        next_logits[tok_id] = float('-inf')
+
+                next_logits = next_logits / temperature
+                probs = torch.softmax(next_logits, dim=-1)
+                next_token = torch.multinomial(probs, 1).item()
+
+                if next_token in stop_ids:
+                    break
+                generated.append(next_token)
+
+        # プロンプト部分を除いた生成分のみを応答として返す
+        return self.qbnn_tokenizer.decode(generated[prompt_len:]).strip()
 
     def respond(self, user_input):
-        from sklearn.metrics.pairwise import cosine_similarity
-
+        """学習済みQBNNモデルの生成結果を応答本体として返す"""
         self.turn_count += 1
         self.history.append(("user", user_input))
 
-        user_emb = self.model.encode(user_input)
-        keys = list(self.knowledge.keys())
-        key_embs = self.model.encode(keys)
-
-        sims = cosine_similarity([user_emb], key_embs)[0]
-        best_idx = np.argmax(sims)
-        best_score = sims[best_idx]
-
-        if best_score > 0.35:
-            response = self.knowledge[keys[best_idx]]
+        if self.qbnn_model is not None:
+            response = self.generate_qbnn(user_input)
+            if not response:
+                response = "（うまく生成できませんでした。もう一度お試しください）"
         else:
-            response = "興味深いですね。もう少し詳しく教えていただけますか？"
+            response = "QBNNモデルが読み込まれていないため生成できません。/model で状態を確認してください。"
 
         self.history.append(("assistant", response))
-        return response, best_score
+        return response
 
 # ========================================
 # メインループ
@@ -169,14 +280,22 @@ def main():
     os.system("clear" if os.name != "nt" else "cls")
 
     print_banner()
-    print_system_message("embedding-gemma-300m をロード中...", "info")
 
     engine = ChatEngine()
-    t0 = time.time()
-    engine.load_model()
-    elapsed = time.time() - t0
 
-    print_system_message(f"モデルロード完了 ({elapsed:.1f}秒)", "success")
+    print_system_message("NeuroQuantum(QBNN)チェックポイントを検索中...", "info")
+    t0 = time.time()
+    qbnn_loaded = engine.load_qbnn()
+    elapsed = time.time() - t0
+    if qbnn_loaded:
+        print_system_message(
+            f"QBNNモデル読み込み完了 ({elapsed:.1f}秒) : {engine.qbnn_checkpoint_path}", "success"
+        )
+    else:
+        print_system_message(
+            f"チェックポイントが見つかりません（{CHECKPOINT_DIR}）。QBNN生成は無効です。", "warn"
+        )
+
     print(f"\n{c.GRAY}「/help」でコマンド一覧、「/exit」で終了{c.RESET}")
 
     while True:
@@ -203,10 +322,25 @@ def main():
                 print_banner()
                 continue
             elif cmd == "/model":
-                print_system_message("モデル: google/embeddinggemma-300m (300次元, 多言語対応)", "info")
+                print_system_message("Embedding: google/embeddinggemma-300m (300次元, 多言語対応)", "info")
+                if engine.qbnn_model is not None:
+                    print_system_message(f"QBNN: {engine.qbnn_checkpoint_path}", "info")
+                else:
+                    print_system_message("QBNN: 未読み込み（チェックポイントなし）", "warn")
                 continue
             elif cmd == "/stats":
                 print_system_message(f"会話ターン数: {engine.turn_count}", "info")
+                continue
+            elif cmd.startswith("/temp"):
+                parts = user_input.split()
+                if len(parts) == 2:
+                    try:
+                        engine.temperature = max(0.1, min(2.0, float(parts[1])))
+                        print_system_message(f"temperature を {engine.temperature:.2f} に設定しました", "success")
+                    except ValueError:
+                        print_system_message("数値を指定してください（例: /temp 0.9）", "error")
+                else:
+                    print_system_message(f"現在のtemperature: {engine.temperature:.2f}", "info")
                 continue
             else:
                 print_system_message(f"不明なコマンド: {user_input}", "error")
@@ -219,8 +353,8 @@ def main():
         print_user_message(user_input)
         spinner_thinking(0.5)
 
-        response, score = engine.respond(user_input)
-        print_assistant_message(response, meta=f"信頼度 {score:.1%}")
+        response = engine.respond(user_input)
+        print_assistant_message(response, meta=f"⚛ QBNN生成 (temperature={engine.temperature:.2f})")
 
     c2 = Color
     print(f"{c2.GRAY}{'─' * min(term_width(), 78)}{c2.RESET}")
