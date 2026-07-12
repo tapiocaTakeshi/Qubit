@@ -2190,6 +2190,11 @@ class NeuroQuantumTokenizer:
         self.eos_id = 3
         self.bof_id = 4
         self.eof_id = 5
+        # 実際のSentencePiece語彙に <USER>/<ASSISTANT>/<SYSTEM>/<bof>/<eof> が
+        # user_defined_symbols として含まれる場合、_load_model() 内で正しいIDに上書きされる
+        self.user_id = None
+        self.assistant_id = None
+        self.system_id = None
 
         # フォールバック用の語彙マッピング
         self.token_to_idx: Dict[str, int] = {}
@@ -2216,6 +2221,22 @@ class NeuroQuantumTokenizer:
         self.actual_vocab_size = self.sp.GetPieceSize()
         self.vocab_size = self.actual_vocab_size
         self.model_file = path
+
+        # user_defined_symbols の実際の並び順（<USER>,<ASSISTANT>,<SYSTEM>,<bof>,<eof>）により
+        # <bof>/<eof> は id=4,5 ではなく id=7,8 に割り当てられている。
+        # ハードコードした既定値ではなく、実際の語彙から正しいIDを引き直す。
+        for piece, attr in (
+            ("<bof>", "bof_id"),
+            ("<eof>", "eof_id"),
+            ("<USER>", "user_id"),
+            ("<ASSISTANT>", "assistant_id"),
+            ("<SYSTEM>", "system_id"),
+        ):
+            piece_id = self.sp.PieceToId(piece)
+            # PieceToId は未知ピースだと unk_id にフォールバックするため、
+            # 往復変換が一致する（実在するピースである）場合のみ上書きする
+            if self.sp.IdToPiece(piece_id) == piece:
+                setattr(self, attr, piece_id)
 
     def _init_fallback_vocab(self):
         """フォールバック用の語彙を特殊トークンで初期化"""

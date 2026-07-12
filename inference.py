@@ -18,13 +18,23 @@ from neuroquantum_layered import (
 )
 
 def find_latest_checkpoint():
-    """最新のチェックポイントを探す"""
+    """最低ロスのチェックポイントを探す"""
     checkpoint_dir = Path("./checkpoints")
 
     if not checkpoint_dir.exists():
         return None
 
-    # マージされたチェックポイントを優先
+    # SFT best を優先（最低ロス）
+    sft_best_files = sorted(checkpoint_dir.glob("*sft_best.pt"))
+    if sft_best_files:
+        return sft_best_files[-1]
+
+    # その他の best を探す
+    best_files = sorted(checkpoint_dir.glob("*_best.pt"))
+    if best_files:
+        return best_files[-1]
+
+    # マージされたチェックポイント
     merged_files = sorted(checkpoint_dir.glob("*merged.pt"))
     if merged_files:
         return merged_files[-1]
@@ -66,7 +76,8 @@ def generate_text(model, tokenizer, prompt: str, max_length: int = 100, device: 
                     break
 
                 generated.append(next_token)
-            except:
+            except Exception as e:
+                print(f"      (エラー: {e})")
                 break
 
     try:
@@ -96,10 +107,10 @@ def main():
     config_dict = get_model_config_by_size("megabyte_100mb", vocab_size=32000)
     config = NeuroQuantumConfig(
         vocab_size=32000,
-        embed_dim=config_dict["embed_dim"],
-        hidden_dim=config_dict["hidden_dim"],
-        num_heads=config_dict["num_heads"],
-        num_layers=6,
+        embed_dim=1024,
+        hidden_dim=2048,
+        num_heads=16,
+        num_layers=10,
         max_seq_len=512,
         dropout=0.1,
         lambda_entangle=0.5,

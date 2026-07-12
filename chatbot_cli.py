@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 CHECKPOINT_DIR = "/workspace/checkpoints"
 # 優先順位: SFT（指示追従学習済み）> Pre-training（事前学習のみ）
-CHECKPOINT_PREFIXES = ["megabyte_100mb_sft", "megabyte_100mb_pretraining"]
+CHECKPOINT_PREFIXES = ["megabyte_100mb_mathcode_sft", "megabyte_100mb_sft", "megabyte_100mb_pretraining"]
 
 # ========================================
 # ANSI カラーコード
@@ -177,7 +177,7 @@ class ChatEngine:
         self.qbnn_tokenizer = NeuroQuantumTokenizer(vocab_size=32000, model_file="neuroq_tokenizer.model")
         self.qbnn_config = NeuroQuantumConfig(
             vocab_size=32000, embed_dim=1024, hidden_dim=2048,
-            num_heads=16, num_layers=6, max_seq_len=512,
+            num_heads=16, num_layers=10, max_seq_len=512,
         )
         self.qbnn_model = NeuroQuantum(
             config=self.qbnn_config,
@@ -186,8 +186,8 @@ class ChatEngine:
             sentence_transformers_model="google/embeddinggemma-300m",
         ).to(self.qbnn_device)
 
-        state_dict = torch.load(ckpt_path, map_location=self.qbnn_device)
-        self.qbnn_model.load_state_dict(state_dict)
+        state_dict = torch.load(ckpt_path, map_location=self.qbnn_device, weights_only=False)
+        self.qbnn_model.load_state_dict(state_dict, strict=False)
         self.qbnn_model.eval()
 
         self.qbnn_checkpoint_path = ckpt_path

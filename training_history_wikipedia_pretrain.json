@@ -1,0 +1,24 @@
+{
+  "start_time": "2026-07-11T07:15:38.075500+00:00",
+  "log": [
+    {
+      "batch": 50,
+      "articles": 102,
+      "tokens": 90649,
+      "train_loss": 7.762955436706543,
+      "val_loss": 6.692503954234876
+    },
+    {
+      "batch": 100,
+      "articles": 197,
+      "tokens": 180524,
+      "train_loss": 7.412800407409668,
+      "val_loss": 6.52231848867316
+    }
+  ],
+  "end_time": "2026-07-11T07:16:14.712768+00:00",
+  "total_articles": 200,
+  "total_tokens": 184304,
+  "total_batches": 102,
+  "best_val_loss": 6.52231848867316
+}

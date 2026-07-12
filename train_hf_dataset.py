@@ -564,7 +564,7 @@ def main():
         scheduler.step()
         training_log.append({"epoch": epoch, "avg_loss": avg_loss})
         save_checkpoint(epoch=epoch, loss=avg_loss)
-        progress.log_epoch(epoch=epoch + 1, loss=avg_loss)
+        progress.log_epoch(epoch=epoch + 1, total_epochs=args.epochs, loss=avg_loss)
 
     progress.end_training()
     save_checkpoint(epoch=args.epochs - 1, loss=avg_loss, final=True)
