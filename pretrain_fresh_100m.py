@@ -50,6 +50,44 @@ def set_qbnn_lambda(model, lambda_min, lambda_max):
     return n
 
 
+def set_qbnn_rho(model, rho):
+    """もつれ補正クリッピング係数 rho (‖λΔ‖ <= rho*‖h̃‖) を全QBNNLayerに設定する。"""
+    n = 0
+    for m in model.modules():
+        if isinstance(m, QBNNLayer):
+            m.rho = rho
+            n += 1
+    return n
+
+
+def j_frobenius_norm_sq(model):
+    """全QBNNLayerのJ(もつれテンソル)のフロベニウスノルム二乗の合計。損失への正則化項に使う。"""
+    total = None
+    for m in model.modules():
+        if isinstance(m, QBNNLayer):
+            J = m.J_source if m.use_qbnn_layered else m.J
+            sq = (J * J).sum()
+            total = sq if total is None else total + sq
+    return total
+
+
+def qbnn_correction_stats(model):
+    """各QBNNLayerが記録した直近の補正量/h̃ノルム統計とJノルムを集計する(ログ用)。"""
+    correction_norms, htilde_norms, j_norms = [], [], []
+    for m in model.modules():
+        if isinstance(m, QBNNLayer):
+            correction_norms.append(m.last_correction_norm.item())
+            htilde_norms.append(m.last_htilde_norm.item())
+            J = m.J_source if m.use_qbnn_layered else m.J
+            j_norms.append(J.detach().norm().item())
+    n = max(len(correction_norms), 1)
+    return {
+        "correction_norm_mean": sum(correction_norms) / n,
+        "htilde_norm_mean": sum(htilde_norms) / n,
+        "j_norm_mean": sum(j_norms) / n,
+    }
+
+
 def freeze_j_theta(model, freeze: bool):
     """J(J_source/entangle_op.W_entangle)とθ(lambda_base)をfreeze/unfreezeする。"""
     n_frozen, n_total = 0, 0
@@ -163,22 +201,32 @@ def pad_batch(seqs, tokenizer, max_seq_len):
     return torch.tensor(padded, dtype=torch.long)
 
 
-def build_fixed_val_set(dataset_specs, tokenizer, max_seq_len, n_val, seed):
+def build_fixed_val_set(dataset_specs, tokenizer, max_seq_len, n_val, seed, max_retries=8):
     """固定検証セットを構築する。ドメイン(データソース)ごとの内訳も同じ1パスで
     追跡し、ドメイン別val loss計測に使えるようにする。
+
+    HF Hubストリーミング中の一時的なネットワークエラーでプロセス全体が落ちる問題への
+    対策として、この関数内で再試行する（外側のプロセスリトライより軽量で速い）。
     """
-    seqs = []
-    domain_seqs = {spec[0]: [] for spec in dataset_specs}
-    stream = mixed_stream(dataset_specs, seed=seed)
-    count = 0
-    for text, src in stream:
-        if count >= n_val:
-            break
-        new_seqs = article_to_sequences(text, tokenizer, max_seq_len)
-        seqs.extend(new_seqs)
-        domain_seqs[src].extend(new_seqs)
-        count += 1
-    return seqs, count, domain_seqs
+    for attempt in range(1, max_retries + 1):
+        try:
+            seqs = []
+            domain_seqs = {spec[0]: [] for spec in dataset_specs}
+            stream = mixed_stream(dataset_specs, seed=seed)
+            count = 0
+            for text, src in stream:
+                if count >= n_val:
+                    break
+                new_seqs = article_to_sequences(text, tokenizer, max_seq_len)
+                seqs.extend(new_seqs)
+                domain_seqs[src].extend(new_seqs)
+                count += 1
+            return seqs, count, domain_seqs
+        except Exception as e:
+            print(f"  ⚠️ 検証セット構築中にエラー (試行{attempt}/{max_retries}): {type(e).__name__}: {e}")
+            if attempt == max_retries:
+                raise
+            time.sleep(10)
 
 
 @torch.no_grad()
@@ -235,6 +283,10 @@ def main():
                          help="この割合でλがlambda-warmup-targetに到達、以降は維持")
     parser.add_argument("--freeze-j-theta", action="store_true", default=True)
     parser.add_argument("--no-freeze-j-theta", dest="freeze_j_theta", action="store_false")
+    parser.add_argument("--rho", type=float, default=0.2,
+                         help="もつれ補正クリッピング: ‖λΔ‖ <= rho*‖h̃‖")
+    parser.add_argument("--j-reg-alpha", type=float, default=1e-5,
+                         help="J正則化係数。損失に alpha*sum(‖J‖_F^2) を加算する")
     parser.add_argument("--lr-schedule", choices=["constant", "cosine"], default="constant")
     parser.add_argument("--lr-warmup-frac", type=float, default=0.02)
     parser.add_argument("--lr-min-ratio", type=float, default=0.1)
@@ -290,6 +342,10 @@ def main():
         n_frozen, n_total = freeze_j_theta(model, freeze=True)
         print(f"  ✓ J/θ を凍結: {n_frozen:,} / {n_total:,} パラメータ")
 
+    n_qbnn_rho = set_qbnn_rho(model, args.rho)
+    print(f"  ✓ QBNNLayer {n_qbnn_rho}個の 補正クリッピング rho={args.rho} (‖λΔ‖<=rho*‖h̃‖)")
+    print(f"  ✓ J正則化係数 alpha={args.j_reg_alpha}")
+
     optimizer = build_optimizer(model, args.lr, args.j_lr_ratio)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"  ✓ Optimizer構築完了 (学習対象 {n_trainable:,} パラメータ)")
@@ -341,11 +397,18 @@ def main():
             logits = model(input_ids)
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = input_ids[..., 1:].contiguous()
-            loss = F.cross_entropy(
+            lm_loss = F.cross_entropy(
                 shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1), ignore_index=0
             )
+            j_reg = j_frobenius_norm_sq(model)
+            loss = lm_loss if j_reg is None else lm_loss + args.j_reg_alpha * j_reg
+
+            if not torch.isfinite(loss):
+                print(f"  ⚠️ [opt_step {opt_step}] loss が非有限値(NaN/Inf)のためこのバッチをスキップ")
+                continue
+
             (loss / args.grad_accum).backward()
-            total_loss += loss.item()
+            total_loss += lm_loss.item()
             accum_count += 1
             micro_step += 1
 
@@ -383,6 +446,12 @@ def main():
                     avg_loss = total_loss / micro_step
                     print(f"  [opt_step {opt_step}] tokens={total_tokens:,} avg_loss={avg_loss:.4f} "
                           f"elapsed={elapsed/60:.1f}min rate={rate:.0f}tok/s lr={optimizer.param_groups[0]['lr']:.2e}")
+                    if j_theta_unfrozen:
+                        qstats = qbnn_correction_stats(model)
+                        print(f"    ⚛️ J_norm={qstats['j_norm_mean']:.4f} "
+                              f"correction_norm={qstats['correction_norm_mean']:.4f} "
+                              f"htilde_norm={qstats['htilde_norm_mean']:.4f} "
+                              f"ratio={qstats['correction_norm_mean']/(qstats['htilde_norm_mean']+1e-6):.3f}")
 
                 if opt_step % args.eval_every_steps == 0:
                     val_loss = eval_on_sequences(model, val_sequences, tokenizer, device, ARCH["max_seq_len"])

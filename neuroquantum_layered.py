@@ -717,17 +717,22 @@ class QBNNLayer(nn.Module):
     参照: qbnn_layered.py の APQB クラス
     """
     
-    def __init__(self, input_dim: int, output_dim: int, 
+    def __init__(self, input_dim: int, output_dim: int,
                  lambda_min: float = 0.2, lambda_max: float = 0.5,
-                 use_qbnn_layered: bool = True):  # qbnn_layered.pyを参照
+                 use_qbnn_layered: bool = True, rho: float = 0.2):  # qbnn_layered.pyを参照
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.use_qbnn_layered = use_qbnn_layered and QBNN_LAYERED_AVAILABLE
-        
+
         # λの範囲（θが動けるように）
         self.lambda_min = lambda_min
         self.lambda_max = lambda_max
+        # もつれ補正 ‖λΔ‖ <= rho * ‖h̃‖ となるようクリッピングする係数
+        self.rho = rho
+        # ログ記録用（学習ループから読み取る、勾配は持たない）
+        self.register_buffer('last_correction_norm', torch.tensor(0.0))
+        self.register_buffer('last_htilde_norm', torch.tensor(0.0))
         
         if self.use_qbnn_layered:
             # qbnn_layered.py の EQBNNLayer を内部で使用
@@ -804,10 +809,22 @@ class QBNNLayer(nn.Module):
         lambda_range = self.lambda_max - self.lambda_min
         lambda_eff = self.lambda_min + lambda_range * (lambda_normalized * 0.7 + dynamic_factor * 0.3)
         
-        # 6. 有効入力
-        h_hat = h_tilde + lambda_eff * delta
-        
-        # 7. 層正規化 + GELU活性化
+        # 6. もつれ補正のクリッピング: ‖λΔ‖ <= rho * ‖h̃‖ となるよう制御する
+        # (補正が通常経路h̃を上回って出力を不安定化させないための安全弁)
+        correction = lambda_eff * delta
+        htilde_norm = h_tilde.norm(dim=-1, keepdim=True)
+        correction_norm = correction.norm(dim=-1, keepdim=True)
+        clip_scale = torch.clamp(self.rho * htilde_norm / (correction_norm + 1e-6), max=1.0)
+        correction = correction * clip_scale
+
+        with torch.no_grad():
+            self.last_correction_norm = correction.norm(dim=-1).mean().detach()
+            self.last_htilde_norm = htilde_norm.mean().detach()
+
+        # 7. 有効入力
+        h_hat = h_tilde + correction
+
+        # 8. 層正規化 + GELU活性化
         output = self.layer_norm(h_hat)
         output = F.gelu(output)
         

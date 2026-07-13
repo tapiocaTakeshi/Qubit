@@ -1,0 +1,92 @@
+{
+  "start_time": "2026-07-12T16:13:51.327703+00:00",
+  "log": [
+    {
+      "opt_step": 20,
+      "tokens": 40581,
+      "train_loss": 4.150827533006668,
+      "val_loss": 3.777398188908895,
+      "domain_val_loss": {
+        "range3/cc100-ja": 3.563270092010498,
+        "wikimedia/wikipedia": 3.2794106006622314,
+        "globis-university/aozorabunko-clean": 4.250469207763672
+      },
+      "lr": 7.757000560496588e-05
+    },
+    {
+      "opt_step": 40,
+      "tokens": 81875,
+      "train_loss": 4.13965539932251,
+      "val_loss": 3.7816480795542398,
+      "domain_val_loss": {
+        "range3/cc100-ja": 3.572053551673889,
+        "wikimedia/wikipedia": 3.305636405944824,
+        "globis-university/aozorabunko-clean": 4.237646102905273
+      },
+      "lr": 6.880168480249557e-05
+    },
+    {
+      "opt_step": 60,
+      "tokens": 127373,
+      "train_loss": 4.1486277163028715,
+      "val_loss": 3.7757181326548257,
+      "domain_val_loss": {
+        "range3/cc100-ja": 3.5774216651916504,
+        "wikimedia/wikipedia": 3.3210415840148926,
+        "globis-university/aozorabunko-clean": 4.208418369293213
+      },
+      "lr": 5.3735567136152026e-05
+    },
+    {
+      "opt_step": 80,
+      "tokens": 194556,
+      "train_loss": 4.156795221567154,
+      "val_loss": 3.7654434045155845,
+      "domain_val_loss": {
+        "range3/cc100-ja": 3.59380567073822,
+        "wikimedia/wikipedia": 3.3150577545166016,
+        "globis-university/aozorabunko-clean": 4.166237831115723
+      },
+      "lr": 2.8534246147979296e-05
+    },
+    {
+      "opt_step": 100,
+      "tokens": 222387,
+      "train_loss": 4.150008420944214,
+      "val_loss": 3.757935126622518,
+      "domain_val_loss": {
+        "range3/cc100-ja": 3.579650044441223,
+        "wikimedia/wikipedia": 3.3065037727355957,
+        "globis-university/aozorabunko-clean": 4.162935733795166
+      },
+      "lr": 1.968716778984472e-05
+    },
+    {
+      "opt_step": 120,
+      "tokens": 256629,
+      "train_loss": 4.119716089963913,
+      "val_loss": 3.7547168731689453,
+      "domain_val_loss": {
+        "range3/cc100-ja": 3.5762665271759033,
+        "wikimedia/wikipedia": 3.300623893737793,
+        "globis-university/aozorabunko-clean": 4.158942699432373
+      },
+      "lr": 1.1797424707346103e-05
+    },
+    {
+      "opt_step": 140,
+      "tokens": 293691,
+      "train_loss": 4.114738305125917,
+      "val_loss": 3.753762165705363,
+      "domain_val_loss": {
+        "range3/cc100-ja": 3.5761042833328247,
+        "wikimedia/wikipedia": 3.3011484146118164,
+        "globis-university/aozorabunko-clean": 4.15836763381958
+      },
+      "lr": 8.081777560714976e-06
+    }
+  ],
+  "end_time": "2026-07-12T16:15:05.926668+00:00",
+  "total_tokens": 301713,
+  "opt_steps": 144
+}
