@@ -7,4 +7,4 @@ logs/
 gguf_models/
 *.log
 training_history_small_oasst_ja.json
-checkpoints/
+# checkpoints/は LFS経由でトラック
