@@ -67,7 +67,7 @@ def print_banner():
    ██║╚██╗██║██╔══╝  ██║   ██║██╔══██╗██║   ██║
    ██║ ╚████║███████╗╚██████╔╝██║  ██║╚██████╔╝
    ╚═╝  ╚═══╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝ ╚═════╝
-{c.RESET}{c.DIM}   QUANTUM · embedding-Gemma-300m · QBNN{c.RESET}
+{c.RESET}{c.DIM}   QUANTUM · nn.Embedding · QBNN{c.RESET}
 """
     print(banner)
     print(f"{c.GRAY}{'─' * width}{c.RESET}")
@@ -182,8 +182,6 @@ class ChatEngine:
         self.qbnn_model = NeuroQuantum(
             config=self.qbnn_config,
             tokenizer=self.qbnn_tokenizer,
-            use_sentence_transformers=True,
-            sentence_transformers_model="google/embeddinggemma-300m",
         ).to(self.qbnn_device)
 
         state_dict = torch.load(ckpt_path, map_location=self.qbnn_device, weights_only=False)
@@ -322,7 +320,7 @@ def main():
                 print_banner()
                 continue
             elif cmd == "/model":
-                print_system_message("Embedding: google/embeddinggemma-300m (300次元, 多言語対応)", "info")
+                print_system_message(f"Embedding: nn.Embedding ({self.qbnn_config.embed_dim}次元)", "info")
                 if engine.qbnn_model is not None:
                     print_system_message(f"QBNN: {engine.qbnn_checkpoint_path}", "info")
                 else:
