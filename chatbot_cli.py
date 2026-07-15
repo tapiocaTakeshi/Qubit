@@ -125,14 +125,15 @@ def print_prompt():
 
 def find_latest_checkpoint():
     """
-    /workspace/checkpoints/ から使用するチェックポイントを自動検出する。
-    優先順位: SFT > Pre-training、各段階内では _best.pt > _merged.pt > _latest.pt > 最新の *_epochN.pt
+    CHECKPOINT_DIR から使用するチェックポイントを自動検出する。
+    優先順位: SFT > Pre-training、各段階内では _best.pt > _merged.pt > _latest.pt > *_checkpoint.pt > 最新の *_epochN.pt
     """
     for prefix in CHECKPOINT_PREFIXES:
         candidates = [
             f"{CHECKPOINT_DIR}/{prefix}_best.pt",
             f"{CHECKPOINT_DIR}/{prefix}_merged.pt",
             f"{CHECKPOINT_DIR}/{prefix}_latest.pt",
+            f"{CHECKPOINT_DIR}/{prefix}_checkpoint.pt",
         ]
         for path in candidates:
             if os.path.exists(path):
