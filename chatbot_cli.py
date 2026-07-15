@@ -12,7 +12,7 @@ import shutil
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-CHECKPOINT_DIR = os.path.dirname(os.path.abspath(__file__))
+CHECKPOINT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
 # 優先順位: SFT（指示追従学習済み）> Pre-training（事前学習のみ）
 CHECKPOINT_PREFIXES = ["megabyte_100mb_mathcode_sft", "neuroq_small_oasst_ja", "megabyte_100mb_sft", "megabyte_100mb_pretraining"]
 
