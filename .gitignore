@@ -8,3 +8,5 @@ gguf_models/
 *.log
 training_history_small_oasst_ja.json
 # checkpoints/は LFS経由でトラック
+# Git LFS managed files - ignore working directory changes
+neuroq_*.model
