@@ -12,9 +12,9 @@ import shutil
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-CHECKPOINT_DIR = "/workspace/checkpoints"
+CHECKPOINT_DIR = os.path.dirname(os.path.abspath(__file__))
 # 優先順位: SFT（指示追従学習済み）> Pre-training（事前学習のみ）
-CHECKPOINT_PREFIXES = ["megabyte_100mb_mathcode_sft", "megabyte_100mb_sft", "megabyte_100mb_pretraining"]
+CHECKPOINT_PREFIXES = ["neuroq_small_oasst_ja", "megabyte_100mb_mathcode_sft", "megabyte_100mb_sft", "megabyte_100mb_pretraining"]
 
 # ========================================
 # ANSI カラーコード
@@ -320,7 +320,10 @@ def main():
                 print_banner()
                 continue
             elif cmd == "/model":
-                print_system_message(f"Embedding: nn.Embedding ({self.qbnn_config.embed_dim}次元)", "info")
+                if engine.qbnn_config is not None:
+                    print_system_message(f"Embedding: nn.Embedding ({engine.qbnn_config.embed_dim}次元)", "info")
+                else:
+                    print_system_message("Embedding: nn.Embedding（設定値なし）", "warn")
                 if engine.qbnn_model is not None:
                     print_system_message(f"QBNN: {engine.qbnn_checkpoint_path}", "info")
                 else:
