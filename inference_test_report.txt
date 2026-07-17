@@ -1,0 +1,44 @@
+NeuroQuantum Chat CLI - Inference Test Report
+Timestamp: 2026-07-17T13:21:09.245926
+Model: checkpoints/megabyte_100mb_mathcode_sft_best.pt
+======================================================================
+
+Test: Basic Greeting
+Prompt: こんにちは
+Status: ✅ Success
+Response: [37m（うまく生成できませんでした。もう一度お試しください）[0m
+[90m  ⚛ QBNN生成 (temperature=0.80)[0m
+[92m[1m❯[0m
+[36mℹ チャットを終了します。[0m
+[90m──────────────────────────────────────────────────────────────────────────────[0m
+[90mセッション終了 · 1 ターン[0m
+Warnings: /home/user/Qubit/neuroquantum_layered.py:101: UserWarning: OpenAI APIが利用できません。openai>=1.0.0をインストールしてください。
+  warnings.warn("OpenAI APIが利用できません。openai>=1.0.0をインストールしてください。")
+
+
+Test: Math/Code Question
+Prompt: Pythonで階乗を計算するコードを書いてください
+Status: ✅ Success
+Response: [37m（うまく生成できませんでした。もう一度お試しください）[0m
+[90m  ⚛ QBNN生成 (temperature=0.80)[0m
+[92m[1m❯[0m
+[36mℹ チャットを終了します。[0m
+[90m──────────────────────────────────────────────────────────────────────────────[0m
+[90mセッション終了 · 1 ターン[0m
+Warnings: /home/user/Qubit/neuroquantum_layered.py:101: UserWarning: OpenAI APIが利用できません。openai>=1.0.0をインストールしてください。
+  warnings.warn("OpenAI APIが利用できません。openai>=1.0.0をインストールしてください。")
+
+
+Test: Factual Question
+Prompt: 日本の首都は何ですか？
+Status: ✅ Success
+Response: [37m（うまく生成できませんでした。もう一度お試しください）[0m
+[90m  ⚛ QBNN生成 (temperature=0.80)[0m
+[92m[1m❯[0m
+[36mℹ チャットを終了します。[0m
+[90m──────────────────────────────────────────────────────────────────────────────[0m
+[90mセッション終了 · 1 ターン[0m
+Warnings: /home/user/Qubit/neuroquantum_layered.py:101: UserWarning: OpenAI APIが利用できません。openai>=1.0.0をインストールしてください。
+  warnings.warn("OpenAI APIが利用できません。openai>=1.0.0をインストールしてください。")
+
+
