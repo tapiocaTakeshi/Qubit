@@ -1,0 +1,68 @@
+name: "Qubit SFT Training - Scheduled"
+
+# 週1回の定期トレーニング実行
+on:
+  schedule:
+    # 毎週日曜日 00:00 UTC（medium モデル、20 エポック）
+    - cron: "0 0 * * 0"
+  workflow_dispatch:
+
+jobs:
+  train-weekly:
+    name: "Weekly Training - Medium Model"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install Hugging Face Hub CLI
+        run: |
+          pip install --quiet huggingface-hub
+
+      - name: Authenticate with Hugging Face
+        run: |
+          echo "${{ secrets.HF_TOKEN }}" | hf auth login --token-from-stdin
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+      - name: Run weekly training
+        run: |
+          chmod +x scripts/train_qubit_hfjobs.sh
+
+          echo "🚀 Starting weekly training job..."
+          echo "  - Model: medium"
+          echo "  - Epochs: 20"
+          echo "  - Dataset: kunishou/databricks-dolly-15k-ja"
+          echo "  - GPU: a10g-small"
+          echo ""
+
+          ./scripts/train_qubit_hfjobs.sh medium \
+            --epochs 20 \
+            --batch-size 4 \
+            --lr 3e-5 \
+            --jobs-flavor a10g-small \
+            --jobs-timeout 6h
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+      - name: Success notification
+        if: success()
+        run: |
+          echo "✅ Weekly training completed successfully!"
+          echo ""
+          echo "Model uploaded to:"
+          echo "  https://huggingface.co/tapiocaTakeshi/qubit-medium-sft-q4km"
+
+      - name: Failure notification
+        if: failure()
+        run: |
+          echo "❌ Weekly training failed!"
+          echo ""
+          echo "Check the GitHub Actions logs for details:"
+          echo "  https://github.com/tapiocaTakeshi/Qubit/actions"

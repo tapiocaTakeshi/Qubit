@@ -1,0 +1,182 @@
+name: "Qubit SFT Training - Hugging Face Jobs"
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_size:
+        description: "Model size (small/medium/large/xlarge)"
+        required: true
+        default: "medium"
+        type: choice
+        options:
+          - small
+          - medium
+          - large
+          - xlarge
+      epochs:
+        description: "Number of training epochs"
+        required: true
+        default: "20"
+        type: string
+      batch_size:
+        description: "Batch size"
+        required: true
+        default: "4"
+        type: string
+      learning_rate:
+        description: "Learning rate"
+        required: true
+        default: "3e-5"
+        type: string
+      gpu_flavor:
+        description: "GPU flavor (a10g-small/a40-large/multi-gpu-large)"
+        required: true
+        default: "a10g-small"
+        type: choice
+        options:
+          - a10g-small
+          - a40-large
+          - multi-gpu-large
+      upload_repo:
+        description: "Hugging Face upload repo (optional, auto-generated if empty)"
+        required: false
+        default: ""
+        type: string
+      timeout:
+        description: "Job timeout (e.g., 6h, 12h)"
+        required: true
+        default: "6h"
+        type: string
+      upload_enabled:
+        description: "Enable Hub upload after training"
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  train:
+    name: "Train ${{ matrix.model_size }} on HF Jobs"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        model_size: ["${{ github.event.inputs.model_size }}"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install Hugging Face Hub CLI
+        run: |
+          pip install --quiet huggingface-hub
+          hf --version
+
+      - name: Log in to Hugging Face
+        run: |
+          echo "${{ secrets.HF_TOKEN }}" | hf auth login --token-from-stdin
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+      - name: Verify authentication
+        run: |
+          hf auth whoami
+
+      - name: Prepare training script
+        run: |
+          chmod +x scripts/train_qubit_hfjobs.sh
+          echo "✅ Training script ready"
+
+      - name: Display training configuration
+        run: |
+          echo "========================================"
+          echo "Training Configuration"
+          echo "========================================"
+          echo "Model Size:     ${{ matrix.model_size }}"
+          echo "Epochs:         ${{ github.event.inputs.epochs }}"
+          echo "Batch Size:     ${{ github.event.inputs.batch_size }}"
+          echo "Learning Rate:  ${{ github.event.inputs.learning_rate }}"
+          echo "GPU Flavor:     ${{ github.event.inputs.gpu_flavor }}"
+          echo "Timeout:        ${{ github.event.inputs.timeout }}"
+          echo "Upload Enabled: ${{ github.event.inputs.upload_enabled }}"
+          echo "========================================"
+
+      - name: Run HF Jobs training
+        run: |
+          set -e
+
+          UPLOAD_ARGS=""
+          if [ "${{ github.event.inputs.upload_enabled }}" = "true" ]; then
+            if [ -z "${{ github.event.inputs.upload_repo }}" ]; then
+              UPLOAD_REPO="tapiocaTakeshi/qubit-${{ matrix.model_size }}-sft-q4km"
+            else
+              UPLOAD_REPO="${{ github.event.inputs.upload_repo }}"
+            fi
+            echo "📤 Models will be uploaded to: $UPLOAD_REPO"
+          else
+            UPLOAD_ARGS="--no-upload"
+            echo "⏭️  Skipping Hub upload"
+          fi
+
+          ./scripts/train_qubit_hfjobs.sh \
+            ${{ matrix.model_size }} \
+            --epochs ${{ github.event.inputs.epochs }} \
+            --batch-size ${{ github.event.inputs.batch_size }} \
+            --lr ${{ github.event.inputs.learning_rate }} \
+            --jobs-flavor ${{ github.event.inputs.gpu_flavor }} \
+            --jobs-timeout ${{ github.event.inputs.timeout }} \
+            $UPLOAD_ARGS
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+      - name: Job completed successfully
+        if: success()
+        run: |
+          echo "✅ Training job completed successfully!"
+          echo ""
+          echo "📊 Job Details:"
+          echo "  - Model Size: ${{ matrix.model_size }}"
+          echo "  - Epochs: ${{ github.event.inputs.epochs }}"
+          echo "  - GPU: ${{ github.event.inputs.gpu_flavor }}"
+          echo ""
+          if [ "${{ github.event.inputs.upload_enabled }}" = "true" ]; then
+            echo "📤 Check uploaded model:"
+            if [ -z "${{ github.event.inputs.upload_repo }}" ]; then
+              echo "  https://huggingface.co/tapiocaTakeshi/qubit-${{ matrix.model_size }}-sft-q4km"
+            else
+              echo "  https://huggingface.co/${{ github.event.inputs.upload_repo }}"
+            fi
+          fi
+
+      - name: Handle training failure
+        if: failure()
+        run: |
+          echo "❌ Training job failed!"
+          echo ""
+          echo "🔧 Troubleshooting:"
+          echo "  1. Check GitHub Actions logs above"
+          echo "  2. Verify HF_TOKEN secret is set (Settings > Secrets and variables > Actions)"
+          echo "  3. Ensure HF_TOKEN has write permissions"
+          echo "  4. Check Hugging Face Jobs dashboard:"
+          echo "     https://huggingface.co/account/billing/overview"
+          echo ""
+          echo "📖 Full guide: ./HUGGINGFACE_JOBS_TRAINING_GUIDE.md"
+
+  notify-result:
+    name: "Notify Results"
+    runs-on: ubuntu-latest
+    needs: [train]
+    if: always()
+
+    steps:
+      - name: Training result summary
+        run: |
+          if [ "${{ needs.train.result }}" = "success" ]; then
+            echo "✅ All training jobs completed successfully!"
+          else
+            echo "❌ Training job failed. Check logs for details."
+            exit 1
+          fi
