@@ -77,9 +77,7 @@ jobs:
 
       - name: Log in to Hugging Face
         run: |
-          echo "${{ secrets.HF_TOKEN }}" | hf auth login --token-from-stdin
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          hf auth login --token "${{ secrets.HF_TOKEN }}"
 
       - name: Verify authentication
         run: |
