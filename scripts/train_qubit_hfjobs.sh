@@ -34,7 +34,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # デフォルト設定
-MODEL_SIZE="${1:-medium}"
+MODEL_SIZE="medium"
 DATASET_ID="kunishou/databricks-dolly-15k-ja"
 QUANTIZATION="${QUANTIZATION:-Q4_K_M}"
 EPOCHS="${EPOCHS:-20}"
@@ -44,7 +44,7 @@ LR="${LR:-3e-5}"
 UPLOAD_ENABLED=true
 JOBS_FLAVOR="${HF_JOBS_FLAVOR:-a10g-small}"
 JOBS_TIMEOUT="${HF_JOBS_TIMEOUT:-6h}"
-UPLOAD_REPO="${HF_UPLOAD_REPO:-tapiocaTakeshi/qubit-${MODEL_SIZE}-sft-q4km}"
+UPLOAD_REPO=""
 
 # ========== 関数 ==========
 
@@ -72,7 +72,7 @@ validate_model_size() {
 
 show_usage() {
     cat << 'EOF'
-使用方法: ./scripts/train_qubit_hfjobs.sh [OPTIONS]
+使用方法: ./scripts/train_qubit_hfjobs.sh [MODEL_SIZE] [OPTIONS]
 
 位置指定引数:
   MODEL_SIZE              モデルサイズ (small/medium/large/xlarge)
@@ -106,6 +106,12 @@ EOF
 }
 
 # ========== 引数解析 ==========
+
+# Handle positional MODEL_SIZE argument first
+if [[ $# -gt 0 ]] && ! [[ "$1" =~ ^-- ]]; then
+    MODEL_SIZE="$1"
+    shift
+fi
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -156,6 +162,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Set default upload repo if not specified
+if [ -z "$UPLOAD_REPO" ]; then
+    UPLOAD_REPO="${HF_UPLOAD_REPO:-tapiocaTakeshi/qubit-${MODEL_SIZE}-sft-q4km}"
+fi
 
 # ========== 検証 ==========
 
