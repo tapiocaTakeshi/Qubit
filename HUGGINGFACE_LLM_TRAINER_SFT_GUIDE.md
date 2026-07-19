@@ -631,6 +631,45 @@ ollama run tapiocaTakeshi/megabyte_100mb-sft
 
 ---
 
+## Hugging Face Jobs での実行（クラウド）
+
+ローカルハードウェアがない場合、**Hugging Face Jobs** を使用してクラウドで直接トレーニングできます。
+
+### クイック実行
+
+```bash
+# デフォルト設定（medium モデル、A10 GPU）
+./scripts/train_qubit_hfjobs.sh
+
+# small モデルで低コスト実行
+./scripts/train_qubit_hfjobs.sh small --epochs 5
+
+# large モデルで高性能実行
+./scripts/train_qubit_hfjobs.sh large --epochs 10
+```
+
+### 主な利点
+
+- ✅ **ローカル環境不要**: GPU なしでも実行可能
+- ✅ **自動最適化**: メモリと速度を自動調整
+- ✅ **複数 GPU サイズ**: A10 small / A40 large / マルチ GPU 対応
+- ✅ **自動 GGUF 変換**: トレーニング完了後、自動的に GGUF 形式に変換
+- ✅ **Hub 自動アップロード**: 完成したモデルを自動的にアップロード
+
+### 詳細ガイド
+
+完全な詳細ガイドは以下を参照：
+
+📖 **[HUGGINGFACE_JOBS_TRAINING_GUIDE.md](./HUGGINGFACE_JOBS_TRAINING_GUIDE.md)**
+
+- セットアップと認証
+- スクリプト実行方法
+- モデルサイズガイド
+- トラブルシューティング
+- 料金見積もり
+
+---
+
 ## リソース
 
 ### Hugging Face Skills ドキュメント
