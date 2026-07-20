@@ -228,7 +228,11 @@ hf jobs run \
     trap 'log_error \"Job 失敗\"' ERR
 
     log_info '========== ステップ 1: 依存パッケージをインストール =========='
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl
     pip install --quiet -U huggingface_hub fastapi uvicorn datasets requests tqdm
+    command -v curl
+    curl --version
 
     log_info '========== ステップ 2: Qubit リポジトリを取得 =========='
     hf download tapiocaTakeshi/Qubit --local-dir /workspace/qubit
@@ -245,6 +249,12 @@ hf jobs run \
     log_info \"API サーバーの PID: \$API_PID\"
 
     # サーバー起動待ち
+    if ! command -v curl >/dev/null 2>&1; then
+        log_error 'curl がインストールされていません'
+        kill \$API_PID 2>/dev/null || true
+        exit 1
+    fi
+
     RETRY_COUNT=0
     MAX_RETRIES=120
     API_READY=false
@@ -261,6 +271,11 @@ hf jobs run \
             log_success 'API サーバーが起動しました'
             API_READY=true
             break
+        else
+            CURL_EXIT=\$?
+            if [ \$RETRY_COUNT -eq 0 ] || [ \$((RETRY_COUNT % 10)) -eq 0 ]; then
+                echo \"Health check failed: attempt=\$RETRY_COUNT exit=\$CURL_EXIT\"
+            fi
         fi
 
         RETRY_COUNT=\$((RETRY_COUNT + 1))
