@@ -240,30 +240,44 @@ hf jobs run \
     fi
 
     log_info '========== ステップ 3: API サーバーを起動 =========='
-    python api.py &
+    python api.py > /tmp/qubit-api.log 2>&1 &
     API_PID=\$!
+    log_info \"API サーバーの PID: \$API_PID\"
 
     # サーバー起動待ち
     RETRY_COUNT=0
-    MAX_RETRIES=30
+    MAX_RETRIES=120
+    API_READY=false
     while [ \$RETRY_COUNT -lt \$MAX_RETRIES ]; do
-        if curl -s http://localhost:8000/docs > /dev/null 2>&1; then
-            log_success 'API サーバーの起動を確認'
+        # APIプロセスが生きているか確認
+        if ! kill -0 \$API_PID 2>/dev/null; then
+            log_error 'APIサーバーが途中で終了しました'
+            cat /tmp/qubit-api.log
+            exit 1
+        fi
+
+        # ヘルスチェック（/health エンドポイント）
+        if curl --connect-timeout 2 --max-time 3 -fsS http://127.0.0.1:8000/health > /dev/null 2>&1; then
+            log_success 'API サーバーが起動しました'
+            API_READY=true
             break
         fi
+
         RETRY_COUNT=\$((RETRY_COUNT + 1))
-        sleep 2
+        sleep 1
     done
 
-    if [ \$RETRY_COUNT -eq \$MAX_RETRIES ]; then
+    if [ \"\$API_READY\" != \"true\" ]; then
         log_error 'API サーバーの起動タイムアウト'
+        log_error 'APIサーバーのログ:'
+        cat /tmp/qubit-api.log
         kill \$API_PID 2>/dev/null || true
         exit 1
     fi
 
     log_info '========== ステップ 4: SFT (QA形式) トレーニングを開始 =========='
 
-    TRAIN_RESPONSE=\$(curl -s -X POST http://localhost:8000/train/qa \\
+    TRAIN_RESPONSE=\$(curl -s -X POST http://127.0.0.1:8000/train/qa \\
       -H 'Content-Type: application/json' \\
       -d '{
         \"dataset_id\": \"$DATASET_ID\",
@@ -282,7 +296,7 @@ hf jobs run \
     POLL_COUNT=0
 
     while [ \$POLL_COUNT -lt \$MAX_POLLS ]; do
-        STATUS=\$(curl -s http://localhost:8000/train/status)
+        STATUS=\$(curl -s http://127.0.0.1:8000/train/status)
         echo \"[Poll \$POLL_COUNT] \$STATUS\"
 
         if echo \"\$STATUS\" | grep -q '\"completed\"'; then
