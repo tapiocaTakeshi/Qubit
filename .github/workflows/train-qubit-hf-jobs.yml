@@ -52,6 +52,16 @@ on:
         required: true
         default: true
         type: boolean
+      dataset_id:
+        description: "Hugging Face dataset ID (e.g., kunishou/databricks-dolly-15k-ja)"
+        required: false
+        default: "kunishou/databricks-dolly-15k-ja"
+        type: string
+      use_all_samples:
+        description: "Use all samples from the dataset for training"
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   train:
@@ -94,6 +104,8 @@ jobs:
           echo "Training Configuration"
           echo "========================================"
           echo "Model Size:     ${{ matrix.model_size }}"
+          echo "Dataset ID:     ${{ github.event.inputs.dataset_id }}"
+          echo "Use All Samples: ${{ github.event.inputs.use_all_samples }}"
           echo "Epochs:         ${{ github.event.inputs.epochs }}"
           echo "Batch Size:     ${{ github.event.inputs.batch_size }}"
           echo "Learning Rate:  ${{ github.event.inputs.learning_rate }}"
@@ -119,13 +131,20 @@ jobs:
             echo "⏭️  Skipping Hub upload"
           fi
 
+          DATASET_ARGS=""
+          if [ "${{ github.event.inputs.use_all_samples }}" = "true" ]; then
+            DATASET_ARGS="--use-all-samples"
+          fi
+
           ./scripts/train_qubit_hfjobs.sh \
             ${{ matrix.model_size }} \
             --epochs ${{ github.event.inputs.epochs }} \
             --batch-size ${{ github.event.inputs.batch_size }} \
             --lr ${{ github.event.inputs.learning_rate }} \
+            --dataset-id "${{ github.event.inputs.dataset_id }}" \
             --jobs-flavor ${{ github.event.inputs.gpu_flavor }} \
             --jobs-timeout ${{ github.event.inputs.timeout }} \
+            $DATASET_ARGS \
             $UPLOAD_ARGS
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
