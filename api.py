@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 
 sys.path.insert(0, os.path.dirname(__file__))
-from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, migrate_legacy_state_dict, get_model_config_by_size
+from neuroquantum_layered import NeuroQuantum, NeuroQuantumConfig, NeuroQuantumTokenizer, migrate_legacy_state_dict
 from dataset_utils import sync_checkpoint_to_network_volume
 from split_learning import SplitLearningTrainer, merge_split_models
 from progress_logger import ProgressLogger
@@ -264,21 +264,6 @@ class GGUFGenerationResponse(BaseModel):
 # ========================================
 # Model loading
 # ========================================
-
-def apply_model_size_config(model_size: str = "medium"):
-    """Apply model size configuration to the global config dictionary."""
-    global config
-    size_config = get_model_config_by_size(model_size, vocab_size=config.get("vocab_size", 8000))
-    # Update config with size-specific settings
-    config["embed_dim"] = size_config["embed_dim"]
-    config["hidden_dim"] = size_config["hidden_dim"]
-    config["num_heads"] = size_config["num_heads"]
-    config["num_layers"] = size_config["num_layers"]
-    config["max_seq_len"] = size_config["max_seq_len"]
-    config["dropout"] = size_config.get("dropout", 0.1)
-    config["entangle_strength"] = size_config.get("entangle_strength", 0.5)
-    config["model_size"] = model_size
-
 
 def load_model():
     """Load model and tokenizer from checkpoint.
@@ -534,8 +519,6 @@ def run_training(req: TrainRequest):
     training_status = {"running": True, "log": [], "message": "Loading datasets..."}
     progress.status = training_status  # sync in-memory status
 
-    apply_model_size_config(req.model_size)
-
     try:
         # Load datasets
         all_texts = []
@@ -764,8 +747,6 @@ def run_qa_training(req: TrainQARequest):
     training_status = {"running": True, "log": [], "message": "Loading QA datasets..."}
     progress.status = training_status
     min_lr_ratio = 0.1
-
-    apply_model_size_config(req.model_size)
 
     try:
         all_qa = []
@@ -1015,8 +996,6 @@ def run_markdown_training(req: TrainMarkdownRequest):
     ensure_model_loaded()
     training_status = {"running": True, "log": [], "message": "Preparing markdown training data..."}
     min_lr_ratio = 0.1
-
-    apply_model_size_config(req.model_size)
 
     try:
         # Build markdown training corpus: repeat to reinforce the pattern
@@ -1381,8 +1360,6 @@ def run_split_training(req: TrainSplitRequest):
     }
     min_lr_ratio = 0.1
     session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-
-    apply_model_size_config(req.model_size)
 
     try:
         # Load data
@@ -2068,8 +2045,6 @@ def run_split_learning_training(req: "TrainSplitLearningRequest"):
     training_status["message"] = "Split learning training in progress"
     training_status["log"] = []
 
-    apply_model_size_config(req.model_size)
-
     try:
         from train_split_learning import (
             load_qa_texts, load_general_texts, tokenize_texts, get_lr,
@@ -2211,7 +2186,6 @@ def run_dpo_training(req: TrainDPORequest):
     """Run DPO training in background."""
     global training_status
     ensure_model_loaded()
-    apply_model_size_config(req.model_size)
     try:
         data = {"parameters": req.dict()}
         result = _handler(data)
@@ -2230,7 +2204,6 @@ def run_combined_dpo_training(req: TrainCombinedDPORequest):
     """Run combined QA+DPO training in background."""
     global training_status
     ensure_model_loaded()
-    apply_model_size_config(req.model_size)
     try:
         data = {"parameters": req.dict()}
         result = _handler(data)
