@@ -1587,21 +1587,31 @@ def migrate_legacy_state_dict(state_dict: dict, model: "NeuroQuantum") -> dict:
             ".attention.out_proj.",
         ]
 
+        skipped_count = 0
         for k, v in state_dict.items():
             # Skip obsolete attention keys
-            if any(pattern in k for pattern in obsolete_patterns):
-                print(f"[migrate] Skipping obsolete attention key: {k}")
+            is_obsolete = any(pattern in k for pattern in obsolete_patterns)
+            if is_obsolete:
+                skipped_count += 1
+                if skipped_count <= 10:  # Log only first 10
+                    print(f"[migrate] Skipping obsolete attention key: {k}")
                 continue
-            # Keep valid keys
+            # Keep valid keys that exist in the current model
             if k in model_state:
                 new_state[k] = v
+            else:
+                # Also skip keys that don't exist in current model
+                print(f"[migrate] Skipping key not in current model: {k}")
+
+        if skipped_count > 10:
+            print(f"[migrate] ... and {skipped_count - 10} more obsolete keys")
 
         # Fill unmapped keys with current (initialized) values
         for k, v in model_state.items():
             if k not in new_state:
                 new_state[k] = v
 
-        print(f"[migrate] Loaded {len(new_state)} keys from checkpoint (filtered {len(state_dict) - len(new_state)} obsolete keys)")
+        print(f"[migrate] Loaded {len(new_state)} keys from checkpoint (skipped {skipped_count + (len(state_dict) - len(new_state) - skipped_count)} incompatible keys)")
         return new_state
 
     # Check for legacy keys
