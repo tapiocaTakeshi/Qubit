@@ -1565,20 +1565,43 @@ def migrate_legacy_state_dict(state_dict: dict, model: "NeuroQuantum") -> dict:
         layers.{i}.norm1.weight/bias, layers.{i}.norm2.weight/bias,
         head.weight, head.bias
 
-    Current key format (NeuroQuantum - Attention-Free):
+    Current key format (NeuroQuantum - Attention-Free with Local Attention):
         token_embedding.weight, position_embedding.weight,
-        transformer_blocks.{i}.norm.*,
+        transformer_blocks.{i}.norm1/norm2.*,
+        transformer_blocks.{i}.local_attention.*,
         transformer_blocks.{i}.ffn_standard/ffn_qbnn_layer1/ffn_qbnn_layer2.*,
         final_norm.*, output_head.weight
     """
     model_state = model.state_dict()
 
-    # Quick check: if state_dict already has new-style keys, return as-is (with missing keys filled)
+    # Quick check: if state_dict already has new-style keys, filter and fill missing
     if any(k.startswith("transformer_blocks.") for k in state_dict):
-        new_state = dict(state_dict)
+        # Filter out old attention keys that don't exist in current model
+        new_state = {}
+        obsolete_patterns = [
+            ".attention.J_attn",
+            ".attention.lambda_attn",
+            ".attention.q_proj.",
+            ".attention.k_proj.",
+            ".attention.v_proj.",
+            ".attention.out_proj.",
+        ]
+
+        for k, v in state_dict.items():
+            # Skip obsolete attention keys
+            if any(pattern in k for pattern in obsolete_patterns):
+                print(f"[migrate] Skipping obsolete attention key: {k}")
+                continue
+            # Keep valid keys
+            if k in model_state:
+                new_state[k] = v
+
+        # Fill unmapped keys with current (initialized) values
         for k, v in model_state.items():
             if k not in new_state:
                 new_state[k] = v
+
+        print(f"[migrate] Loaded {len(new_state)} keys from checkpoint (filtered {len(state_dict) - len(new_state)} obsolete keys)")
         return new_state
 
     # Check for legacy keys
