@@ -379,6 +379,15 @@ def load_model():
         return None
 
 
+def ensure_model_loaded():
+    """Ensure model is loaded, loading it on-demand if necessary."""
+    global model, tokenizer, config, device
+    if model is None:
+        print("[api] Loading model on-demand...")
+        load_model()
+        print("[api] Model ready")
+
+
 # ========================================
 # Inference
 # ========================================
@@ -519,6 +528,7 @@ DEFAULT_DATASETS = [
 def run_training(req: TrainRequest):
     """Run training in background thread."""
     global model, tokenizer, config, device, training_status
+    ensure_model_loaded()
     from dataset_utils import safe_load_dataset
 
     training_status = {"running": True, "log": [], "message": "Loading datasets..."}
@@ -750,6 +760,7 @@ def run_qa_training(req: TrainQARequest):
     global model, tokenizer, config, device, training_status
     from dataset_utils import safe_load_dataset
 
+    ensure_model_loaded()
     training_status = {"running": True, "log": [], "message": "Loading QA datasets..."}
     progress.status = training_status
     min_lr_ratio = 0.1
@@ -978,6 +989,7 @@ MARKDOWN_QA = [
 def run_markdown_training(req: TrainMarkdownRequest):
     """Run markdown format training in background thread."""
     global model, tokenizer, config, device, training_status
+    ensure_model_loaded()
     training_status = {"running": True, "log": [], "message": "Preparing markdown training data..."}
     min_lr_ratio = 0.1
 
@@ -1326,6 +1338,7 @@ def _load_split_state():
 def run_split_training(req: TrainSplitRequest):
     """Run split dataset training in background thread."""
     global model, tokenizer, config, device, training_status
+    ensure_model_loaded()
     from dataset_utils import safe_load_dataset as _load_ds
 
     # Load previous training log from checkpoint for continuity
@@ -1579,6 +1592,7 @@ def run_split_next_training(req: TrainSplitNextRequest):
     """1チャンクだけ学習する。APIタイムアウト防止のため、1回の呼び出しで1バッチだけ処理。
     次のチャンクは再度APIを呼び出すことで学習する。"""
     global model, tokenizer, config, device, training_status
+    ensure_model_loaded()
     from dataset_utils import safe_load_dataset as _load_ds
 
     # Load previous training log from checkpoint for continuity
@@ -1814,7 +1828,9 @@ def run_split_next_training(req: TrainSplitNextRequest):
 
 @app.on_event("startup")
 async def startup():
-    load_model()
+    """Startup event: just log initialization, don't block on model loading."""
+    print("[api] FastAPI startup event - model will be loaded on first request")
+    pass
 
 
 @app.on_event("shutdown")
@@ -1832,6 +1848,7 @@ async def health():
 
 @app.get("/")
 async def root():
+    ensure_model_loaded()
     return {
         "name": "NeuroQuantum API",
         "version": "1.0.0",
@@ -1843,8 +1860,7 @@ async def root():
 
 @app.post("/inference", response_model=InferenceResponse)
 async def inference(req: InferenceRequest):
-    if model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
+    ensure_model_loaded()
     if training_status["running"]:
         raise HTTPException(status_code=503, detail="Model is currently training")
 
@@ -2024,6 +2040,7 @@ async def train_split_status():
 def run_split_learning_training(req: "TrainSplitLearningRequest"):
     """分割学習の学習処理（バックグラウンドタスク）。"""
     global model, training_status
+    ensure_model_loaded()
     training_status["running"] = True
     training_status["message"] = "Split learning training in progress"
     training_status["log"] = []
@@ -2170,6 +2187,7 @@ async def train_split_learning(req: TrainSplitLearningRequest, background_tasks:
 def run_dpo_training(req: TrainDPORequest):
     """Run DPO training in background."""
     global training_status
+    ensure_model_loaded()
     apply_model_size_config(req.model_size)
     try:
         data = {"parameters": req.dict()}
@@ -2188,6 +2206,7 @@ def run_dpo_training(req: TrainDPORequest):
 def run_combined_dpo_training(req: TrainCombinedDPORequest):
     """Run combined QA+DPO training in background."""
     global training_status
+    ensure_model_loaded()
     apply_model_size_config(req.model_size)
     try:
         data = {"parameters": req.dict()}
