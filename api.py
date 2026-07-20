@@ -864,15 +864,38 @@ def run_qa_training(req: TrainQARequest):
                 for s in batch_seqs:
                     ids = s[:max_len]
                     pad_len = max_len - len(ids)
-                    input_ids.append(ids + [tokenizer.pad_id] * pad_len)
-                    labels.append(ids + [-100] * pad_len)
+                    padded_input = ids + [tokenizer.pad_id] * pad_len
+                    input_ids.append(padded_input)
+                    # For next-token prediction: labels use -100 for padding (to be ignored by cross_entropy)
+                    padded_labels = ids + [-100] * pad_len
+                    labels.append(padded_labels)
+
+                # Verify all sequences have consistent length
+                assert all(len(seq) == max_len for seq in input_ids), \
+                    f"Inconsistent input lengths: {[len(seq) for seq in input_ids]}"
+                assert all(len(seq) == max_len for seq in labels), \
+                    f"Inconsistent label lengths: {[len(seq) for seq in labels]}"
 
                 input_ids_t = torch.tensor(input_ids, dtype=torch.long, device=device)
                 labels_t = torch.tensor(labels, dtype=torch.long, device=device)
 
+                # Verify shape consistency before forward pass
+                assert input_ids_t.shape == labels_t.shape, \
+                    f"Shape mismatch: input_ids {input_ids_t.shape} vs labels {labels_t.shape}"
+
                 logits = model(input_ids_t)
+                # For next-token prediction:
+                # - logits[:, :-1, :] predicts positions 0..seq-2
+                # - labels[:, 1:] are the target tokens at positions 1..seq-1
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = labels_t[..., 1:].contiguous()
+
+                # Final shape check
+                batch, seq_minus_1 = shift_labels.shape
+                vocab_size = config["vocab_size"]
+                assert shift_logits.shape == (batch, seq_minus_1, vocab_size), \
+                    f"Logits shape mismatch: {shift_logits.shape} vs expected {(batch, seq_minus_1, vocab_size)}"
+
                 loss = F.cross_entropy(
                     shift_logits.view(-1, config["vocab_size"]),
                     shift_labels.view(-1),
