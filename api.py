@@ -339,7 +339,13 @@ def load_model():
         if resized_keys:
             print(f"[api] Resized layers: {', '.join(resized_keys)}")
 
-        model.load_state_dict(migrated)
+        # Load with strict=False to allow migration from older architectures
+        # that may have different layer structures
+        missing_keys, unexpected_keys = model.load_state_dict(migrated, strict=False)
+        if missing_keys:
+            print(f"[api] Missing keys (will use initialized values): {missing_keys[:5]}{'...' if len(missing_keys) > 5 else ''}")
+        if unexpected_keys:
+            print(f"[api] Unexpected keys (will be ignored): {unexpected_keys[:5]}{'...' if len(unexpected_keys) > 5 else ''}")
         model.eval()
 
         n_params = sum(p.numel() for p in model.parameters())
