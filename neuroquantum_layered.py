@@ -1889,11 +1889,6 @@ class NeuroQuantum(nn.Module):
         # Clamp token_ids to valid range [0, vocab_size-1]
         token_ids = token_ids.clamp(0, self.config.vocab_size - 1)
 
-        # Clamp sequence length to max_seq_len
-        if seq > self.config.max_seq_len:
-            token_ids = token_ids[:, :self.config.max_seq_len]
-            seq = self.config.max_seq_len
-
         if verbose:
             logger.info("=" * 70)
             logger.info("🧠 NeuroQuantum フォワードパス開始")
