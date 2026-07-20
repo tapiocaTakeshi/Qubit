@@ -236,6 +236,20 @@ class TrainSplitLearningRequest(BaseModel):
     max_minutes: Optional[float] = None  # 最大学習時間（分）
 
 
+class TrainHuggingFaceDatasetRequest(BaseModel):
+    """Hugging Face データセットIDを指定して全サンプルで学習するリクエスト。"""
+    dataset_id: str  # 必須：HuggingFace のデータセットID（例：izumi-lab/llm-japanese-dataset）
+    mode: str = "qa"  # "qa" or "general"
+    epochs: int = 3
+    lr: float = 3e-5
+    batch_size: int = 4
+    grad_accum_steps: int = 4
+    warmup_steps: int = 20
+    max_minutes: Optional[float] = None  # 最大学習時間（分）、Noneなら無制限
+    model_size: str = "medium"  # "large" | "medium" | "small"
+    crafted_repeat: int = 0  # QA形式の場合、crafted QA を何回繰り返すか
+
+
 class TrainResponse(BaseModel):
     status: str
     message: str
@@ -2182,6 +2196,239 @@ async def train_split_learning(req: TrainSplitLearningRequest, background_tasks:
     )
 
 
+def run_hf_dataset_training(req: TrainHuggingFaceDatasetRequest):
+    """Hugging Face データセットの全サンプルで学習（バックグラウンドタスク）。"""
+    global model, tokenizer, config, device, training_status
+    ensure_model_loaded()
+    from dataset_utils import safe_load_dataset
+
+    training_status = {
+        "running": True,
+        "log": [f"Loading HF dataset: {req.dataset_id}..."],
+        "message": f"Loading HF dataset: {req.dataset_id}...",
+    }
+    min_lr_ratio = 0.1
+    start_time = time.time()
+
+    try:
+        # Load all samples from the HF dataset
+        try:
+            ds = safe_load_dataset(req.dataset_id, split="train")
+            total_samples = len(ds)
+        except Exception:
+            # If split="train" fails, try without split
+            ds = safe_load_dataset(req.dataset_id)
+            total_samples = len(ds) if hasattr(ds, '__len__') else "unknown"
+
+        training_status["log"].append(f"Dataset loaded: {total_samples} samples")
+        training_status["message"] = f"Processing {total_samples} samples..."
+
+        # Load all texts
+        all_texts = []
+        if req.mode == "qa":
+            # QA format: auto-detect question/answer fields
+            count = 0
+            for row in ds:
+                q = (row.get("question") or row.get("instruction") or row.get("input") or "")
+                if isinstance(q, str):
+                    q = q.strip()
+                else:
+                    q = ""
+                a = (row.get("answer") or row.get("output") or row.get("response") or "")
+                if isinstance(a, str):
+                    a = a.strip()
+                else:
+                    a = ""
+                if q and a and len(q) > 2 and len(a) > 2:
+                    all_texts.append(f"質問: {q}\n回答: {a}")
+                    count += 1
+                elif not q and a and len(a) > 10:
+                    all_texts.append(f"回答: {a}")
+                    count += 1
+                # Try conversations format
+                elif not q and not a:
+                    convs = row.get("conversations", [])
+                    if isinstance(convs, list) and len(convs) >= 2:
+                        text = format_qa_conversations(row)
+                        if text:
+                            all_texts.append(text)
+                            count += 1
+                # Try alpaca format
+                if not q and not a:
+                    text = format_qa_alpaca(row)
+                    if text:
+                        all_texts.append(text)
+                        count += 1
+            # Add crafted QA samples if specified
+            if req.crafted_repeat > 0:
+                for _ in range(req.crafted_repeat):
+                    all_texts.extend(CRAFTED_QA)
+                training_status["log"].append(f"Added {len(CRAFTED_QA) * req.crafted_repeat} crafted QA samples")
+        else:
+            # General text format
+            for row in ds:
+                for col in ["text", "content", "output", "sentence", "document"]:
+                    val = row.get(col)
+                    if isinstance(val, str) and len(val.strip()) > 10:
+                        all_texts.append(val.strip())
+                        break
+                # Try conversations format
+                if not any(row.get(col) for col in ["text", "content", "output", "sentence", "document"]):
+                    convs = row.get("conversations", [])
+                    if isinstance(convs, list) and convs:
+                        parts = []
+                        for turn in convs:
+                            if isinstance(turn, dict):
+                                parts.append(turn.get("value", turn.get("content", "")))
+                            elif isinstance(turn, str):
+                                parts.append(turn)
+                        combined = "\n".join(parts)
+                        if len(combined.strip()) > 10:
+                            all_texts.append(combined.strip())
+
+        training_status["log"].append(f"Total texts loaded: {len(all_texts)}")
+        training_status["message"] = f"Tokenizing {len(all_texts)} texts..."
+
+        if len(all_texts) == 0:
+            training_status["message"] = "Error: No texts loaded from dataset"
+            training_status["running"] = False
+            return
+
+        # Tokenize
+        max_seq_len = config["max_seq_len"]
+        sequences = tokenize_texts(all_texts, tokenizer, max_seq_len)
+        training_status["log"].append(f"Tokenized into {len(sequences)} sequences")
+
+        # Training setup
+        steps_per_epoch = len(sequences) // req.batch_size
+        total_steps = (steps_per_epoch * req.epochs) // req.grad_accum_steps
+        optimizer = torch.optim.AdamW(model.parameters(), lr=req.lr, weight_decay=0.01)
+
+        training_status["message"] = f"Training {req.epochs} epochs on {len(sequences)} sequences..."
+        model.train()
+        global_step = 0
+        best_loss = float('inf')
+
+        for epoch in range(req.epochs):
+            if _shutdown_event.is_set():
+                training_status["log"].append("Training interrupted by server shutdown")
+                break
+
+            random.shuffle(sequences)
+            total_loss = 0
+            n_batches = 0
+            optimizer.zero_grad()
+            training_status["message"] = f"Epoch {epoch+1}/{req.epochs}..."
+
+            for i in range(0, len(sequences), req.batch_size):
+                if _shutdown_event.is_set():
+                    break
+                # Timeout check
+                if req.max_minutes and (time.time() - start_time) >= req.max_minutes * 60:
+                    elapsed = (time.time() - start_time) / 60
+                    msg = f"TIMEOUT: Training stopped after {elapsed:.1f} min"
+                    training_status["log"].append(msg)
+                    training_status["message"] = msg
+                    break
+
+                batch_seqs = sequences[i:i + req.batch_size]
+                if not batch_seqs:
+                    continue
+
+                max_len = min(max(len(s) for s in batch_seqs), max_seq_len)
+                input_ids = []
+                labels = []
+                for s in batch_seqs:
+                    ids = s[:max_len]
+                    pad_len = max_len - len(ids)
+                    input_ids.append(ids + [tokenizer.pad_id] * pad_len)
+                    labels.append(ids + [-100] * pad_len)
+
+                input_ids_t = torch.tensor(input_ids, dtype=torch.long, device=device)
+                labels_t = torch.tensor(labels, dtype=torch.long, device=device)
+
+                logits = model(input_ids_t)
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels_t[..., 1:].contiguous()
+                loss = F.cross_entropy(
+                    shift_logits.view(-1, config["vocab_size"]),
+                    shift_labels.view(-1),
+                    ignore_index=-100
+                )
+                loss = loss / req.grad_accum_steps
+                loss.backward()
+
+                total_loss += loss.item() * req.grad_accum_steps
+                n_batches += 1
+
+                if n_batches % req.grad_accum_steps == 0:
+                    if global_step < req.warmup_steps:
+                        lr = req.lr * global_step / max(req.warmup_steps, 1)
+                    else:
+                        progress_ratio = (global_step - req.warmup_steps) / max(total_steps - req.warmup_steps, 1)
+                        cosine_decay = 0.5 * (1 + math.cos(math.pi * progress_ratio))
+                        lr = req.lr * (min_lr_ratio + (1 - min_lr_ratio) * cosine_decay)
+                    for pg in optimizer.param_groups:
+                        pg['lr'] = lr
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    global_step += 1
+
+            if n_batches % req.grad_accum_steps != 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                optimizer.zero_grad()
+                global_step += 1
+
+            avg_loss = total_loss / max(n_batches, 1)
+            msg = f"Epoch {epoch+1}/{req.epochs} | Loss: {avg_loss:.4f}"
+            training_status["log"].append(msg)
+            training_status["message"] = msg
+
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+
+        # Save checkpoint
+        model.eval()
+        ckpt_path = _resolve_checkpoint_path()
+        checkpoint = torch.load(ckpt_path, map_location="cpu")
+        prev_log = checkpoint.get("training_log", [])
+        new_log_entries = [{"epoch": len(prev_log) + i + 1, "loss": float(l.split("Loss: ")[1])}
+                          for i, l in enumerate(training_status["log"]) if "Loss:" in l]
+
+        new_checkpoint = {
+            "model_state": model.state_dict(),
+            "config": config,
+            "training_log": prev_log + new_log_entries,
+            "trained_at": datetime.now(timezone.utc).isoformat(),
+            "datasets": list(set(
+                checkpoint.get("datasets", []) + [req.dataset_id]
+            )),
+            "hf_dataset_training": True,
+        }
+        torch.save(new_checkpoint, ckpt_path)
+        training_status["log"].append(f"Checkpoint saved: {ckpt_path}")
+        nv_path = sync_checkpoint_to_network_volume(ckpt_path)
+        if nv_path:
+            training_status["log"].append(f"Checkpoint synced to network volume: {nv_path}")
+
+        elapsed = (time.time() - start_time) / 60
+        training_status["message"] = (
+            f"HF Dataset Training complete! Dataset: {req.dataset_id}, "
+            f"Best loss: {best_loss:.4f}, Time: {elapsed:.1f}min"
+        )
+        training_status["running"] = False
+
+    except Exception as e:
+        import traceback
+        training_status["running"] = False
+        training_status["message"] = f"Error: {e}"
+        training_status["log"].append(traceback.format_exc())
+        if model is not None:
+            model.eval()
+
+
 def run_dpo_training(req: TrainDPORequest):
     """Run DPO training in background."""
     global training_status
@@ -2229,6 +2476,35 @@ async def train_dpo(req: TrainDPORequest, background_tasks: BackgroundTasks):
         status="started",
         message=f"DPO Training started: {req.epochs} epochs, lr={req.lr}, "
                 f"batch_size={req.batch_size}, dpo_beta={req.dpo_beta}",
+    )
+
+
+@app.post("/train/hf-dataset", response_model=TrainResponse)
+async def train_hf_dataset(req: TrainHuggingFaceDatasetRequest, background_tasks: BackgroundTasks):
+    """Hugging Face データセットの全サンプルで学習。
+
+    指定したHugging FaceのデータセットIDから全サンプルをロードし、
+    全体で学習を行います。データセットのサイズによっては時間がかかります。
+
+    パラメータ:
+      - dataset_id: HuggingFaceデータセットID（例：izumi-lab/llm-japanese-dataset）
+      - mode: "qa" (QA形式) または "general" (一般テキスト)
+      - epochs: 学習エポック数
+      - lr: 学習率
+      - batch_size: バッチサイズ
+      - grad_accum_steps: 勾配蓄積ステップ
+      - max_minutes: 最大学習時間（分）、Noneなら無制限
+      - crafted_repeat: QA形式の場合、内蔵crafted QAを何回繰り返すか
+    """
+    if training_status["running"]:
+        raise HTTPException(status_code=409, detail="Training already in progress")
+
+    background_tasks.add_task(run_hf_dataset_training, req)
+    return TrainResponse(
+        status="started",
+        message=f"HF Dataset Training started: dataset={req.dataset_id}, "
+                f"mode={req.mode}, {req.epochs} epochs, lr={req.lr}, "
+                f"batch_size={req.batch_size}",
     )
 
 
