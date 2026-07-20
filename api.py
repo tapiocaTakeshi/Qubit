@@ -1825,6 +1825,11 @@ async def shutdown():
     await asyncio.sleep(2)
 
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 @app.get("/")
 async def root():
     return {
