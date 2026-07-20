@@ -45,6 +45,7 @@ UPLOAD_ENABLED=true
 JOBS_FLAVOR="${HF_JOBS_FLAVOR:-a10g-small}"
 JOBS_TIMEOUT="${HF_JOBS_TIMEOUT:-6h}"
 UPLOAD_REPO=""
+USE_ALL_SAMPLES=false
 
 # ========== 関数 ==========
 
@@ -84,6 +85,8 @@ show_usage() {
   --lr RATE               学習率 (デフォルト: 3e-5)
   --grad-accum N          グラディエント蓄積ステップ (デフォルト: 4)
   --quantization Q        量子化形式 (デフォルト: Q4_K_M)
+  --dataset-id ID         Hugging Face データセット ID (デフォルト: kunishou/databricks-dolly-15k-ja)
+  --use-all-samples       データセットのすべてのサンプルを使用
   --upload-repo REPO      アップロード先リポジトリ ID
   --jobs-flavor FLAVOR    GPU タイプ (デフォルト: a10g-small)
   --jobs-timeout TIME     タイムアウト (デフォルト: 6h)
@@ -99,6 +102,9 @@ show_usage() {
 
   # large モデル、エポック 10、アップロードなし
   ./scripts/train_qubit_hfjobs.sh large --epochs 10 --no-upload
+
+  # カスタムデータセットで全サンプルを学習
+  ./scripts/train_qubit_hfjobs.sh medium --dataset-id "my-org/my-dataset" --use-all-samples
 
   # xlarge モデル、高性能 GPU、カスタム学習率
   ./scripts/train_qubit_hfjobs.sh xlarge --jobs-flavor a40-large --lr 1e-4
@@ -134,6 +140,14 @@ while [[ $# -gt 0 ]]; do
         --quantization)
             QUANTIZATION="$2"
             shift 2
+            ;;
+        --dataset-id)
+            DATASET_ID="$2"
+            shift 2
+            ;;
+        --use-all-samples)
+            USE_ALL_SAMPLES=true
+            shift
             ;;
         --upload-repo)
             UPLOAD_REPO="$2"
@@ -175,6 +189,9 @@ validate_model_size "$MODEL_SIZE" || exit 1
 log_info "========== Qubit SFT トレーニング（Hugging Face Jobs） =========="
 log_info "モデルサイズ:        $MODEL_SIZE"
 log_info "データセット:        $DATASET_ID"
+if [ "$USE_ALL_SAMPLES" = true ]; then
+    log_info "サンプル使用:       すべてのサンプルを使用"
+fi
 log_info "エポック:           $EPOCHS"
 log_info "バッチサイズ:       $BATCH_SIZE"
 log_info "学習率:             $LR"
@@ -300,7 +317,8 @@ hf jobs run \
         \"lr\": $LR,
         \"batch_size\": $BATCH_SIZE,
         \"grad_accum_steps\": $GRAD_ACCUM_STEPS,
-        \"model_size\": \"$MODEL_SIZE\"
+        \"model_size\": \"$MODEL_SIZE\",
+        \"use_all_samples\": $USE_ALL_SAMPLES
       }')
 
     log_info \"トレーニングレスポンス: \$TRAIN_RESPONSE\"
