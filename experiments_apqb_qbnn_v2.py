@@ -265,12 +265,20 @@ def run_sample_efficiency(name, make_data, in_dim, sizes, seeds, hidden, depth,
     a single training-set size either saturates every model at 100% or
     floors every model at chance; sweeping n_train is the only way to read
     off a real difference, and it avoids picking the one size that happens
-    to flatter a given model."""
+    to flatter a given model.
+
+    Per size and model we record (mean acc, std, solve rate). Because each
+    seed either finds the parity circuit or sits at chance, the mean is a
+    mixture of two modes and its std is large by construction -- the solve
+    rate (fraction of seeds above 90%) is the honest summary statistic.
+    """
     print(f"\n{'='*72}\n{name}\n{'='*72}")
     specs, target, mlp_hidden = build_models(in_dim, 2, hidden, depth, rank)
     specs = {k: v for k, v in specs.items() if k in models_subset}
     print(f"QBNN-full params: {target}   MLP-matched hidden width: {mlp_hidden}")
-    print(f"\n  {'n_train':<9}" + "".join(f"{m:>18}" for m in specs))
+    for mname, ctor in specs.items():
+        print(f"    {mname:<16} params={count_params(ctor())}")
+    print(f"\n  {'n_train':<9}" + "".join(f"{m:>22}" for m in specs))
 
     table = {m: {} for m in specs}
     for n_train in sizes:
@@ -286,38 +294,169 @@ def run_sample_efficiency(name, make_data, in_dim, sizes, seeds, hidden, depth,
                             epochs=epochs)
                 accs.append(res["acc"])
             a = torch.tensor(accs)
-            table[mname][n_train] = (a.mean().item(), a.std(unbiased=len(a) > 1).item())
-            row.append(f"{a.mean()*100:11.1f} +/-{a.std(unbiased=len(a)>1)*100:4.1f}")
-        print(f"  {n_train:<9}" + "".join(f"{c:>18}" for c in row))
+            sd = a.std(unbiased=len(a) > 1).item()
+            solved = (a > 0.9).float().mean().item()
+            table[mname][n_train] = (a.mean().item(), sd, solved)
+            row.append(f"{a.mean()*100:5.1f}+/-{sd*100:4.1f} [{solved*100:3.0f}%]")
+        print(f"  {n_train:<9}" + "".join(f"{c:>22}" for c in row))
+    print("  (cell = mean acc +/- std  [solve rate: seeds reaching >90% acc])")
     return table
+
+
+# ---------------------------------------------------------------------------
+# Sec. 8.7 falsification assessment
+# ---------------------------------------------------------------------------
+
+SOLVE_MARGIN = 0.15   # solve-rate gap counted as a real difference
+
+
+def assess_h1(parity):
+    """Sec. 8.7 condition 1: is QBNN more sample-efficient than a
+    parameter-matched MLP on high-order signed interactions?"""
+    print("\nH1  parity sample efficiency, by solve rate "
+          "(fraction of seeds reaching >90% acc):")
+    wins = losses = ties = informative = narrow_losses = 0
+    for n in sorted(parity["QBNN-full"]):
+        q = parity["QBNN-full"][n][2]
+        b = parity["MLP-matched"][n][2]
+        w = parity["MLP-same-width"][n][2]
+        if min(q, b, w) > 0.99 or max(q, b, w) < 0.01:
+            tag = "uninformative"
+        else:
+            informative += 1
+            if q > b + SOLVE_MARGIN:
+                tag = "QBNN ahead"
+                wins += 1
+            elif b > q + SOLVE_MARGIN:
+                tag = "MLP ahead"
+                losses += 1
+            else:
+                tag = "tie"
+                ties += 1
+            if w > q + SOLVE_MARGIN:
+                narrow_losses += 1
+        print(f"    n={n:<6} QBNN {q*100:3.0f}%   MLP-matched {b*100:3.0f}%   "
+              f"MLP-same-width {w*100:3.0f}%   -> {tag}")
+
+    if informative == 0:
+        print("    -> UNINFORMATIVE: no training-set size separates the models.")
+    elif wins > losses:
+        print(f"    -> H1 SUPPORTED ({wins} wins / {losses} losses / {ties} ties)")
+    elif losses > 0:
+        print(f"    -> H1 FALSIFIED on this task ({losses} losses / {wins} wins): "
+              "the matched MLP is at least as sample-efficient "
+              "(Sec. 8.7 condition 1)")
+    else:
+        print(f"    -> H1 INCONCLUSIVE ({ties} ties)")
+
+    if narrow_losses:
+        print(f"    -> STRONGER: at {narrow_losses} size(s) an MLP of the SAME "
+              "WIDTH (far fewer parameters) also beat QBNN, so the loss is not "
+              "an artifact of parameter-matching handing the MLP more width.")
+    else:
+        print("    -> CAVEAT: MLP-same-width did not beat QBNN, so part of any "
+              "MLP-matched advantage may be a width effect rather than the gate.")
+
+
+def assess_h2(ambig):
+    """Sec. 8.7 condition 3: does the q path improve calibration?"""
+    def mean_of(name, key):
+        return agg(ambig[name], key)[0]
+
+    full_ece = mean_of("QBNN-full", "ece")
+    r_only_ece = mean_of("QBNN-r", "ece")
+    mlp_ece = mean_of("MLP-matched", "ece")
+    accs = [mean_of(n, "acc") for n in ambig]
+    spread = max(accs) - min(accs)
+
+    print(f"\nH2  ambiguous-label ECE: QBNN-full {full_ece:.4f}  "
+          f"QBNN-r (no q) {r_only_ece:.4f}  MLP-matched {mlp_ece:.4f}")
+    if spread < 0.01:
+        print(f"    -> UNINFORMATIVE: every model lands within {spread*100:.1f} "
+              "accuracy points, i.e. all of them sit at this task's Bayes "
+              "limit, so the task cannot resolve a q-path effect either way.")
+        return
+    if full_ece < r_only_ece and full_ece < mlp_ece:
+        print("    -> H2 SUPPORTED on this task (q path improves calibration)")
+    else:
+        print("    -> H2 NOT SUPPORTED on this task: q path did not reduce ECE "
+              "(Sec. 8.7 condition 3)")
+
+
+def assess_h3(parity, ambig):
+    """Sec. 8.7 condition 2: is it the r^2+q^2=1 constraint that helps, or
+    merely having two multiplicative gates?"""
+    print("\nH3  APQB constraint (r^2+q^2=1) vs Independent-gates control:")
+    ahead = behind = 0
+    if parity:
+        for n in sorted(parity["QBNN-full"]):
+            f = parity["QBNN-full"][n][2]
+            i = parity["Indep-gates"][n][2]
+            if f > i + SOLVE_MARGIN:
+                verdict = "constraint ahead"
+                ahead += 1
+            elif i > f + SOLVE_MARGIN:
+                verdict = "control ahead"
+                behind += 1
+            else:
+                verdict = "tie"
+            print(f"    parity n={n:<6} solve rate: QBNN-full {f*100:3.0f}%  "
+                  f"Indep-gates {i*100:3.0f}%  -> {verdict}")
+    if ambig:
+        f = agg(ambig["QBNN-full"], "acc")[0]
+        i = agg(ambig["Indep-gates"], "acc")[0]
+        verdict = ("constraint ahead" if f > i + 0.01 else
+                   "control ahead" if i > f + 0.01 else "tie")
+        print(f"    ambiguous      acc:        QBNN-full {f*100:5.1f}%  "
+              f"Indep-gates {i*100:5.1f}%  -> {verdict}")
+
+    if ahead == behind == 0:
+        print("    -> H3 UNSUPPORTED: constraint and control are "
+              "indistinguishable everywhere; nothing is attributable to "
+              "r^2+q^2=1 on these tasks.")
+    elif behind >= ahead:
+        print(f"    -> H3 FALSIFIED ({behind} control wins / {ahead} constraint "
+              "wins): removing the constraint does not hurt (Sec. 8.7 cond. 2)")
+    else:
+        print(f"    -> H3 WEAKLY SUPPORTED ({ahead} constraint wins / {behind} "
+              "control wins) -- but see the per-size spread before believing it.")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, default=5)
     ap.add_argument("--quick", action="store_true")
+    ap.add_argument("--task", choices=["a", "b", "both"], default="both",
+                    help="run only the parity sweep (a), only the "
+                         "ambiguous-label task (b), or both")
     args = ap.parse_args()
 
     seeds = 3 if args.quick else args.seeds
     epochs = 80 if args.quick else 200
 
     print("APQB/QBNN v2 -- Section 8 experimental protocol")
-    print(f"seeds={seeds}  epochs={epochs}  device={DEVICE}")
+    print(f"seeds={seeds}  epochs={epochs}  task={args.task}  device={DEVICE}")
 
     # --- H1: high-order signed interactions (parity) ----------------------
     d, k = 16, 5
-    sizes = [500, 1000, 1500, 2000] if args.quick else [500, 750, 1000, 1500, 2000, 3000]
-    parity = run_sample_efficiency(
+    sizes = ([500, 1000, 1500, 2000] if args.quick
+             else [500, 750, 1000, 1500, 2000, 3000])
+    parity = None if args.task == "b" else run_sample_efficiency(
         f"Task A (H1): sample efficiency on parity of first {k} of {d} inputs"
         f"  [Sec. 8.2 'XOR/parity']",
         lambda n, s: make_parity(n, d, k, s),
         in_dim=d, sizes=sizes, seeds=seeds, hidden=48, depth=2, rank=8,
         epochs=epochs, n_test=4000,
-        models_subset=["QBNN-full", "QBNN-r", "Indep-gates", "MLP-matched"])
+        # MLP-same-width is the decisive control: parameter-matching hands
+        # the MLP nearly double the width (88 vs 48) and parity is strongly
+        # width-sensitive, so without it a QBNN loss cannot be attributed to
+        # the correlation gate rather than to the width gap.
+        models_subset=["QBNN-full", "QBNN-r", "Indep-gates",
+                       "MLP-matched", "MLP-same-width"])
 
     # --- H2: ambiguous labels / calibration -------------------------------
     d2 = 8
-    ambig = run_task(
+    ambig = None if args.task == "a" else run_task(
         "Task B (H2): input-dependent label noise  [Sec. 8.2 'ambiguous labels']",
         lambda n, s: make_ambiguous(n, d2, s),
         in_dim=d2, seeds=seeds, hidden=48, depth=2, rank=8,
@@ -325,68 +464,12 @@ def main():
 
     # --- Sec. 8.7 falsification assessment --------------------------------
     print(f"\n{'='*72}\nSec. 8.7 falsification conditions\n{'='*72}")
-
-    def m(res, name, key):
-        return agg(res[name], key)[0]
-
-    # H1: sample efficiency of QBNN vs parameter-matched MLP on parity.
-    # Compare over the whole sweep, and only count sizes where the task is
-    # actually informative (not pinned at ceiling or chance for both).
-    print("\nH1  parity sample-efficiency sweep (QBNN-full vs MLP-matched):")
-    wins = losses = ties = informative = 0
-    for n_train in sorted(parity["QBNN-full"]):
-        q = parity["QBNN-full"][n_train][0]
-        b = parity["MLP-matched"][n_train][0]
-        if min(q, b) > 0.99 or max(q, b) < 0.60:
-            tag = "uninformative (ceiling/floor)"
-        else:
-            informative += 1
-            if q > b + 0.02:
-                tag, _ = "QBNN ahead", (wins := wins + 1)
-            elif b > q + 0.02:
-                tag, _ = "MLP ahead", (losses := losses + 1)
-            else:
-                tag, _ = "tie", (ties := ties + 1)
-        print(f"    n={n_train:<6} QBNN {q*100:5.1f}%   MLP {b*100:5.1f}%   -> {tag}")
-    if informative == 0:
-        print("    -> UNINFORMATIVE: no training-set size separates the models.")
-    elif wins > losses:
-        print(f"    -> H1 SUPPORTED ({wins} wins / {losses} losses / {ties} ties)")
-    elif losses >= wins and losses > 0:
-        print(f"    -> H1 FALSIFIED on this task ({losses} losses / {wins} wins): "
-              "matched MLP is at least as sample-efficient (Sec. 8.7 condition 1)")
-    else:
-        print(f"    -> H1 INCONCLUSIVE ({ties} ties, no size shows a >2-point gap)")
-
-    # H2: q path and calibration under ambiguous labels
-    full_ece = m(ambig, "QBNN-full", "ece")
-    r_only_ece = m(ambig, "QBNN-r", "ece")
-    mlp_ece = m(ambig, "MLP-matched", "ece")
-    print(f"\nH2  ambiguous-label ECE: QBNN-full {full_ece:.4f}  "
-          f"QBNN-r (no q) {r_only_ece:.4f}  MLP-matched {mlp_ece:.4f}")
-    if full_ece < r_only_ece and full_ece < mlp_ece:
-        print("    -> H2 SUPPORTED on this task (q path improves calibration)")
-    else:
-        print("    -> H2 NOT SUPPORTED on this task: q path did not reduce ECE "
-              "(Sec. 8.7 condition 3)")
-
-    # H3: constraint vs independent gates
-    print("\nH3  APQB constraint (r^2+q^2=1) vs Independent-gates control:")
-    for n_train in sorted(parity["QBNN-full"]):
-        f_acc = parity["QBNN-full"][n_train][0]
-        i_acc = parity["Indep-gates"][n_train][0]
-        verdict = ("constraint ahead" if f_acc > i_acc + 0.02 else
-                   "control ahead" if i_acc > f_acc + 0.02 else "tie")
-        print(f"    parity n={n_train:<6} QBNN-full {f_acc*100:5.1f}%  "
-              f"Indep-gates {i_acc*100:5.1f}%  -> {verdict}")
-    f_acc = m(ambig, "QBNN-full", "acc")
-    i_acc = m(ambig, "Indep-gates", "acc")
-    verdict = ("constraint ahead" if f_acc > i_acc + 0.01 else
-               "control ahead" if i_acc > f_acc + 0.01 else "tie")
-    print(f"    ambiguous     QBNN-full {f_acc*100:5.1f}%  "
-          f"Indep-gates {i_acc*100:5.1f}%  -> {verdict}")
-    print("    (Sec. 8.7 condition 2: if Indep-gates is consistently ahead, "
-          "the APQB constraint is not what helps)")
+    if parity:
+        assess_h1(parity)
+    if ambig:
+        assess_h2(ambig)
+    if parity or ambig:
+        assess_h3(parity, ambig)
 
     print("\nNote: these are small synthetic probes, not a validation of the "
           "architecture. Sec. 8.3's real-data protocol (UCI/OpenML, multiple "
