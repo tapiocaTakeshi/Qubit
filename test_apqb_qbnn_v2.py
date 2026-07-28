@@ -5,6 +5,7 @@ APQB/QBNN v2 research draft (Appendix A proofs, Eq. 4-26).
 """
 
 import math
+import warnings
 
 import torch
 import numpy as np
@@ -12,6 +13,7 @@ from numpy.polynomial import chebyshev as npcheb
 
 from apqb_qbnn_v2 import (
     APQBv2,
+    IndependentGateLayerV2,
     chebyshev_features,
     subset_product_features,
     num_subset_terms,
@@ -142,7 +144,9 @@ def test_prop3_subset_product_count():
 
 def test_qbnn_layer_reduces_to_plain_layer_at_lambda_zero():
     torch.manual_seed(1)
-    layer = QBNNLayerV2(8, 16, lambda_r_init=0.0, lambda_q_init=0.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        layer = QBNNLayerV2(8, 16, lambda_r_init=0.0, lambda_q_init=0.0)
     h = torch.randn(4, 8)
     out = layer(h)
     expected = torch.tanh(layer.W(h))
@@ -165,9 +169,60 @@ def test_qbnn_layer_low_rank_matches_shapes():
           layer.U_r.grad is not None and layer.V_r.grad is not None)
 
 
+def test_dead_gate_at_zero_lambda_and_zero_J():
+    """The paper's Appendix C allows lambda=0 and J=0 simultaneously, which
+    is a zero-gradient saddle: the gate can never activate. The layer must
+    warn about it, and the gradients must actually be zero."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        layer = QBNNLayerV2(6, 6, rank=3, lambda_r_init=0.0, lambda_q_init=0.0)
+    check("Dead-gate init raises a RuntimeWarning",
+          any(issubclass(w.category, RuntimeWarning) for w in caught))
+
+    layer(torch.randn(8, 6)).pow(2).sum().backward()
+    check("Dead-gate init: grad(lambda_r) == 0", layer.lambda_r.grad.abs().item() == 0.0)
+    check("Dead-gate init: grad(V_r) == 0", layer.V_r.grad.abs().sum().item() == 0.0)
+
+    # A small nonzero lambda restores gradient flow into J.
+    layer2 = QBNNLayerV2(6, 6, rank=3, lambda_r_init=0.01, lambda_q_init=0.01)
+    layer2(torch.randn(8, 6)).pow(2).sum().backward()
+    check("lambda=0.01 restores grad(V_r) != 0", layer2.V_r.grad.abs().sum().item() > 0.0)
+
+
+def test_independent_gate_control_breaks_constraint():
+    """Sec. 8.5 Independent-gates control: same gate arithmetic, but r and q
+    must NOT satisfy r^2+q^2=1 (that is the whole point of the control)."""
+    layer = IndependentGateLayerV2(8, 8, rank=4, lambda_r_init=0.01, lambda_q_init=0.01)
+    layer(torch.randn(16, 8))
+    err = (layer.last_r ** 2 + layer.last_q ** 2 - 1.0).abs()
+    check("Independent-gates: r^2+q^2 != 1 (constraint removed)", err.max().item() > 1e-3)
+    check("Independent-gates: r in [-1,1]", layer.last_r.abs().max().item() <= 1.0)
+    check("Independent-gates: q in [0,1]",
+          layer.last_q.min().item() >= 0.0 and layer.last_q.max().item() <= 1.0)
+
+
+def test_ablation_flags():
+    """Sec. 8.5 rows QBNN-r / QBNN-q / Random-J."""
+    h = torch.randn(4, 8)
+
+    layer_r = QBNNLayerV2(8, 8, rank=4, lambda_r_init=0.5, lambda_q_init=0.5, use_q=False)
+    layer_q = QBNNLayerV2(8, 8, rank=4, lambda_r_init=0.5, lambda_q_init=0.5, use_r=False)
+    check("QBNN-r / QBNN-q forward shapes", layer_r(h).shape == (4, 8) and layer_q(h).shape == (4, 8))
+
+    random_j = QBNNLayerV2(8, 8, rank=4, lambda_r_init=0.5, lambda_q_init=0.5, learnable_J=False)
+    j_names = {n for n, _ in random_j.named_parameters()}
+    check("Random-J: J factors are buffers, not parameters",
+          'V_r' not in j_names and 'U_r' not in j_names)
+    random_j(h).pow(2).sum().backward()
+    check("Random-J: gate is non-trivial (lambda receives gradient)",
+          random_j.lambda_r.grad.abs().item() > 0.0)
+
+
 def test_stochastic_layer_noise_only_in_training():
     torch.manual_seed(2)
-    layer = StochasticQBNNLayerV2(6, 6, beta=1.0, lambda_r_init=0.0, lambda_q_init=0.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        layer = StochasticQBNNLayerV2(6, 6, beta=1.0, lambda_r_init=0.0, lambda_q_init=0.0)
     h = torch.randn(2, 6)
 
     layer.eval()
@@ -182,7 +237,9 @@ def test_stochastic_layer_noise_only_in_training():
 
 
 def test_regularization_loss_terms():
-    layer = QBNNLayerV2(4, 4, lambda_r_init=0.0, lambda_q_init=0.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        layer = QBNNLayerV2(4, 4, lambda_r_init=0.0, lambda_q_init=0.0)
     h = torch.randn(2, 4)
     layer(h)
     r_target = torch.zeros_like(layer.last_r)
@@ -228,6 +285,9 @@ def main():
         test_prop3_subset_product_count,
         test_qbnn_layer_reduces_to_plain_layer_at_lambda_zero,
         test_qbnn_layer_low_rank_matches_shapes,
+        test_dead_gate_at_zero_lambda_and_zero_J,
+        test_independent_gate_control_breaks_constraint,
+        test_ablation_flags,
         test_stochastic_layer_noise_only_in_training,
         test_regularization_loss_terms,
         test_correlation_bank_and_nearest_correlation_matrix,

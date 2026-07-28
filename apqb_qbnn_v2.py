@@ -18,6 +18,7 @@ corresponding equations/sections/propositions in the paper.
 """
 
 import math
+import warnings
 from itertools import combinations
 
 import torch
@@ -173,16 +174,30 @@ class QBNNLayerV2(nn.Module):
 
     At lambda_r = lambda_q = 0 this reduces exactly to a plain affine +
     activation layer (Sec. 6.1 design requirement (i)).
+
+    Initialization caveat (not stated in the paper): Appendix C recommends
+    lambda in {0, 0.01} *and* a zero/small J init, but those two choices
+    are not jointly safe. Because the gate enters as lambda * (J^T x), the
+    gradient w.r.t. lambda is proportional to J and the gradient w.r.t. J
+    is proportional to lambda -- so lambda=0 together with J=0 is a saddle
+    with exactly zero gradient on both, and the correlation gate can never
+    switch on. Pick exactly one of the two to be nonzero; this class warns
+    when both are zero.
     """
 
     def __init__(self, in_dim, out_dim, rank=None, activation=torch.tanh,
-                 lambda_r_init=0.0, lambda_q_init=0.0, a_clip=4.0, q_eps=1e-6):
+                 lambda_r_init=0.0, lambda_q_init=0.0, a_clip=4.0, q_eps=1e-6,
+                 use_r=True, use_q=True, learnable_J=True):
         super().__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.a_clip = a_clip
         self.q_eps = q_eps
         self.activation = activation
+        # Sec. 8.5 ablations: use_r/use_q select the QBNN-r / QBNN-q rows,
+        # learnable_J=False gives the Random-J control (fixed random coupling).
+        self.use_r = use_r
+        self.use_q = use_q
 
         self.W = nn.Linear(in_dim, out_dim)
         self.P = nn.Linear(in_dim, out_dim)
@@ -191,16 +206,42 @@ class QBNNLayerV2(nn.Module):
         if self.low_rank:
             # Sec. 6.5: J = U V^T with rank(UV^T) = k << min(d_l, d_{l+1}).
             # V is zero-initialized so J starts at exactly zero (Appendix C).
-            self.U_r = nn.Parameter(torch.empty(out_dim, rank).normal_(std=0.01))
-            self.V_r = nn.Parameter(torch.zeros(out_dim, rank))
-            self.U_q = nn.Parameter(torch.empty(out_dim, rank).normal_(std=0.01))
-            self.V_q = nn.Parameter(torch.zeros(out_dim, rank))
+            U_r = torch.empty(out_dim, rank).normal_(std=0.01)
+            U_q = torch.empty(out_dim, rank).normal_(std=0.01)
+            V_r = torch.zeros(out_dim, rank)
+            V_q = torch.zeros(out_dim, rank)
+            if not learnable_J:
+                # Random-J: nonzero fixed factors, otherwise the gate is
+                # identically 1 and the control degenerates to No-J.
+                V_r = torch.empty(out_dim, rank).normal_(std=0.01)
+                V_q = torch.empty(out_dim, rank).normal_(std=0.01)
+            params = [U_r, V_r, U_q, V_q]
+            names = ['U_r', 'V_r', 'U_q', 'V_q']
         else:
-            self.J_r = nn.Parameter(torch.zeros(out_dim, out_dim))
-            self.J_q = nn.Parameter(torch.zeros(out_dim, out_dim))
+            J_r = torch.zeros(out_dim, out_dim)
+            J_q = torch.zeros(out_dim, out_dim)
+            if not learnable_J:
+                J_r = torch.empty(out_dim, out_dim).normal_(std=0.01)
+                J_q = torch.empty(out_dim, out_dim).normal_(std=0.01)
+            params = [J_r, J_q]
+            names = ['J_r', 'J_q']
+
+        for name, tensor in zip(names, params):
+            if learnable_J:
+                self.register_parameter(name, nn.Parameter(tensor))
+            else:
+                self.register_buffer(name, tensor)
 
         self.lambda_r = nn.Parameter(torch.tensor(float(lambda_r_init)))
         self.lambda_q = nn.Parameter(torch.tensor(float(lambda_q_init)))
+
+        if learnable_J and lambda_r_init == 0.0 and lambda_q_init == 0.0:
+            warnings.warn(
+                "QBNNLayerV2 initialized with lambda_r=lambda_q=0 and a "
+                "zero-initialized J: the correlation gate has zero gradient "
+                "on both lambda and J and can never activate. Set a small "
+                "nonzero lambda (e.g. 0.01) or a small random J.",
+                RuntimeWarning, stacklevel=2)
 
         self.last_r = None
         self.last_q = None
@@ -218,14 +259,18 @@ class QBNNLayerV2(nn.Module):
         q = torch.clamp(1.0 / torch.cosh(a), min=self.q_eps)
         return r, q
 
+    def _gate(self, h):
+        r, q = self._rq(h)
+        gate = torch.ones_like(self.W.bias).expand(h.shape[0], -1)
+        if self.use_r:
+            gate = gate + self.lambda_r * self._apply_J(r, 'r')
+        if self.use_q:
+            gate = gate + self.lambda_q * self._apply_J(q, 'q')
+        return gate, r, q
+
     def forward(self, h):
         u = self.W(h)
-        r, q = self._rq(h)
-
-        c_r = self._apply_J(r, 'r')
-        c_q = self._apply_J(q, 'q')
-
-        gate = 1.0 + self.lambda_r * c_r + self.lambda_q * c_q
+        gate, r, q = self._gate(h)
         h_next = self.activation(u * gate)
 
         self.last_r, self.last_q = r, q
@@ -262,11 +307,7 @@ class StochasticQBNNLayerV2(QBNNLayerV2):
 
     def forward(self, h):
         u = self.W(h)
-        r, q = self._rq(h)
-
-        c_r = self._apply_J(r, 'r')
-        c_q = self._apply_J(q, 'q')
-        gate = 1.0 + self.lambda_r * c_r + self.lambda_q * c_q
+        gate, r, q = self._gate(h)
 
         pre_act = u * gate
         if self.training and self.beta:
@@ -276,6 +317,30 @@ class StochasticQBNNLayerV2(QBNNLayerV2):
         h_next = self.activation(pre_act)
         self.last_r, self.last_q = r, q
         return h_next
+
+
+class IndependentGateLayerV2(QBNNLayerV2):
+    """Sec. 8.5 "Independent-gates" control: identical wiring and gate
+    arithmetic to QBNNLayerV2, but r and q come from two *separate*
+    projections and are therefore free of the r^2+q^2=1 coupling.
+
+    This is the model hypothesis H3 is tested against (Sec. 6.7): if
+    QBNN's benefit really comes from the APQB constraint rather than from
+    having two multiplicative gates, QBNNLayerV2 should beat this control
+    at matched capacity. It carries one extra projection's worth of
+    parameters, so it is the *harder* baseline, not a handicapped one.
+    """
+
+    def __init__(self, in_dim, out_dim, **kwargs):
+        super().__init__(in_dim, out_dim, **kwargs)
+        self.P_q = nn.Linear(in_dim, out_dim)
+
+    def _rq(self, h):
+        a_r = torch.clamp(self.P(h), -self.a_clip, self.a_clip)
+        a_q = torch.clamp(self.P_q(h), -self.a_clip, self.a_clip)
+        # Same marginal ranges as APQB (r in [-1,1], q in [0,1]) so that the
+        # only removed ingredient is the coupling itself.
+        return torch.tanh(a_r), torch.sigmoid(a_q)
 
 
 def qbnn_regularization_loss(layer, r_target=None, alpha=1.0, beta_J=1e-4,
