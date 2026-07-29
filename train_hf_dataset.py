@@ -311,6 +311,11 @@ def parse_args():
         help="Hugging Face データセット ID (例: llm-jp/databricks-dolly-15k-ja, openwebtext)",
     )
     p.add_argument(
+        "--dataset-config",
+        default=None,
+        help="データセットの config/subset 名 (例: wikimedia/wikipedia の '20231101.ja')",
+    )
+    p.add_argument(
         "--split",
         default=None,
         help="読み込む split (指定なしで自動検出。複数ある場合は最初のものを使用)",
@@ -374,12 +379,13 @@ def get_default_names(dataset_id: str, model_size: str = "small"):
     return ckpt_name, tokenizer_prefix
 
 
-def auto_detect_split(dataset_id: str):
+def auto_detect_split(dataset_id: str, dataset_config: str | None = None):
     """データセットの利用可能な split を自動検出（最初のものを返す）。"""
     try:
-        from datasets import get_dataset_config_names, get_dataset_split_names
+        from datasets import get_dataset_split_names
 
-        splits = get_dataset_split_names(dataset_id)
+        kwargs = {"config_name": dataset_config} if dataset_config else {}
+        splits = get_dataset_split_names(dataset_id, **kwargs)
         if splits:
             progress.info(f"Available splits: {splits}")
             return splits[0]
@@ -408,11 +414,12 @@ def main():
     progress.info(f"Training config: batch_size={batch_size}, max_seq_len={max_seq_len}, gradient_accumulation_steps={gradient_accumulation_steps}, use_bf16={use_bf16}, gradient_checkpointing={gradient_checkpointing}")
 
     # ---- split の自動検出 ----
-    split = args.split or auto_detect_split(args.dataset_id)
+    split = args.split or auto_detect_split(args.dataset_id, args.dataset_config)
 
     # ---- データセット読み込み ----
-    progress.info(f"=== Loading {args.dataset_id} (split={split}) ===")
-    ds = safe_load_dataset(args.dataset_id, split=split)
+    progress.info(f"=== Loading {args.dataset_id} (config={args.dataset_config}, split={split}) ===")
+    load_kwargs = {"name": args.dataset_config} if args.dataset_config else {}
+    ds = safe_load_dataset(args.dataset_id, split=split, **load_kwargs)
     use_all = args.max_samples is None or args.max_samples <= 0
     effective_max_samples = len(ds) if use_all else min(args.max_samples, len(ds))
     progress.info(
