@@ -17,6 +17,37 @@ from neuroquantum_layered import (
     get_model_config_by_size,
 )
 
+def load_model(checkpoint_path: str, tokenizer_path: str):
+    """train_hf_dataset.py が保存したチェックポイントからモデル/トークナイザーを復元する。
+
+    Returns:
+        (model, tokenizer, config_dict, device)
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    config_dict = checkpoint["config"]
+
+    tokenizer = NeuroQuantumTokenizer(vocab_size=config_dict["vocab_size"], model_file=tokenizer_path)
+
+    config = NeuroQuantumConfig(
+        vocab_size=config_dict["vocab_size"],
+        embed_dim=config_dict["embed_dim"],
+        hidden_dim=config_dict["hidden_dim"],
+        num_heads=config_dict["num_heads"],
+        num_layers=config_dict["num_layers"],
+        max_seq_len=config_dict["max_seq_len"],
+        dropout=config_dict["dropout"],
+        lambda_entangle=config_dict["lambda_entangle"],
+    )
+
+    model = NeuroQuantum(config=config).to(device)
+    model.load_state_dict(checkpoint["model_state"])
+    model.eval()
+
+    return model, tokenizer, config_dict, device
+
+
 def find_latest_checkpoint():
     """最低ロスのチェックポイントを探す"""
     checkpoint_dir = Path("./checkpoints")
