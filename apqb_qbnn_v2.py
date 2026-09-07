@@ -50,12 +50,18 @@ class APQBv2:
         return torch.sqrt(torch.clamp(1 - r ** 2, min=0.0))
 
     @staticmethod
+    def _sech(a):
+        """sech(a) without overflowing cosh(a), including in backward."""
+        return 2.0 * torch.exp(-torch.logaddexp(a, -a))
+
+    @staticmethod
     def from_latent(a):
         """Eq. (12): unconstrained latent a -> (r, q, theta) with r^2+q^2=1
         satisfied automatically via tanh^2(a) + sech^2(a) = 1."""
         r = torch.tanh(a)
-        q = 1.0 / torch.cosh(a)
-        theta = torch.atan(torch.exp(-a))
+        q = APQBv2._sech(a)
+        # Equivalent to atan(exp(-a)), without overflowing exp(-a).
+        theta = 0.5 * torch.atan2(q, r)
         return r, q, theta
 
     @staticmethod
@@ -81,10 +87,15 @@ class APQBv2:
     def entropy_z(r):
         """Eq. (10): Shannon entropy of a Z-basis measurement, H_Z(r).
         Note (Sec. 3.4): this is measurement-basis uncertainty, not the
-        von Neumann entropy of rho(r), which is 0 because rho(r) is pure."""
-        p0 = torch.clamp((1 + r) / 2, min=1e-12, max=1 - 1e-12)
-        p1 = 1 - p0
-        return -(p0 * torch.log2(p0) + p1 * torch.log2(p1))
+        von Neumann entropy of rho(r), which is 0 because rho(r) is pure.
+        At deterministic endpoints, use 0*log(0)=0 and a finite log floor
+        for backward; the exact entropy derivative is singular there.
+        """
+        p0 = torch.clamp((1 + r) / 2, min=0.0, max=1.0)
+        p1 = torch.clamp((1 - r) / 2, min=0.0, max=1.0)
+        tiny = torch.finfo(p0.dtype).tiny
+        return -(p0 * torch.log2(p0.clamp_min(tiny))
+                 + p1 * torch.log2(p1.clamp_min(tiny)))
 
     @staticmethod
     def constraint(r, q):
@@ -173,10 +184,15 @@ class QBNNLayerV2(nn.Module):
 
     At lambda_r = lambda_q = 0 this reduces exactly to a plain affine +
     activation layer (Sec. 6.1 design requirement (i)).
+
+    By default, small nonzero lambdas let the zero-initialized J branches
+    learn immediately while preserving the initial plain-layer output.
+    Explicit zero lambdas with zero J disable task-loss learning in those
+    branches; loading a state_dict preserves its saved lambdas unchanged.
     """
 
     def __init__(self, in_dim, out_dim, rank=None, activation=torch.tanh,
-                 lambda_r_init=0.0, lambda_q_init=0.0, a_clip=4.0, q_eps=1e-6):
+                 lambda_r_init=0.1, lambda_q_init=0.1, a_clip=4.0, q_eps=1e-6):
         super().__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
@@ -215,7 +231,7 @@ class QBNNLayerV2(nn.Module):
     def _rq(self, h):
         a = torch.clamp(self.P(h), -self.a_clip, self.a_clip)
         r = torch.tanh(a)
-        q = torch.clamp(1.0 / torch.cosh(a), min=self.q_eps)
+        q = torch.clamp(APQBv2._sech(a), min=self.q_eps)
         return r, q
 
     def forward(self, h):
