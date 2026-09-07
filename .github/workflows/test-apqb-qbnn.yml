@@ -1,4 +1,4 @@
-name: Test APQB and QBNN v2
+name: Test APQB, QBNN, and NeuroQuantum
 
 on:
   push:
@@ -7,6 +7,12 @@ on:
       - "apqb_qbnn_v2.py"
       - "test_apqb_qbnn_v2.py"
       - "tests/test_apqb_qbnn_regressions.py"
+      - "neuroquantum_layered.py"
+      - "qbnn_layered.py"
+      - "train_hf_dataset.py"
+      - "tests/test_neuroquantum*.py"
+      - "scripts/*neuroquantum*"
+      - "requirements-runpod.txt"
       - ".github/workflows/test-apqb-qbnn.yml"
   pull_request:
     branches: [main, develop]
@@ -14,6 +20,12 @@ on:
       - "apqb_qbnn_v2.py"
       - "test_apqb_qbnn_v2.py"
       - "tests/test_apqb_qbnn_regressions.py"
+      - "neuroquantum_layered.py"
+      - "qbnn_layered.py"
+      - "train_hf_dataset.py"
+      - "tests/test_neuroquantum*.py"
+      - "scripts/*neuroquantum*"
+      - "requirements-runpod.txt"
       - ".github/workflows/test-apqb-qbnn.yml"
 
 permissions:
@@ -31,6 +43,12 @@ jobs:
       - name: Install CPU test dependencies
         run: |
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install numpy pytest
-      - name: Test APQB math and QBNN training
-        run: python -m pytest -q test_apqb_qbnn_v2.py tests/test_apqb_qbnn_regressions.py
+          python -m pip install numpy pytest requests
+      - name: Test QBNN math, NeuroQuantum attention, and microbatch training
+        run: >-
+          python -m pytest -q test_apqb_qbnn_v2.py tests/test_apqb_qbnn_regressions.py
+          tests/test_neuroquantum_regressions.py tests/test_neuroquantum_training.py
+      - name: Check Runpod entry points
+        run: |
+          bash -n scripts/train_neuroquantum_runpod.sh
+          bash scripts/train_neuroquantum_runpod.sh --help
