@@ -41,7 +41,6 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dataset_utils import safe_load_dataset, sync_checkpoint_to_network_volume
 from neuroquantum_layered import (
     NeuroQuantum,
     NeuroQuantumConfig,
@@ -183,17 +182,37 @@ def train_epoch(
 ):
     import random
 
+    if batch_size < 1 or gradient_accumulation_steps < 1 or max_seq_len < 2:
+        raise ValueError("batch_size and accumulation steps must be positive; max_seq_len must be >= 2")
+    device = torch.device(device)
+    use_bf16 = resolve_bf16(use_bf16, device)
     model.train()
+    optimizer.zero_grad(set_to_none=True)
     random.shuffle(sequences)
     total_loss = 0.0
+    total_tokens = 0
     n_batches = 0
     accumulation_counter = 0
+    accumulated_tokens = 0
+
+    def step_optimizer(token_count):
+        # Weight each predicted token equally, including a partial final group.
+        # Model parameters/gradients stay FP32 while autocast uses BF16 activations.
+        for parameter in model.parameters():
+            if parameter.grad is not None:
+                parameter.grad.div_(token_count)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
 
     for i in range(0, len(sequences), batch_size):
         batch = sequences[i : i + batch_size]
         if not batch:
             continue
         max_len = min(max(len(s) for s in batch), max_seq_len)
+        valid_tokens = sum(max(min(len(s), max_len) - 1, 0) for s in batch)
+        if valid_tokens == 0:
+            continue
         input_ids, labels = [], []
         for s in batch:
             ids = s[:max_len]
@@ -204,7 +223,7 @@ def train_epoch(
         input_ids = torch.tensor(input_ids, dtype=torch.long, device=device)
         labels_t = torch.tensor(labels, dtype=torch.long, device=device)
 
-        with torch.cuda.amp.autocast(enabled=use_bf16, dtype=torch.bfloat16 if use_bf16 else torch.float32):
+        with torch.autocast(device_type=device.type, enabled=use_bf16, dtype=torch.bfloat16):
             logits = model(input_ids)
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels_t[..., 1:].contiguous()
@@ -212,35 +231,40 @@ def train_epoch(
                 shift_logits.view(-1, model.config.vocab_size),
                 shift_labels.view(-1),
                 ignore_index=-100,
+                reduction="sum",
             )
-            loss = loss / gradient_accumulation_steps
 
         loss.backward()
         accumulation_counter += 1
+        accumulated_tokens += valid_tokens
 
         if accumulation_counter >= gradient_accumulation_steps:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            optimizer.zero_grad()
+            step_optimizer(accumulated_tokens)
             accumulation_counter = 0
+            accumulated_tokens = 0
 
-        total_loss += loss.item() * gradient_accumulation_steps
+        total_loss += loss.item()
+        total_tokens += valid_tokens
         n_batches += 1
         if n_batches % 25 == 0:
-            progress.log_batch(epoch=epoch + 1, batch=n_batches, loss=total_loss / n_batches)
+            progress.log_batch(epoch=epoch + 1, batch=n_batches, loss=total_loss / total_tokens)
         if save_every and on_save and n_batches % save_every == 0:
-            avg = total_loss / max(n_batches, 1)
+            avg = total_loss / total_tokens
             progress.info(
                 f"[checkpoint] epoch {epoch + 1} batch {n_batches} avg_loss={avg:.4f} を保存中..."
             )
             on_save(epoch=epoch, batch=n_batches, loss=avg)
 
     if accumulation_counter > 0:
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-        optimizer.zero_grad()
+        step_optimizer(accumulated_tokens)
 
-    return total_loss / max(n_batches, 1)
+    return total_loss / max(total_tokens, 1)
+
+
+def resolve_bf16(requested, device):
+    """Use BF16 only on a CUDA device that supports it; otherwise use FP32."""
+    return bool(requested and torch.device(device).type == "cuda"
+                and torch.cuda.is_bf16_supported())
 
 
 def merge_checkpoint_to_main(intermediate_ckpt_path: str, main_ckpt_path: str):
@@ -303,7 +327,7 @@ def upload_checkpoint_to_hf(ckpt_path: str, repo_id: str, hf_token: str, tokeniz
     return f"https://huggingface.co/{repo_id}"
 
 
-def parse_args():
+def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument(
         "--dataset-id",
@@ -336,9 +360,10 @@ def parse_args():
     p.add_argument("--vocab-size", type=int, default=32000)
     p.add_argument("--batch-size", type=int, default=None, help="未指定ならモデル設定の値を使用")
     p.add_argument("--max-seq-len", type=int, default=None, help="未指定ならモデル設定の値を使用")
+    p.add_argument("--attention-window", type=int, default=512, help="各トークンが参照する最大トークン数（自身を含む）")
     p.add_argument("--gradient-accumulation-steps", type=int, default=8, help="勾配蓄積ステップ (VRAMを増やさずに実効バッチを増加)")
-    p.add_argument("--use-bf16", action="store_true", default=True, help="BF16 混合精度学習を使用")
-    p.add_argument("--gradient-checkpointing", action="store_true", default=True, help="勾配チェックポイント（メモリ削減）を使用")
+    p.add_argument("--use-bf16", action=argparse.BooleanOptionalAction, default=True, help="対応GPUでBF16混合精度を使用。非対応時はFP32")
+    p.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True, help="勾配チェックポイント（メモリ削減）を使用")
     p.add_argument(
         "--ckpt-name",
         default=None,
@@ -368,7 +393,14 @@ def parse_args():
         default=None,
         help="トークナイザーのプリフィックス (デフォルト: neuroq_small_tokenizer)",
     )
-    return p.parse_args()
+    args = p.parse_args(argv)
+    if args.attention_window < 1 or args.gradient_accumulation_steps < 1:
+        p.error("--attention-window and --gradient-accumulation-steps must be positive")
+    if args.batch_size is not None and args.batch_size < 1:
+        p.error("--batch-size must be positive")
+    if args.max_seq_len is not None and args.max_seq_len < 2:
+        p.error("--max-seq-len must be at least 2")
+    return args
 
 
 def get_default_names(dataset_id: str, model_size: str = "small"):
@@ -396,6 +428,8 @@ def auto_detect_split(dataset_id: str, dataset_config: str | None = None):
 
 def main():
     args = parse_args()
+    from dataset_utils import safe_load_dataset, sync_checkpoint_to_network_volume
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     progress.info(f"Device: {device}")
 
@@ -408,7 +442,7 @@ def main():
     batch_size = args.batch_size or CONFIG["batch_size"]
     max_seq_len = args.max_seq_len or CONFIG["max_seq_len"]
     gradient_accumulation_steps = args.gradient_accumulation_steps
-    use_bf16 = args.use_bf16
+    use_bf16 = resolve_bf16(args.use_bf16, device)
     gradient_checkpointing = args.gradient_checkpointing
     progress.info(f"Model size: {args.model_size} (params: embed_dim={CONFIG['embed_dim']}, hidden_dim={CONFIG['hidden_dim']}, num_layers={CONFIG['num_layers']})")
     progress.info(f"Training config: batch_size={batch_size}, max_seq_len={max_seq_len}, gradient_accumulation_steps={gradient_accumulation_steps}, use_bf16={use_bf16}, gradient_checkpointing={gradient_checkpointing}")
@@ -467,8 +501,11 @@ def main():
         num_heads=CONFIG["num_heads"],
         num_layers=CONFIG["num_layers"],
         max_seq_len=max_seq_len,
+        attention_window=args.attention_window,
         dropout=CONFIG["dropout"],
         lambda_entangle=CONFIG["entangle_strength"],
+        gradient_checkpointing=gradient_checkpointing,
+        use_bf16=use_bf16,
     )
     model = NeuroQuantum(config=nq_config).to(device)
     n_params = sum(p.numel() for p in model.parameters())

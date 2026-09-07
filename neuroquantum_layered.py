@@ -24,6 +24,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 import numpy as np
 import math
 import json
@@ -760,8 +761,15 @@ class QBNNLayer(nn.Module):
         # 層正規化
         self.layer_norm = nn.LayerNorm(output_dim)
         
-        # 呼び出しカウンタ（動的変化用）
+        # Legacy checkpoint buffer; inference no longer depends on request order.
         self.register_buffer('call_count', torch.tensor(0))
+
+    def _effective_lambda(self) -> torch.Tensor:
+        # Preserve the trained mapping and the old first inference call (phase=0).
+        # Diversity belongs in explicit sampling, not a process-global call counter.
+        return self.lambda_min + (self.lambda_max - self.lambda_min) * (
+            0.7 * torch.sigmoid(self.lambda_base) + 0.15
+        )
     
     def forward(self, h_prev: torch.Tensor) -> torch.Tensor:
         # 1. 正規化（Bloch球のz座標として解釈）
@@ -792,22 +800,8 @@ class QBNNLayer(nn.Module):
         # 次に s_raw_j を掛ける
         delta = J_s_prev * s_raw  # (..., output_dim)
         
-        # 5. 動的λ: θが動けるように範囲内で変化（量子ゆらぎ）
-        # λ_baseをsigmoidで0-1に制限し、範囲にマッピング
-        lambda_normalized = torch.sigmoid(self.lambda_base)
-        
-        # 推論時のみ動的変化を追加（学習時は安定性のため固定寄り）
-        if not self.training:
-            # sin波で動的変化（θが動けるように）
-            phase = float(self.call_count) * 0.2
-            dynamic_factor = 0.5 + 0.5 * math.sin(phase)
-            self.call_count += 1
-        else:
-            dynamic_factor = 0.5
-        
-        # 有効なλを計算
-        lambda_range = self.lambda_max - self.lambda_min
-        lambda_eff = self.lambda_min + lambda_range * (lambda_normalized * 0.7 + dynamic_factor * 0.3)
+        # 5. 学習時と推論時で同じλを使い、呼び出し順による変動を防ぐ。
+        lambda_eff = self._effective_lambda()
         
         # 6. もつれ補正のクリッピング: ‖λΔ‖ <= rho * ‖h̃‖ となるよう制御する
         # (補正が通常経路h̃を上回って出力を不安定化させないための安全弁)
@@ -833,8 +827,7 @@ class QBNNLayer(nn.Module):
     def get_quantum_info(self) -> Dict:
         """量子情報を取得"""
         with torch.no_grad():
-            lambda_normalized = torch.sigmoid(self.lambda_base).item()
-            lambda_eff = self.lambda_min + (self.lambda_max - self.lambda_min) * lambda_normalized
+            lambda_eff = self._effective_lambda().item()
             
             # Jの形状を確認（use_qbnn_layeredの場合、転置が必要）
             if self.use_qbnn_layered:
@@ -871,10 +864,13 @@ class LocalAttention(nn.Module):
     メモリ効率を保つための限定的なAttention実装。
 
     固定ウィンドウ内のみで Self-Attention を計算。
+    長い系列は重なりのあるK/V範囲に分割し、計算量をO(seq_len * window)に抑える。
     """
 
     def __init__(self, embed_dim: int, num_heads: int, attention_window: int = 512, dropout: float = 0.1):
         super().__init__()
+        if attention_window < 1:
+            raise ValueError("attention_window must be a positive integer")
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.attention_window = attention_window
@@ -888,9 +884,6 @@ class LocalAttention(nn.Module):
         self.v_proj = nn.Linear(embed_dim, embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
         self.dropout = nn.Dropout(dropout)
-
-        # ウィンドウ制約マスクのキャッシュ（seq_lenごとに1回だけ構築すれば良い）
-        self._window_mask_cache: Dict[int, torch.Tensor] = {}
 
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
@@ -915,7 +908,7 @@ class LocalAttention(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        # Compute local attention with sliding window (fully vectorized, no Python loop)
+        # Compute exact sliding-window attention in bounded query blocks.
         output = self._local_attention(q, k, v, mask)
 
         # Reshape back to (batch, seq_len, embed_dim)
@@ -927,49 +920,42 @@ class LocalAttention(nn.Module):
 
         return output
 
-    def _get_window_mask(self, seq_len: int, device, dtype) -> torch.Tensor:
-        """
-        因果 + ローカルウィンドウ制約を表す加算バイアス行列 (seq_len, seq_len) を返す。
-        許可される位置は 0.0、禁止される位置は -inf。seq_lenごとにキャッシュする。
-        """
-        cached = self._window_mask_cache.get(seq_len)
-        if cached is not None and cached.device == device and cached.dtype == dtype:
-            return cached
-
-        idx = torch.arange(seq_len, device=device)
-        i = idx.view(-1, 1)
-        j = idx.view(1, -1)
-        allowed = (j <= i) & (j > i - self.attention_window)  # causal かつ ウィンドウ内
-
-        bias = torch.zeros(seq_len, seq_len, device=device, dtype=dtype)
-        bias = bias.masked_fill(~allowed, float('-inf'))
-
-        self._window_mask_cache[seq_len] = bias
-        return bias
-
     def _local_attention(self, q, k, v, mask):
+        """Exact causal attention with at most window x (2*window-1) scores per block.
+
+        External masks retain the existing nonzero=keep semantics and must be
+        broadcastable to (batch, heads, seq_len, seq_len). A padding-only mask
+        can be supplied as (batch, 1, 1, seq_len), without a quadratic allocation.
+        PyTorch selects the available SDPA backend; no CUDA-only kernel is required.
         """
-        ローカルウィンドウ付きSelf-Attentionをベクトル化して一括計算する。
-        トークンごとのPythonループを排除し、F.scaled_dot_product_attention
-        （Flash Attention相当）で全トークンを同時に処理する。
-        """
-        batch, num_heads, seq_len, head_dim = q.shape
-
-        attn_bias = self._get_window_mask(seq_len, q.device, q.dtype)  # (seq_len, seq_len)
-
-        if mask is not None:
-            # 外部マスク（1=keep, 0=masked）を加算バイアスに変換し、ウィンドウ制約と合成
-            ext_bias = torch.zeros_like(mask, dtype=q.dtype)
-            ext_bias = ext_bias.masked_fill(mask == 0, float('-inf'))
-            attn_bias = attn_bias + ext_bias  # ブロードキャストで (batch, heads, seq, seq) 相当に拡張
-
+        batch, num_heads, seq_len, _ = q.shape
         dropout_p = self.dropout.p if self.training else 0.0
+        if seq_len <= self.attention_window and mask is None:
+            return F.scaled_dot_product_attention(
+                q, k, v, is_causal=True, dropout_p=dropout_p, scale=self.scale
+            )
 
-        output = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_bias, dropout_p=dropout_p, scale=self.scale
-        )
+        # broadcast_to is a view; convert to boolean/device only after slicing.
+        if mask is not None:
+            mask = torch.broadcast_to(mask, (batch, num_heads, seq_len, seq_len))
 
-        return output
+        outputs = []
+        window = self.attention_window
+        for start in range(0, seq_len, window):
+            end = min(start + window, seq_len)
+            key_start = max(0, start - window + 1)
+            query_positions = torch.arange(start, end, device=q.device)[:, None]
+            key_positions = torch.arange(key_start, end, device=q.device)[None, :]
+            allowed = ((key_positions <= query_positions)
+                       & (key_positions > query_positions - window))
+            if mask is not None:
+                external = mask[..., start:end, key_start:end].to(device=q.device)
+                allowed = allowed & (external != 0)
+            outputs.append(F.scaled_dot_product_attention(
+                q[..., start:end, :], k[..., key_start:end, :], v[..., key_start:end, :],
+                attn_mask=allowed, dropout_p=dropout_p, scale=self.scale,
+            ))
+        return torch.cat(outputs, dim=-2)
 
 
 # ========================================
@@ -1874,7 +1860,7 @@ class NeuroQuantum(nn.Module):
         
         Args:
             token_ids: (batch, seq) トークンID（トークン化済みのテキスト）
-            mask: Optional attention mask (Noneの場合はCausal Maskを自動生成)
+            mask: Optional attention mask (NoneでもLocalAttentionが因果制約を適用)
             verbose: 各層の入出力を詳細にログ出力するか
         
         Returns:
@@ -1956,11 +1942,9 @@ class NeuroQuantum(nn.Module):
             logger.info(f"  - 出力: {hidden_states.shape}")
             logger.info(f"  - 統計: mean={hidden_states.mean().item():.4f}, std={hidden_states.std().item():.4f}")
         
-        # Causal Mask生成（maskがNoneの場合）
-        if mask is None:
-            mask = torch.tril(torch.ones(seq, seq, device=token_ids.device)).unsqueeze(0).unsqueeze(0)
-            if verbose:
-                logger.info(f"[Mask] Causal Mask生成: {mask.shape}")
+        # LocalAttention enforces causality, so do not allocate a seq x seq mask.
+        if mask is None and verbose:
+            logger.info("[Mask] LocalAttention内部で因果・ウィンドウ制約を適用")
         
         # ========================================
         # [4-9] Transformerブロック × N回
@@ -1972,7 +1956,10 @@ class NeuroQuantum(nn.Module):
         
         for block_idx, block in enumerate(self.transformer_blocks):
             h_input = hidden_states.clone() if verbose else None
-            hidden_states = block(hidden_states, mask)
+            if self.config.gradient_checkpointing and self.training and torch.is_grad_enabled():
+                hidden_states = checkpoint(block, hidden_states, mask, use_reentrant=False)
+            else:
+                hidden_states = block(hidden_states, mask)
 
             if verbose:
                 logger.info(f"[Block {block_idx + 1}/{self.config.num_layers}]")
@@ -3845,4 +3832,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     main(num_neurons=args.neurons)
-
