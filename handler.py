@@ -38,6 +38,7 @@ import math
 import random
 import time
 import shutil
+import re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -507,6 +508,10 @@ class EndpointHandler:
         top_k = int(params.get("top_k", 40))
         top_p = float(params.get("top_p", 0.9))
         repetition_penalty = float(params.get("repetition_penalty", 1.3))
+        no_repeat_ngram_size = int(params.get("no_repeat_ngram_size", 3))
+        presence_penalty = float(params.get("presence_penalty", 0.15))
+        frequency_penalty = float(params.get("frequency_penalty", 0.05))
+        min_new_tokens = int(params.get("min_new_tokens", 8))
         ignore_eos = bool(params.get("ignore_eos", False))
 
         # Match training format: [BOF, BOS] + content + [EOS, EOF]
@@ -529,6 +534,50 @@ class EndpointHandler:
                 seq = input_tensor[:, -max_seq_len:]
                 logits = self.model(seq)[:, -1, :] / max(temperature, 1e-5)
 
+                # Apply repetition controls before top-k/top-p filtering so a
+                # repeated token cannot survive filtering with an artificially
+                # high rank.  The old order filtered first, which made the
+                # penalty ineffective for the most repetitive token.
+                if len(generated) > 1:
+                    recent = generated[-100:]
+                    counts = {}
+                    for token_id in recent:
+                        counts[token_id] = counts.get(token_id, 0) + 1
+                    for token_id, count in counts.items():
+                        if token_id >= logits.size(-1):
+                            continue
+                        if logits[0, token_id] > 0:
+                            logits[0, token_id] /= max(repetition_penalty, 1.0) ** (1 + 0.15 * count)
+                        else:
+                            logits[0, token_id] *= max(repetition_penalty, 1.0) ** (1 + 0.15 * count)
+                        logits[0, token_id] -= presence_penalty + frequency_penalty * count
+
+                    # Standard no-repeat n-gram blocking.
+                    n = max(2, no_repeat_ngram_size)
+                    if len(generated) >= n - 1:
+                        prefix = tuple(generated[-(n - 1):])
+                        for i in range(len(generated) - n + 1):
+                            if tuple(generated[i:i + n - 1]) == prefix:
+                                banned = generated[i + n - 1]
+                                if banned < logits.size(-1):
+                                    logits[0, banned] = float('-inf')
+
+                    # Block continuation of repeated short spans (the failure
+                    # mode seen in Japanese Wikipedia generations).
+                    for span in range(1, min(8, len(generated) // 2) + 1):
+                        suffix = tuple(generated[-span:])
+                        for i in range(len(generated) - 2 * span):
+                            if tuple(generated[i:i + span]) == suffix:
+                                candidate = generated[i + span]
+                                if candidate < logits.size(-1):
+                                    logits[0, candidate] = float('-inf')
+
+                # Keep the answer from terminating immediately, but allow EOS
+                # once a useful minimum has been generated.
+                if step < min_new_tokens:
+                    logits[0, self.tokenizer.eos_id] = float('-inf')
+                    logits[0, self.tokenizer.eof_id] = float('-inf')
+
                 if top_k > 0:
                     k = min(top_k, logits.size(-1))
                     topk_vals = torch.topk(logits, k)[0]
@@ -543,15 +592,11 @@ class EndpointHandler:
                     indices_to_remove = sorted_indices[to_remove]
                     logits[0, indices_to_remove] = float('-inf')
 
-                if repetition_penalty > 1.0 and len(generated) > 1:
-                    for prev in set(generated[-50:]):
-                        if prev < logits.size(-1):
-                            if logits[0, prev] > 0:
-                                logits[0, prev] /= repetition_penalty
-                            else:
-                                logits[0, prev] *= repetition_penalty
-
                 probs = F.softmax(logits, dim=-1)
+                if not torch.isfinite(probs).all() or probs.sum() <= 0:
+                    # If blocking removed every candidate, fall back to the
+                    # unblocked distribution instead of returning NaNs.
+                    probs = F.softmax((self.model(seq)[:, -1, :] / max(temperature, 1e-5)), dim=-1)
                 nxt = torch.multinomial(probs, 1)
                 nxt_id = nxt.item()
 
@@ -579,6 +624,21 @@ class EndpointHandler:
                 input_tensor = torch.cat([input_tensor, nxt], dim=1)
 
         generated_text = self.tokenizer.decode(generated[len(tokens):], skip_special=True)
+        # Final text-level guard for tokenizers that split a repeated phrase
+        # into different IDs. Collapse repeated suffixes and sentences.
+        for span in range(min(120, len(generated_text) // 2), 7, -1):
+            if generated_text[-span:] == generated_text[-2 * span:-span]:
+                generated_text = generated_text[:-span].rstrip()
+        sentences = [s for s in re.split(r"(?<=[。！？!?])", generated_text) if s]
+        if len(sentences) >= 3:
+            kept = []
+            seen = set()
+            for sentence in sentences:
+                key = re.sub(r"\s+", "", sentence)
+                if key in seen:
+                    break
+                seen.add(key); kept.append(sentence)
+            generated_text = "".join(kept)
         return [{"generated_text": generated_text,
                  "debug": {
                      "input_len": len(tokens),
@@ -2716,3 +2776,4 @@ if __name__ == "__main__":
     print(f"[handler] RunPod serverless mode — model loaded from {MODEL_DIR}")
 
     runpod.serverless.start({"handler": _runpod_handler})
+
