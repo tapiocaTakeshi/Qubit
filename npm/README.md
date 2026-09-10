@@ -147,7 +147,7 @@ console.log(`Total examples: ${trainingResult.totalExamples}`);
 
 | Export | Description |
 |---|---|
-| `NeuroQuantumClient` | Text generation with HuggingFace inference endpoints |
+| `NeuroQuantumClient` | Text generation with HuggingFace inference endpoints, plus document search / RAG against the NeuroQuantum API |
 | `HFDatasetLoader` | Load and stream HuggingFace datasets |
 | `LLMTrainer` | Fine-tune models on HuggingFace datasets |
 
@@ -197,6 +197,48 @@ interface GenerateOptions {
   repetitionPenalty?: number;   // Penalize repeated tokens (default: 1.0)
 }
 ```
+
+---
+
+## `NeuroQuantumClient` — Document Search (RAG)
+
+Register documents with the NeuroQuantum API server (`api.py`) and search them.
+The server ranks documents with BM25 keyword matching combined with NeuroQuantum
+embedding similarity (`hybrid`), falling back to BM25 when no model is loaded.
+
+```ts
+import { NeuroQuantumClient } from "qubit_ai";
+
+const client = new NeuroQuantumClient({
+  endpointUrl: "http://localhost:8000/inference",
+  searchEndpointUrl: "http://localhost:8000", // defaults to endpointUrl
+});
+
+await client.addDocuments([
+  "量子コンピュータは量子力学の原理を利用した計算機です。",
+  { text: "ニューラルネットワークの説明", id: "nn", metadata: { topic: "ai" } },
+]);
+
+const { results } = await client.search("量子力学", { topK: 3, mode: "hybrid" });
+for (const hit of results) {
+  console.log(hit.rank, hit.score, hit.docId, hit.text);
+}
+
+await client.searchStatus();       // { documents, mode, alpha, denseAvailable, ngram }
+await client.clearDocuments("nn"); // remove one document
+await client.clearDocuments();     // remove everything
+```
+
+### Search options
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `topK` | `number` | `5` | Number of results |
+| `mode` | `"hybrid" \| "bm25" \| "dense"` | server default | Scoring mode |
+| `minScore` | `number` | `0` | Drop results below this score |
+| `metadataFilter` | `Record<string, unknown>` | — | Only documents whose metadata matches every key |
+
+Each hit has `docId`, `text`, `score` (0–1), `bm25Score`, `denseScore`, `metadata` and `rank`.
 
 ---
 

@@ -94,6 +94,7 @@ const quality = await evaluateQuality("生成されたテキスト");
 - [使用例](#-使用例)
 - [ベストプラクティス](#-ベストプラクティス)
 - [理論背景](#-理論背景)
+- [NeuroQuantum 検索機能 (Search / RAG)](#-neuroquantum-検索機能-search--rag)
 
 ---
 
@@ -1041,6 +1042,36 @@ def get_training_status():
 | **small**   | ~50M | ~4GB | 5-8x | 5-8x |
 
 ※ 実際の値はデータセット、ハードウェア、最適化設定によって異なります
+
+## 🔎 NeuroQuantum 検索機能 (Search / RAG)
+
+登録した文書を **BM25 (キーワード) + NeuroQuantum モデル埋め込み (意味)** の
+ハイブリッドで検索し、検索結果をプロンプトに埋め込んで生成 (RAG) できます。
+詳細は [docs/NEUROQUANTUM_SEARCH.md](docs/NEUROQUANTUM_SEARCH.md) を参照してください。
+
+```python
+from neuroquantum_layered import NeuroQuantumAI
+
+ai = NeuroQuantumAI()
+ai.train(texts, epochs=5)
+ai.add_documents(texts)                              # 文書を登録
+hits = ai.search("量子もつれ", top_k=3)                # 検索
+answer = ai.generate_with_search("量子もつれとは？")   # 検索拡張生成
+```
+
+```bash
+# REST API (api.py)
+curl -X POST http://localhost:8000/search/documents -H "Content-Type: application/json" \
+  -d '{"documents": [{"text": "量子コンピュータは量子力学の原理を利用した計算機です。", "id": "q1"}]}'
+curl -X POST http://localhost:8000/search -H "Content-Type: application/json" \
+  -d '{"query": "量子力学", "top_k": 3}'
+curl -X POST http://localhost:8000/inference -H "Content-Type: application/json" \
+  -d '{"prompt": "量子コンピュータとは？", "use_search": true}'
+```
+
+チャットモード (`NeuroQuantumAI.chat()`) では `/search <語>`, `/index <file>`, `/rag on|off` が使えます。
+
+---
 
 ## 📦 GGUF モデル生成 (GGUF Model Generation)
 

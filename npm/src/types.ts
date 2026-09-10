@@ -38,6 +38,12 @@ export interface NeuroQuantumClientConfig {
   timeoutMs?: number;
   /** Number of retry attempts on 503 / network error (default: 12) */
   maxRetries?: number;
+  /**
+   * Base URL of the NeuroQuantum search API (the FastAPI server from
+   * `api.py`). `/search`, `/search/documents` and `/search/status` are
+   * appended to it. Defaults to `endpointUrl`.
+   */
+  searchEndpointUrl?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +152,80 @@ export interface TrainFromDatasetOptions extends DatasetToExamplesOptions {
   batchSize?: number;
   /** Callback invoked after each batch */
   onProgress?: (progress: TrainingProgress) => void;
+}
+
+// ---------------------------------------------------------------------------
+// NeuroQuantum search (retrieval / RAG) types
+// ---------------------------------------------------------------------------
+
+/** A document to register in the NeuroQuantum search index */
+export interface SearchDocumentInput {
+  /** Document text (required) */
+  text: string;
+  /** Optional stable id; re-registering the same id replaces the document */
+  id?: string;
+  /** Arbitrary metadata, usable with `metadataFilter` when searching */
+  metadata?: Record<string, unknown>;
+}
+
+/** Result of registering documents */
+export interface AddDocumentsResult {
+  /** Number of documents added in this call */
+  added: number;
+  /** Total number of documents now in the index */
+  total: number;
+  /** Ids assigned to the added documents (in input order) */
+  docIds: string[];
+}
+
+/** Search scoring mode. `hybrid` = BM25 + NeuroQuantum embeddings. */
+export type SearchMode = "hybrid" | "bm25" | "dense";
+
+/** Options for searching the NeuroQuantum document index */
+export interface SearchOptions {
+  /** Number of results to return (default: 5) */
+  topK?: number;
+  /** Scoring mode; defaults to the server's index mode */
+  mode?: SearchMode;
+  /** Drop results scoring below this value (default: 0) */
+  minScore?: number;
+  /** Only return documents whose metadata matches every key/value */
+  metadataFilter?: Record<string, unknown>;
+}
+
+/** One search hit */
+export interface SearchHit {
+  docId: string;
+  text: string;
+  /** Combined score in [0, 1] (higher is better) */
+  score: number;
+  /** Raw BM25 score */
+  bm25Score: number;
+  /** Cosine similarity from NeuroQuantum embeddings (0 when unavailable) */
+  denseScore: number;
+  metadata: Record<string, unknown>;
+  /** 1-based rank */
+  rank: number;
+}
+
+/** Result of a search call */
+export interface SearchResult {
+  query: string;
+  mode: string;
+  /** Number of documents in the index */
+  totalDocuments: number;
+  results: SearchHit[];
+  /** Raw response from the endpoint */
+  raw?: unknown;
+}
+
+/** Status of the server-side search index */
+export interface SearchStatus {
+  documents: number;
+  mode: string;
+  alpha: number;
+  denseAvailable: boolean;
+  ngram: number;
 }
 
 /** Options for few-shot generation using dataset examples */

@@ -47,4 +47,11 @@ export type {
   HFDatasetRow,
   HFDatasetPage,
   HFDatasetLoaderConfig,
+  SearchDocumentInput,
+  SearchOptions,
+  SearchHit,
+  SearchResult,
+  SearchStatus,
+  SearchMode,
+  AddDocumentsResult,
 } from "./types.js";

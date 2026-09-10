@@ -230,6 +230,18 @@ GET /api/v1/config
 ```
 Retrieve current server configuration.
 
+### Search (document retrieval)
+```
+POST   /api/v1/search/documents   {"documents": ["text", {"text": "...", "id": "...", "metadata": {...}}]}
+POST   /api/v1/search             {"query": "...", "top_k": 5, "mode": "bm25", "include_prompt": false}
+GET    /api/v1/search/status
+DELETE /api/v1/search/documents[?doc_id=...]
+```
+Register documents and search them with BM25 (character n-gram, Japanese-friendly).
+`include_prompt: true` also returns a ready-to-use RAG prompt. See
+[NEUROQUANTUM_SEARCH.md](./NEUROQUANTUM_SEARCH.md) for the full search / RAG guide,
+including the hybrid (BM25 + NeuroQuantum embedding) mode of the FastAPI server.
+
 ## Usage Examples
 
 ### Basic Judgment
