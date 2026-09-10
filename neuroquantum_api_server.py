@@ -28,6 +28,14 @@ except ImportError:
     NEUROQUANTUM_AVAILABLE = False
     print("⚠️  neuroquantum_layered が見つかりません")
 
+# 文書検索 (neuroquantum_search)
+try:
+    from neuroquantum_search import NeuroQuantumSearchIndex, build_rag_prompt
+    SEARCH_AVAILABLE = True
+except ImportError:
+    SEARCH_AVAILABLE = False
+    print("⚠️  neuroquantum_search が見つかりません (検索エンドポイントは無効)")
+
 # ロギング設定
 logging.basicConfig(
     level=logging.INFO,
@@ -77,6 +85,9 @@ class NeuroQuantumInferenceEngine:
 
         # TODO: 実際の neuroquantum モデルをロード
         # self.model = NeuroQuantumModel(self.config)
+
+        # 文書検索インデックス (モデル未ロードのため BM25 のみ)
+        self.search_index = NeuroQuantumSearchIndex() if SEARCH_AVAILABLE else None
 
     def judge(
         self,
@@ -354,6 +365,106 @@ def quality_eval_endpoint():
             "error": str(e)
         }), 500
 
+# ========================================
+# 検索エンドポイント
+# ========================================
+
+def _require_search_index():
+    engine = get_inference_engine()
+    if engine.search_index is None:
+        return None, (jsonify({"error": "search is not available (neuroquantum_search missing)"}), 503)
+    return engine.search_index, None
+
+
+@app.route('/api/v1/search/documents', methods=['POST'])
+def search_add_documents_endpoint():
+    """検索対象の文書を登録"""
+    index, err = _require_search_index()
+    if err:
+        return err
+    try:
+        data = request.get_json() or {}
+        documents = data.get('documents')
+        if not isinstance(documents, list) or not documents:
+            return jsonify({"error": "'documents' must be a non-empty list"}), 400
+
+        texts, ids, metas = [], [], []
+        for item in documents:
+            if isinstance(item, str):
+                texts.append(item); ids.append(None); metas.append({})
+            elif isinstance(item, dict) and 'text' in item:
+                texts.append(str(item['text']))
+                ids.append(str(item['id']) if item.get('id') is not None else None)
+                metas.append(dict(item.get('metadata') or {}))
+            else:
+                return jsonify({"error": "each document must be a string or an object with 'text'"}), 400
+
+        doc_ids = index.add_documents(texts, ids, metas)
+        return jsonify({"added": len(doc_ids), "total": len(index), "doc_ids": doc_ids}), 200
+    except Exception as e:
+        logger.error(f"文書登録エラー: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/search/documents', methods=['DELETE'])
+def search_clear_documents_endpoint():
+    """文書を削除 (doc_id 指定で 1 件、無指定で全件)"""
+    index, err = _require_search_index()
+    if err:
+        return err
+    doc_id = request.args.get('doc_id')
+    if doc_id:
+        if not index.remove_document(doc_id):
+            return jsonify({"error": f"document not found: {doc_id}"}), 404
+        return jsonify({"status": "deleted", "doc_id": doc_id, "total": len(index)}), 200
+    index.clear()
+    return jsonify({"status": "cleared", "total": 0}), 200
+
+
+@app.route('/api/v1/search/status', methods=['GET'])
+def search_status_endpoint():
+    """検索インデックスの状態"""
+    index, err = _require_search_index()
+    if err:
+        return err
+    return jsonify(index.status()), 200
+
+
+@app.route('/api/v1/search', methods=['POST'])
+def search_endpoint():
+    """登録済み文書を検索"""
+    index, err = _require_search_index()
+    if err:
+        return err
+    try:
+        data = request.get_json() or {}
+        query = str(data.get('query', '')).strip()
+        if not query:
+            return jsonify({"error": "Missing required field: 'query'"}), 400
+        top_k = int(data.get('top_k', 5))
+        mode = data.get('mode')
+        min_score = float(data.get('min_score', 0.0))
+        metadata_filter = data.get('metadata_filter')
+
+        results = index.search(
+            query, top_k=top_k, mode=mode, min_score=min_score, metadata_filter=metadata_filter
+        )
+        response = {
+            "query": query,
+            "mode": mode or index.mode,
+            "total_documents": len(index),
+            "results": [r.to_dict() for r in results],
+        }
+        if data.get('include_prompt'):
+            response["rag_prompt"] = build_rag_prompt(query, results)
+        return jsonify(response), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"検索エラー: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/v1/status', methods=['GET'])
 def status_endpoint():
     """サーバーステータス"""
@@ -365,7 +476,8 @@ def status_endpoint():
         "status": "running",
         "version": API_VERSION,
         "model_config": config,
-        "neuroquantum_available": NEUROQUANTUM_AVAILABLE
+        "neuroquantum_available": NEUROQUANTUM_AVAILABLE,
+        "search": engine.search_index.status() if engine.search_index is not None else None,
     }), 200
 
 @app.errorhandler(404)

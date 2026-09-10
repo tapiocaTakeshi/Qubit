@@ -2638,7 +2638,82 @@ class NeuroQuantumAI:
         if self.use_quantum_simulation:
             self.quantum_computer = QuantumComputer("NeuroQuantum-QC")
             print("⚛️  量子回路シミュレーターを初期化しました")
-    
+
+        # 検索インデックス (neuroquantum_search) - add_documents() 時に遅延生成
+        self._search_index = None
+
+    # ========================================
+    # 検索機能 (Search / RAG)
+    # ========================================
+
+    @property
+    def search_index(self):
+        """文書検索インデックス (``NeuroQuantumSearchIndex``)。
+
+        モデルが学習済みならモデル埋め込みも使うハイブリッド検索、未学習なら
+        BM25 のみの検索になります。初回アクセス時に生成されます。
+        """
+        if getattr(self, "_search_index", None) is None:
+            from neuroquantum_search import NeuroQuantumSearchIndex
+
+            if self.model is not None and self.tokenizer is not None:
+                self._search_index = NeuroQuantumSearchIndex(
+                    self.model, self.tokenizer, device=self.device
+                )
+            else:
+                self._search_index = NeuroQuantumSearchIndex()
+        return self._search_index
+
+    def add_documents(
+        self,
+        texts: List[str],
+        doc_ids: Optional[List[str]] = None,
+        metadatas: Optional[List[Dict]] = None,
+    ) -> List[str]:
+        """検索対象の文書を登録して doc_id の一覧を返す"""
+        return self.search_index.add_documents(texts, doc_ids, metadatas)
+
+    def clear_documents(self) -> None:
+        """検索インデックスを空にする"""
+        if getattr(self, "_search_index", None) is not None:
+            self._search_index.clear()
+
+    def search(self, query: str, top_k: int = 5, mode: Optional[str] = None, **kwargs) -> List:
+        """登録済み文書からクエリに近いものを検索する。
+
+        Returns:
+            ``neuroquantum_search.SearchResult`` のリスト (スコア降順)
+        """
+        return self.search_index.search(query, top_k=top_k, mode=mode, **kwargs)
+
+    def generate_with_search(
+        self,
+        query: str,
+        top_k: int = 3,
+        mode: Optional[str] = None,
+        template: Optional[str] = None,
+        return_results: bool = False,
+        **generate_kwargs,
+    ):
+        """検索拡張生成 (RAG): 検索結果をプロンプトに埋め込んでから生成する。
+
+        Args:
+            query: ユーザーの質問
+            top_k: プロンプトに含める検索結果の件数
+            mode: 検索モード (hybrid / bm25 / dense)
+            template: ``{context}`` と ``{query}`` を含むプロンプトテンプレート
+            return_results: True なら ``(生成テキスト, 検索結果)`` を返す
+            **generate_kwargs: ``generate()`` にそのまま渡す
+        """
+        from neuroquantum_search import DEFAULT_RAG_TEMPLATE, build_rag_prompt
+
+        results = self.search(query, top_k=top_k, mode=mode) if len(self.search_index) else []
+        prompt = build_rag_prompt(query, results, template=template or DEFAULT_RAG_TEMPLATE)
+        text = self.generate(prompt=prompt, **generate_kwargs)
+        if return_results:
+            return text, results
+        return text
+
     def train(self, texts: List[str], epochs: int = 50, batch_size: int = 16,
               lr: float = 0.001, seq_len: int = 128, vocab_size: int = 32000):
         """学習"""
@@ -2834,6 +2909,20 @@ class NeuroQuantumAI:
         print("\n⚛️ 量子もつれ情報:")
         for info in self.model.get_quantum_info():
             print(f"   Block {info['block']}: λ_attn = {info['attn_lambda']:.4f}")
+
+        # 検索インデックスは学習済みモデルの埋め込みで作り直す
+        self._refresh_search_index()
+
+    def _refresh_search_index(self) -> None:
+        """モデルが差し替わったとき、登録済み文書を保ったままインデックスを再構築する"""
+        if getattr(self, "_search_index", None) is None or len(self._search_index) == 0:
+            self._search_index = None
+            return
+        docs = list(self._search_index.documents)
+        self._search_index = None
+        self.search_index.add_documents(
+            [d.text for d in docs], [d.doc_id for d in docs], [d.metadata for d in docs]
+        )
 
     def train_on_texts(self, texts: List[str], epochs: int = 50, batch_size: int = 16,
                        lr: float = 0.001, seq_len: int = 64):
@@ -3207,11 +3296,15 @@ class NeuroQuantumAI:
         print("  /len <値>     - 生成長さ (10-500)")
         print("  /info         - モデル情報")
         print("  /quantum      - 量子もつれ情報")
+        print("  /search <語>  - 登録文書を検索")
+        print("  /index <file> - 文書ファイル (txt/json/jsonl) を検索対象に登録")
+        print("  /rag on|off   - 検索結果をプロンプトに含めて生成 (RAG)")
         print("-" * 70)
         
         temp_min = 0.4  # 温度の下限
         temp_max = 0.8  # 温度の上限
         max_length = 100
+        use_rag = False
         
         while True:
             try:
@@ -3265,9 +3358,68 @@ class NeuroQuantumAI:
                     for info in self.model.get_quantum_info():
                         print(f"   Block {info['block']}: λ_attn = {info['attn_lambda']:.4f}")
                     continue
+
+                if user_input.startswith('/search'):
+                    query = user_input[len('/search'):].strip()
+                    if not query:
+                        print("   使い方: /search <検索語>")
+                        continue
+                    if len(self.search_index) == 0:
+                        print("   検索対象の文書がありません (/index <file> で登録)")
+                        continue
+                    results = self.search(query, top_k=5)
+                    if not results:
+                        print("   該当する文書はありません")
+                        continue
+                    print(f"\n🔎 検索結果 ({len(results)} 件, mode={self.search_index.mode}):")
+                    for r in results:
+                        preview = " ".join(r.text.split())
+                        if len(preview) > 60:
+                            preview = preview[:59] + "…"
+                        print(f"   {r.rank}. [{r.score:.3f}] {preview}  ({r.doc_id})")
+                    continue
+
+                if user_input.startswith('/index'):
+                    path = user_input[len('/index'):].strip()
+                    if not path:
+                        print(f"   使い方: /index <file>   (現在 {len(self.search_index)} 件登録済み)")
+                        continue
+                    try:
+                        from neuroquantum_search import load_documents_from_file
+                        texts, ids, metas = load_documents_from_file(path)
+                        added = self.add_documents(texts, ids, metas)
+                        print(f"   {len(added)} 件を登録しました (合計 {len(self.search_index)} 件)")
+                    except Exception as e:
+                        print(f"   エラー: {e}")
+                    continue
+
+                if user_input.startswith('/rag'):
+                    flag = user_input[len('/rag'):].strip().lower()
+                    if flag in ('on', 'off'):
+                        use_rag = flag == 'on'
+                    elif not flag:
+                        use_rag = not use_rag
+                    else:
+                        print("   使い方: /rag on|off")
+                        continue
+                    print(f"   RAG: {'有効' if use_rag else '無効'}")
+                    continue
                 
                 # 生成
                 print(f"\n🤖 ニューロQ: ", end="", flush=True)
+                if use_rag and len(self.search_index) > 0:
+                    response, hits = self.generate_with_search(
+                        user_input,
+                        top_k=3,
+                        return_results=True,
+                        max_length=max_length,
+                        temp_min=temp_min,
+                        temp_max=temp_max,
+                    )
+                    print(response)
+                    if hits:
+                        print(f"   📚 参照: " + ", ".join(h.doc_id for h in hits))
+                    continue
                 response = self.generate(
                     prompt=user_input,
                     max_length=max_length,

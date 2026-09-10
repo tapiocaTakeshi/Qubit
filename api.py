@@ -23,6 +23,7 @@ from dataset_utils import sync_checkpoint_to_network_volume
 from split_learning import SplitLearningTrainer, merge_split_models
 from progress_logger import ProgressLogger
 from generate_gguf_models import GGUFModelGenerator
+from neuroquantum_search import NeuroQuantumSearchIndex, build_rag_prompt, DEFAULT_RAG_TEMPLATE
 
 _shutdown_event = threading.Event()
 
@@ -34,6 +35,11 @@ tokenizer = None
 config = None
 device = None
 training_status = {"running": False, "log": [], "message": "idle"}
+# 文書検索インデックス (neuroquantum_search)。モデル読み込み後は
+# モデル埋め込みを使うハイブリッド検索、モデルが無ければ BM25 のみ。
+search_index: Optional[NeuroQuantumSearchIndex] = None
+_search_index_model_id: Optional[int] = None
+_search_lock = threading.Lock()
 progress = ProgressLogger("api")
 NETWORK_VOLUME_PATH = os.environ.get("NETWORK_VOLUME_PATH", "/runpod-volume")
 LOCAL_CKPT_PATH = os.path.join(os.path.dirname(__file__), "neuroq_checkpoint.pt")
@@ -91,12 +97,58 @@ class InferenceRequest(BaseModel):
     top_k: int = 40
     top_p: float = 0.9
     repetition_penalty: float = 1.3
+    # 検索拡張生成 (RAG): 登録済み文書を検索してプロンプトに埋め込む
+    use_search: bool = False
+    search_top_k: int = 3
+    search_mode: Optional[str] = None  # hybrid / bm25 / dense
+
+
+class SearchHit(BaseModel):
+    doc_id: str
+    text: str
+    score: float
+    bm25_score: float = 0.0
+    dense_score: float = 0.0
+    metadata: dict = {}
+    rank: int = 0
 
 
 class InferenceResponse(BaseModel):
     prompt: str
     generated_text: str
     tokens_generated: int
+    search_results: Optional[List[SearchHit]] = None
+
+
+class SearchDocumentIn(BaseModel):
+    text: str
+    id: Optional[str] = None
+    metadata: dict = {}
+
+
+class SearchAddRequest(BaseModel):
+    documents: List[SearchDocumentIn]
+
+
+class SearchAddResponse(BaseModel):
+    added: int
+    total: int
+    doc_ids: List[str]
+
+
+class SearchRequest(BaseModel):
+    query: str
+    top_k: int = 5
+    mode: Optional[str] = None  # hybrid / bm25 / dense (None = index default)
+    min_score: float = 0.0
+    metadata_filter: Optional[dict] = None
+
+
+class SearchResponse(BaseModel):
+    query: str
+    mode: str
+    total_documents: int
+    results: List[SearchHit]
 
 
 class TrainRequest(BaseModel):
@@ -385,6 +437,41 @@ def ensure_model_loaded():
         print("[api] Loading model on-demand...")
         load_model()
         print("[api] Model ready")
+
+
+# ========================================
+# Search (neuroquantum_search)
+# ========================================
+
+def get_search_index() -> NeuroQuantumSearchIndex:
+    """検索インデックスを返す。
+
+    モデルが読み込まれていればモデル埋め込みを使うハイブリッド検索にする。
+    モデルが差し替わった (/reload や学習完了) 場合は、登録済み文書を保った
+    まま埋め込みを再計算する。
+    """
+    global search_index, _search_index_model_id
+    with _search_lock:
+        current_model_id = id(model) if model is not None else None
+        if search_index is not None and _search_index_model_id == current_model_id:
+            return search_index
+
+        docs = list(search_index.documents) if search_index is not None else []
+        if model is not None and tokenizer is not None:
+            new_index = NeuroQuantumSearchIndex(model, tokenizer, device=device)
+        else:
+            new_index = NeuroQuantumSearchIndex()
+        if docs:
+            new_index.add_documents(
+                [d.text for d in docs], [d.doc_id for d in docs], [d.metadata for d in docs]
+            )
+        search_index = new_index
+        _search_index_model_id = current_model_id
+        return search_index
+
+
+def _to_search_hits(results) -> List[SearchHit]:
+    return [SearchHit(**r.to_dict()) for r in results]
 
 
 # ========================================
@@ -1878,8 +1965,22 @@ async def inference(req: InferenceRequest):
     if training_status["running"]:
         raise HTTPException(status_code=503, detail="Model is currently training")
 
+    prompt = req.prompt
+    hits = None
+    if req.use_search:
+        index = get_search_index()
+        if len(index) > 0:
+            try:
+                results = index.search(req.prompt, top_k=req.search_top_k, mode=req.search_mode)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            hits = _to_search_hits(results)
+            prompt = build_rag_prompt(req.prompt, results, template=DEFAULT_RAG_TEMPLATE)
+        else:
+            hits = []
+
     text = generate_text(
-        req.prompt,
+        prompt,
         max_new_tokens=req.max_new_tokens,
         temperature=req.temperature,
         top_k=req.top_k,
@@ -1891,6 +1992,76 @@ async def inference(req: InferenceRequest):
         prompt=req.prompt,
         generated_text=text,
         tokens_generated=tokens_count,
+        search_results=hits,
+    )
+
+
+# ========================================
+# Search endpoints
+# ========================================
+
+@app.post("/search/documents", response_model=SearchAddResponse)
+async def search_add_documents(req: SearchAddRequest):
+    """検索対象の文書を登録する。同じ id を再登録すると置き換える。"""
+    if not req.documents:
+        raise HTTPException(status_code=400, detail="documents is empty")
+    try:
+        ensure_model_loaded()
+    except Exception as e:  # モデルが無くても BM25 検索は使える
+        print(f"[api] search: model unavailable, falling back to BM25 ({e})")
+    index = get_search_index()
+    doc_ids = index.add_documents(
+        [d.text for d in req.documents],
+        [d.id for d in req.documents],
+        [d.metadata for d in req.documents],
+    )
+    return SearchAddResponse(added=len(doc_ids), total=len(index), doc_ids=doc_ids)
+
+
+@app.delete("/search/documents")
+async def search_clear_documents(doc_id: Optional[str] = None):
+    """doc_id を指定すればその文書だけ、指定が無ければ全文書を削除する。"""
+    index = get_search_index()
+    if doc_id is not None:
+        if not index.remove_document(doc_id):
+            raise HTTPException(status_code=404, detail=f"document not found: {doc_id}")
+        return {"status": "deleted", "doc_id": doc_id, "total": len(index)}
+    index.clear()
+    return {"status": "cleared", "total": 0}
+
+
+@app.get("/search/status")
+async def search_status():
+    """検索インデックスの状態 (文書数 / モード)"""
+    index = get_search_index()
+    return index.status()
+
+
+@app.post("/search", response_model=SearchResponse)
+async def search_documents(req: SearchRequest):
+    """登録済み文書を検索する。"""
+    if not req.query.strip():
+        raise HTTPException(status_code=400, detail="query is empty")
+    try:
+        ensure_model_loaded()
+    except Exception as e:
+        print(f"[api] search: model unavailable, falling back to BM25 ({e})")
+    index = get_search_index()
+    try:
+        results = index.search(
+            req.query,
+            top_k=req.top_k,
+            mode=req.mode,
+            min_score=req.min_score,
+            metadata_filter=req.metadata_filter,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return SearchResponse(
+        query=req.query,
+        mode=(req.mode or index.mode),
+        total_documents=len(index),
+        results=_to_search_hits(results),
     )
 
 

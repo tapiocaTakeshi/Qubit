@@ -303,6 +303,7 @@ test('quantum judgment works', async () => {
 ## Next Steps
 
 - Read [Full NeuroQuantum Integration Guide](./NEUROQUANTUM_INTEGRATION.md)
+- Add document search / RAG: [NeuroQuantum Search Guide](./NEUROQUANTUM_SEARCH.md)
 - Check [API Examples](../examples/neuroquantum-backend.ts)
 - Review [Configuration Options](./CONFIGURATION.md)
 - Explore [Advanced Usage](./ADVANCED.md)
