@@ -506,7 +506,9 @@ class EndpointHandler:
                 raise ValueError("Agent context exceeds model context window; shorten the task/history")
             return self._handle_inference({"inputs": prompt, "parameters": {
                 "temperature": 0.2, "max_new_tokens": 256,
-                "repetition_penalty": 1.1, "no_repeat_ngram_size": 0,
+                "repetition_penalty": 1.0, "no_repeat_ngram_size": 0,
+                "presence_penalty": 0, "frequency_penalty": 0,
+                "repeat_span_blocking": False, "deduplicate_output": False,
                 "min_new_tokens": 0,
             }})[0].get("generated_text", "")
 
@@ -576,8 +578,8 @@ class EndpointHandler:
                         logits[0, token_id] -= presence_penalty + frequency_penalty * count
 
                     # Standard no-repeat n-gram blocking.
-                    n = max(2, no_repeat_ngram_size)
-                    if len(generated) >= n - 1:
+                    n = no_repeat_ngram_size
+                    if n >= 2 and len(generated) >= n - 1:
                         prefix = tuple(generated[-(n - 1):])
                         for i in range(len(generated) - n + 1):
                             if tuple(generated[i:i + n - 1]) == prefix:
@@ -587,7 +589,7 @@ class EndpointHandler:
 
                     # Block continuation of repeated short spans (the failure
                     # mode seen in Japanese Wikipedia generations).
-                    for span in range(1, min(8, len(generated) // 2) + 1):
+                    for span in range(1, min(8, len(generated) // 2) + 1) if params.get("repeat_span_blocking", True) else ():
                         suffix = tuple(generated[-span:])
                         for i in range(len(generated) - 2 * span):
                             if tuple(generated[i:i + span]) == suffix:
@@ -649,11 +651,11 @@ class EndpointHandler:
         generated_text = self.tokenizer.decode(generated[len(tokens):], skip_special=True)
         # Final text-level guard for tokenizers that split a repeated phrase
         # into different IDs. Collapse repeated suffixes and sentences.
-        for span in range(min(120, len(generated_text) // 2), 7, -1):
+        for span in range(min(120, len(generated_text) // 2), 7, -1) if params.get("deduplicate_output", True) else ():
             if generated_text[-span:] == generated_text[-2 * span:-span]:
                 generated_text = generated_text[:-span].rstrip()
         sentences = [s for s in re.split(r"(?<=[。！？!?])", generated_text) if s]
-        if len(sentences) >= 3:
+        if params.get("deduplicate_output", True) and len(sentences) >= 3:
             kept = []
             seen = set()
             for sentence in sentences:
