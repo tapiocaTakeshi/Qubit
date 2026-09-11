@@ -20,6 +20,7 @@ COPY qbnn_layered.py .
 
 # ハンドラー & ユーティリティ
 COPY handler.py .
+COPY neuroquantum_agent.py neuroquantum_search.py ./
 COPY runpod_handler.py .
 COPY runpod_manager.py .
 COPY dataset_utils.py .
