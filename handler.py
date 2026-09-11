@@ -4,6 +4,7 @@ neuroQ - NeuroQuantum Transformer
 
 Supports both inference and training via the "action" field:
   - action: "inference" (default) — text generation
+  - action: "agent"               — bounded read-only tool loop
   - action: "train"               — fine-tuning on HF datasets
   - action: "train_qa"            — QA pairs training (qa_pairs format)
   - action: "train_qa_dataset"    — QA-format fine-tuning on HF datasets
@@ -456,7 +457,7 @@ class EndpointHandler:
             4. デフォルト "inference"
 
         Supported actions:
-            inference, train, train_qa, train_dpo, train_split, train_split_next,
+            inference, agent, train, train_qa, train_dpo, train_split, train_split_next,
             split_status, split_reset, status
 
         Returns:
@@ -466,6 +467,7 @@ class EndpointHandler:
 
         # Action routing table
         _routes = {
+            "agent":            self._handle_agent,
             "train":            self._handle_train,
             "train_qa":         self._train_qa,
             "train_qa_dataset": self._handle_train_qa,
@@ -491,6 +493,27 @@ class EndpointHandler:
     # --------------------------------------------------------
     # Inference
     # --------------------------------------------------------
+
+    def _handle_agent(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        from neuroquantum_agent import run_agent
+
+        def generate(prompt):
+            # Do not route model-generated text through __call__: it must never
+            # select training, checkpoint changes, or another privileged action.
+            formatted = f"質問: {prompt}\n回答:"
+            token_count = len(self.tokenizer.encode(formatted, add_special=False))
+            if token_count + 2 > self.config["max_seq_len"]:
+                raise ValueError("Agent context exceeds model context window; shorten the task/history")
+            return self._handle_inference({"inputs": prompt, "parameters": {
+                "temperature": 0.2, "max_new_tokens": 256,
+                "repetition_penalty": 1.1, "no_repeat_ngram_size": 0,
+                "min_new_tokens": 0,
+            }})[0].get("generated_text", "")
+
+        try:
+            return [run_agent(data, generate)]
+        except ValueError as exc:
+            return [{"error": str(exc)}]
 
     def _handle_inference(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Generate text from prompt."""
@@ -2729,7 +2752,7 @@ def _runpod_handler(event):
         }
 
     Supported actions:
-        inference (default), train, train_qa, train_qa_dataset,
+        inference (default), agent, train, train_qa, train_qa_dataset,
         train_split, train_split_next, train_split_learning,
         train_dpo, train_combined_dpo,
         split_status, split_reset, status
@@ -2776,4 +2799,3 @@ if __name__ == "__main__":
     print(f"[handler] RunPod serverless mode — model loaded from {MODEL_DIR}")
 
     runpod.serverless.start({"handler": _runpod_handler})
-
