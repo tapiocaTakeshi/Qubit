@@ -1,9 +1,9 @@
 name: Agent checks
 on:
   push:
-    paths: ['neuroquantum_agent.py', 'neuroquantum_search.py', 'handler.py', 'runpod_handler.py', 'tests/test_neuroquantum_agent.py', '.github/workflows/test-agent.yml']
+    paths: ['neuroquantum_agent*.py', 'train_agent.py', 'neuroquantum_search.py', 'handler.py', 'runpod_handler.py', 'tests/test*agent*.py', '.github/workflows/test-agent.yml']
   pull_request:
-    paths: ['neuroquantum_agent.py', 'neuroquantum_search.py', 'handler.py', 'runpod_handler.py', 'tests/test_neuroquantum_agent.py', '.github/workflows/test-agent.yml']
+    paths: ['neuroquantum_agent*.py', 'train_agent.py', 'neuroquantum_search.py', 'handler.py', 'runpod_handler.py', 'tests/test*agent*.py', '.github/workflows/test-agent.yml']
 permissions:
   contents: read
 jobs:
@@ -16,4 +16,4 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install pytest requests
-      - run: python -m pytest -q tests/test_neuroquantum_agent.py
+      - run: python -m pytest -q tests/test_neuroquantum_agent.py tests/test_agent_protocol.py
