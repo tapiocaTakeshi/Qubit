@@ -15,5 +15,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install pytest requests sentencepiece
+      - run: python -m pip install pytest requests sentencepiece protobuf
       - run: python -m pytest -q tests/test_neuroquantum_agent.py tests/test_agent_protocol.py tests/test_tokenizer_builder.py
