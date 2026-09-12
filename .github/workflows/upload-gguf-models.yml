@@ -24,7 +24,7 @@ on:
         description: "Hugging Face repository name (e.g., username/qubit-q4-k-m)"
         required: true
       pt_file:
-        description: "Path (within the checked-out repo) to an existing .pt checkpoint to convert. Leave empty to auto-generate a fresh untrained model instead."
+        description: "Path (within the checked-out repo) or http(s) URL (e.g. a Hugging Face model file link) of an existing .pt checkpoint to convert. Leave empty to auto-generate a fresh untrained model instead."
         required: false
         default: ""
       architecture:
