@@ -545,6 +545,19 @@ def main():
         type=str,
         help="GGUF runtime parameters as JSON (e.g., '{\"n_ctx\": 512, \"n_batch\": 64}')"
     )
+    parser.add_argument(
+        "--pt-file",
+        type=str,
+        default=None,
+        help="Path to an existing .pt checkpoint to convert directly to GGUF, "
+             "instead of generating a fresh randomly-initialized model. When set, "
+             "only the first --architectures/--sizes values are used (for naming/metadata)."
+    )
+    parser.add_argument(
+        "--model-name",
+        default="Qubit",
+        help="Model name recorded in GGUF metadata when converting via --pt-file (default: Qubit)"
+    )
 
     args = parser.parse_args()
 
@@ -557,6 +570,60 @@ def main():
         except json.JSONDecodeError as e:
             print(f"❌ Error parsing GGUF parameters: {e}")
             sys.exit(1)
+
+    if args.pt_file:
+        if not os.path.isfile(args.pt_file):
+            print(f"❌ PT file not found: {args.pt_file}")
+            sys.exit(1)
+
+        architecture = args.architectures[0]
+        size = args.sizes[0]
+
+        print("🚀 Qubit GGUF Model Generator (from existing checkpoint)")
+        print(f"   PT file: {args.pt_file}")
+        print(f"   Architecture: {architecture}")
+        print(f"   Size: {size}")
+        print(f"   Quantization: {args.quantization}\n")
+
+        generator = GGUFModelGenerator(
+            output_dir=args.output_dir,
+            device=args.device,
+            gguf_params=gguf_params
+        )
+
+        gguf_file = generator.output_dir / f"{architecture}_{size}_{args.quantization}.gguf"
+        success = generator.pt_to_gguf(
+            args.pt_file,
+            str(gguf_file),
+            model_name=args.model_name,
+            model_size=size,
+            architecture=architecture,
+            quantization=args.quantization,
+        )
+
+        generator.results = {
+            architecture: {
+                size: {
+                    "status": "success",
+                    "checkpoint": args.pt_file,
+                    "gguf": str(gguf_file),
+                    "quantization": args.quantization,
+                    "size_mb": os.path.getsize(gguf_file) / (1024 * 1024),
+                } if success else {
+                    "status": "failed",
+                    "error": "GGUF conversion failed",
+                }
+            }
+        }
+
+        generator.print_summary()
+        generator.save_manifest()
+
+        if not success:
+            sys.exit(1)
+
+        print("✨ Done!")
+        return
 
     print("🚀 Qubit GGUF Model Generator")
     print(f"   Output: {args.output_dir}")

@@ -23,6 +23,20 @@ on:
       repo_name:
         description: "Hugging Face repository name (e.g., username/qubit-q4-k-m)"
         required: true
+      pt_file:
+        description: "Path (within the checked-out repo) to an existing .pt checkpoint to convert. Leave empty to auto-generate a fresh untrained model instead."
+        required: false
+        default: ""
+      architecture:
+        description: "Architecture label for the model (used for GGUF metadata and output file naming)"
+        required: false
+        default: "gemma"
+        type: choice
+        options:
+          - gemma
+          - gemma_qbnn
+          - neuroquantum
+          - qbnn
 
 jobs:
   generate-and-upload:
@@ -45,10 +59,21 @@ jobs:
 
       - name: 🔨 Generate GGUF models
         run: |
-          python generate_gguf_models.py \
-            --quantization ${{ github.event.inputs.quantization }} \
-            --sizes ${{ github.event.inputs.sizes }} \
-            --device cpu
+          if [ -n "${{ github.event.inputs.pt_file }}" ]; then
+            echo "📦 Converting provided checkpoint: ${{ github.event.inputs.pt_file }}"
+            python generate_gguf_models.py \
+              --pt-file "${{ github.event.inputs.pt_file }}" \
+              --architectures ${{ github.event.inputs.architecture }} \
+              --sizes ${{ github.event.inputs.sizes }} \
+              --quantization ${{ github.event.inputs.quantization }} \
+              --output-dir gguf_models
+          else
+            python generate_gguf_models.py \
+              --quantization ${{ github.event.inputs.quantization }} \
+              --sizes ${{ github.event.inputs.sizes }} \
+              --architectures ${{ github.event.inputs.architecture }} \
+              --device cpu
+          fi
 
       - name: 📤 Upload to Hugging Face Hub
         env:
@@ -59,7 +84,7 @@ jobs:
 
           for size in "${SIZES[@]}"; do
             size=$(echo "$size" | xargs)  # Trim whitespace
-            gguf_file="gguf_models/neuroquantum_${size}_${{ github.event.inputs.quantization }}.gguf"
+            gguf_file="gguf_models/${{ github.event.inputs.architecture }}_${size}_${{ github.event.inputs.quantization }}.gguf"
 
             if [ -f "$gguf_file" ]; then
               echo "📤 Uploading $gguf_file..."
@@ -88,7 +113,11 @@ jobs:
           echo "### Generation Details" >> $GITHUB_STEP_SUMMARY
           echo "- **Quantization**: ${{ github.event.inputs.quantization }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Sizes**: ${{ github.event.inputs.sizes }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Architecture**: ${{ github.event.inputs.architecture }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Repository**: ${{ github.event.inputs.repo_name }}" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ github.event.inputs.pt_file }}" ]; then
+            echo "- **Source PT file**: ${{ github.event.inputs.pt_file }}" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🔗 View on Hugging Face" >> $GITHUB_STEP_SUMMARY
           echo "[https://huggingface.co/${{ github.event.inputs.repo_name }}](https://huggingface.co/${{ github.event.inputs.repo_name }})" >> $GITHUB_STEP_SUMMARY
