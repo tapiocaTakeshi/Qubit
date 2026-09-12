@@ -12,6 +12,8 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Optional
 import json
+import urllib.request
+from urllib.parse import urlparse
 from datetime import datetime
 
 # Add current directory to path for imports
@@ -499,6 +501,36 @@ class GGUFModelGenerator:
         print(f"📋 Manifest saved to {manifest_file}")
 
 
+def resolve_pt_file(pt_file: str, download_dir: str = "gguf_models") -> str:
+    """Resolve --pt-file to a local path, downloading it first if it's a URL.
+
+    Accepts plain http(s) links as well as Hugging Face "blob" page URLs
+    (e.g. https://huggingface.co/user/repo/blob/main/model.pt), which are
+    rewritten to their direct-download "resolve" form before fetching.
+    """
+    parsed = urlparse(pt_file)
+    if parsed.scheme not in ("http", "https"):
+        return pt_file
+
+    download_url = pt_file
+    if parsed.netloc == "huggingface.co" and "/blob/" in parsed.path:
+        download_url = pt_file.replace("/blob/", "/resolve/")
+
+    os.makedirs(download_dir, exist_ok=True)
+    filename = os.path.basename(parsed.path) or "checkpoint.pt"
+    dest_path = os.path.join(download_dir, filename)
+
+    print(f"⬇️  Downloading PT checkpoint from {download_url} ...")
+    try:
+        urllib.request.urlretrieve(download_url, dest_path)
+    except Exception as e:
+        print(f"❌ Failed to download PT file from {pt_file}: {e}")
+        sys.exit(1)
+
+    print(f"✅ Downloaded checkpoint to {dest_path}")
+    return dest_path
+
+
 def main():
     """Main entry point."""
     import argparse
@@ -550,8 +582,10 @@ def main():
         type=str,
         default=None,
         help="Path to an existing .pt checkpoint to convert directly to GGUF, "
-             "instead of generating a fresh randomly-initialized model. When set, "
-             "only the first --architectures/--sizes values are used (for naming/metadata)."
+             "instead of generating a fresh randomly-initialized model. Also accepts "
+             "an http(s) URL (including a Hugging Face 'blob' page URL), which is "
+             "downloaded automatically before conversion. When set, only the first "
+             "--architectures/--sizes values are used (for naming/metadata)."
     )
     parser.add_argument(
         "--model-name",
@@ -572,15 +606,17 @@ def main():
             sys.exit(1)
 
     if args.pt_file:
-        if not os.path.isfile(args.pt_file):
-            print(f"❌ PT file not found: {args.pt_file}")
+        pt_file = resolve_pt_file(args.pt_file, download_dir=args.output_dir)
+
+        if not os.path.isfile(pt_file):
+            print(f"❌ PT file not found: {pt_file}")
             sys.exit(1)
 
         architecture = args.architectures[0]
         size = args.sizes[0]
 
         print("🚀 Qubit GGUF Model Generator (from existing checkpoint)")
-        print(f"   PT file: {args.pt_file}")
+        print(f"   PT file: {pt_file}")
         print(f"   Architecture: {architecture}")
         print(f"   Size: {size}")
         print(f"   Quantization: {args.quantization}\n")
@@ -593,7 +629,7 @@ def main():
 
         gguf_file = generator.output_dir / f"{architecture}_{size}_{args.quantization}.gguf"
         success = generator.pt_to_gguf(
-            args.pt_file,
+            pt_file,
             str(gguf_file),
             model_name=args.model_name,
             model_size=size,
@@ -605,7 +641,7 @@ def main():
             architecture: {
                 size: {
                     "status": "success",
-                    "checkpoint": args.pt_file,
+                    "checkpoint": pt_file,
                     "gguf": str(gguf_file),
                     "quantization": args.quantization,
                     "size_mb": os.path.getsize(gguf_file) / (1024 * 1024),
