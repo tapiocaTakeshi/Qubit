@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, Optional
 import json
 import urllib.request
+import urllib.error
 from urllib.parse import urlparse
 from datetime import datetime
 
@@ -521,8 +522,28 @@ def resolve_pt_file(pt_file: str, download_dir: str = "gguf_models") -> str:
     dest_path = os.path.join(download_dir, filename)
 
     print(f"⬇️  Downloading PT checkpoint from {download_url} ...")
+    request = urllib.request.Request(download_url)
+    if parsed.netloc == "huggingface.co":
+        hf_token = (
+            os.environ.get("HF_TOKEN")
+            or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+            or os.environ.get("HUGGINGFACE_TOKEN")
+        )
+        if hf_token:
+            request.add_header("Authorization", f"Bearer {hf_token}")
     try:
-        urllib.request.urlretrieve(download_url, dest_path)
+        with urllib.request.urlopen(request) as response, open(dest_path, "wb") as out_file:
+            out_file.write(response.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            print(
+                f"❌ Failed to download PT file from {pt_file}: HTTP Error 401: Unauthorized. "
+                "The file may be private/gated on Hugging Face Hub - set the HF_TOKEN "
+                "environment variable to an access token with read permission for this repo."
+            )
+        else:
+            print(f"❌ Failed to download PT file from {pt_file}: {e}")
+        sys.exit(1)
     except Exception as e:
         print(f"❌ Failed to download PT file from {pt_file}: {e}")
         sys.exit(1)

@@ -60,6 +60,8 @@ jobs:
           pip install torch numpy gguf huggingface-hub sentencepiece openai
 
       - name: 🔨 Generate GGUF models
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           if [ -n "${{ github.event.inputs.pt_file }}" ]; then
             echo "📦 Converting provided checkpoint: ${{ github.event.inputs.pt_file }}"
