@@ -14,7 +14,7 @@ def model(*outputs):
 def test_calculate_then_finish():
     generate = model('{"tool":"calculator","input":"(12+3)*4"}',
                      '{"tool":"finish"}', '60です。')
-    result = run_agent({"prompt": "(12+3)*4はいくつ？"}, generate)
+    result = run_agent({"prompt": "この式を計算してください"}, generate)
     assert result["generated_text"] == '60です。'
     assert json.loads(result["agent"]["steps"][0]["output"])["value"] == 60
     assert generate.call_count == 3
