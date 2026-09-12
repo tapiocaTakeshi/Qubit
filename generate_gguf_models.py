@@ -12,6 +12,7 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Optional
 import json
+import subprocess
 import urllib.request
 import urllib.error
 from urllib.parse import urlparse
@@ -502,16 +503,64 @@ class GGUFModelGenerator:
         print(f"📋 Manifest saved to {manifest_file}")
 
 
+LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
+
+
+def _ensure_lfs_file(path: str) -> str:
+    """Fetch the real content for `path` via `git lfs pull` if it is still an
+    unfetched Git LFS pointer file (e.g. checked out without LFS enabled)."""
+    if not os.path.isfile(path):
+        return path
+
+    try:
+        with open(path, "rb") as f:
+            head = f.read(len(LFS_POINTER_PREFIX))
+    except OSError:
+        return path
+
+    if head != LFS_POINTER_PREFIX:
+        return path
+
+    print(f"📎 {path} is a Git LFS pointer - fetching real content with 'git lfs pull' ...")
+    try:
+        subprocess.run(["git", "lfs", "pull", "--include", path], check=True)
+    except FileNotFoundError:
+        print(
+            "❌ git-lfs is not installed. Install it (e.g. 'apt-get install git-lfs' "
+            "or 'brew install git-lfs'), run 'git lfs install', and ensure the "
+            "checkout fetched LFS content (e.g. actions/checkout with lfs: true), "
+            "then re-run."
+        )
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        print(f"❌ 'git lfs pull' failed for {path}: {e}")
+        sys.exit(1)
+
+    with open(path, "rb") as f:
+        head = f.read(len(LFS_POINTER_PREFIX))
+    if head == LFS_POINTER_PREFIX:
+        print(
+            f"❌ {path} is still a Git LFS pointer after 'git lfs pull' - check that "
+            "Git LFS is configured and this file is tracked on the current branch."
+        )
+        sys.exit(1)
+
+    print(f"✅ Fetched LFS content for {path}")
+    return path
+
+
 def resolve_pt_file(pt_file: str, download_dir: str = "gguf_models") -> str:
     """Resolve --pt-file to a local path, downloading it first if it's a URL.
 
     Accepts plain http(s) links as well as Hugging Face "blob" page URLs
     (e.g. https://huggingface.co/user/repo/blob/main/model.pt), which are
-    rewritten to their direct-download "resolve" form before fetching.
+    rewritten to their direct-download "resolve" form before fetching. A
+    local path is passed through as-is, except that if it is still a Git
+    LFS pointer file, its real content is fetched with `git lfs pull`.
     """
     parsed = urlparse(pt_file)
     if parsed.scheme not in ("http", "https"):
-        return pt_file
+        return _ensure_lfs_file(pt_file)
 
     download_url = pt_file
     if parsed.netloc == "huggingface.co" and "/blob/" in parsed.path:
