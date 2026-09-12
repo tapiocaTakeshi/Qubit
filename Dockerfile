@@ -10,9 +10,13 @@ COPY requirements-runpod.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements-runpod.txt
 
-# Train SentencePiece tokenizer during build (avoids Git LFS issues)
-COPY train_tokenizer.py .
-RUN python train_tokenizer.py 8000 /app 20000
+# Build the tokenizer from the versioned vocabulary.  Image builds cannot
+# depend on Hugging Face dataset downloads, and token IDs must stay aligned
+# with the checkpoints' embedding table.
+COPY build_tokenizer_from_vocab.py neuroq_tokenizer.vocab ./
+RUN python build_tokenizer_from_vocab.py \
+    --vocab /app/neuroq_tokenizer.vocab \
+    --output /app/neuroq_tokenizer.model
 
 # コアモデルアーキテクチャ
 COPY neuroquantum_layered.py .
