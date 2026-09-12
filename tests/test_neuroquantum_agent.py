@@ -135,3 +135,29 @@ def test_web_search_rejects_large_responses(monkeypatch):
     monkeypatch.setattr(requests, "get", Mock(return_value=context))
     with pytest.raises(ValueError, match="too large"):
         web_search("test")
+
+
+
+def test_arithmetic_is_routed_without_model_json_or_answer_generation():
+    generate = Mock()
+    result = run_agent({"prompt": "１２５×８は？", "parameters": {"protocol": 2}}, generate)
+    assert result["generated_text"] == "125 × 8 = 1000"
+    assert result["agent"]["status"] == "completed"
+    assert result["agent"]["stop_reason"] == "deterministic_calculator"
+    assert result["agent"]["steps"][0]["arguments"] == {"expression": "125*8"}
+    generate.assert_not_called()
+
+
+def test_date_like_text_is_not_mistaken_for_subtraction():
+    generate = model('{"tool":"finish"}', "日付の質問です。")
+    result = run_agent({"prompt": "2026-09-12は何曜日ですか？"}, generate)
+    assert result["agent"]["steps"] == []
+    assert generate.call_count == 2
+
+
+def test_repetitive_final_answer_is_suppressed():
+    repeated = "これは同じ文章が何度も繰り返される不安定な出力です。" * 4
+    result = run_agent({"prompt": "説明して"}, model('{"tool":"finish"}', repeated))
+    assert "繰り返し状態" in result["generated_text"]
+    assert result["agent"]["status"] == "failed"
+    assert any("繰り返し" in warning for warning in result["agent"]["warnings"])

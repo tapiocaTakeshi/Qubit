@@ -512,8 +512,21 @@ class EndpointHandler:
                 "min_new_tokens": 0,
             }})[0].get("generated_text", "")
 
+        def answer_generate(prompt):
+            formatted = f"質問: {prompt}\n回答:"
+            token_count = len(self.tokenizer.encode(formatted, add_special=False))
+            if token_count + 2 > self.config["max_seq_len"]:
+                raise ValueError("Agent context exceeds model context window; shorten the task/history")
+            return self._handle_inference({"inputs": prompt, "parameters": {
+                "temperature": 0.2, "max_new_tokens": 160,
+                "repetition_penalty": 1.55, "no_repeat_ngram_size": 4,
+                "presence_penalty": 0.3, "frequency_penalty": 0.1,
+                "repeat_span_blocking": True, "deduplicate_output": True,
+                "min_new_tokens": 8,
+            }})[0].get("generated_text", "")
+
         try:
-            return [run_agent(data, generate)]
+            return [run_agent(data, generate, answer_generate=answer_generate)]
         except ValueError as exc:
             return [{"error": str(exc)}]
 
