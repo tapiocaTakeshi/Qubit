@@ -171,6 +171,7 @@ CRAFTED_QA = [
 NETWORK_VOLUME_PATH = os.environ.get("NETWORK_VOLUME_PATH", "/runpod-volume")
 MODAL_VOLUME_PATH = os.environ.get("MODAL_VOLUME_PATH", "/data/checkpoints")
 
+# These corpora are too large to materialize in a serverless worker. They must\n# always be streamed and bounded by max_samples_per_dataset.\nSTREAMING_ONLY_DATASETS = {"kajuma/ABEJA-CC-JA"}\n
 
 # ============================================================
 # Utility functions
@@ -1422,13 +1423,18 @@ class EndpointHandler:
                 load_kwargs = {"split": "train"}
                 if ds_config:
                     load_kwargs["name"] = ds_config
-                try:
-                    ds = safe_load_dataset(ds_id, **load_kwargs)
-                    is_streaming = False
-                except Exception:
+                if ds_id in STREAMING_ONLY_DATASETS:
                     load_kwargs["streaming"] = True
                     ds = safe_load_dataset(ds_id, **load_kwargs)
                     is_streaming = True
+                else:
+                    try:
+                        ds = safe_load_dataset(ds_id, **load_kwargs)
+                        is_streaming = False
+                    except Exception:
+                        load_kwargs["streaming"] = True
+                        ds = safe_load_dataset(ds_id, **load_kwargs)
+                        is_streaming = True
 
                 is_wiki = "wikipedia" in ds_id.lower()
                 count = 0
