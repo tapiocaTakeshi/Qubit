@@ -197,7 +197,11 @@ def find_checkpoint(path: str):
                 return candidate
         if os.path.isdir(search_dir):
             for fname in os.listdir(search_dir):
-                if fname.endswith(".pt"):
+                if (
+                    fname.endswith(".pt")
+                    and ".pre_reset." not in fname
+                    and ".commoncrawl." not in fname
+                ):
                     return os.path.join(search_dir, fname)
     return None
 
