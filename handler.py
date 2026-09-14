@@ -2772,6 +2772,28 @@ class EndpointHandler:
             except Exception:
                 pass
 
+        # List checkpoint candidates so recovery can select the state
+        # from before a dataset run that later overwrote the primary file.
+        available_checkpoints = []
+        for root in (NETWORK_VOLUME_PATH, self.model_path):
+            if not root or not os.path.isdir(root):
+                continue
+            try:
+                for name in sorted(os.listdir(root)):
+                    if name.endswith(".pt"):
+                        candidate = os.path.join(root, name)
+                        if os.path.isfile(candidate):
+                            stat = os.stat(candidate)
+                            available_checkpoints.append({
+                                "path": candidate,
+                                "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                                "modified": datetime.fromtimestamp(
+                                    stat.st_mtime, tz=timezone.utc
+                                ).isoformat(),
+                            })
+            except OSError:
+                pass
+
         # Split training state
         split_state = self._load_split_state()
 
@@ -2783,6 +2805,7 @@ class EndpointHandler:
             "model_params": n_params,
             "config": self.config,
             "checkpoint": ckpt_info,
+            "available_checkpoints": available_checkpoints,
             "training_history": {
                 "count": training_history_count,
                 "latest": training_history_latest,
