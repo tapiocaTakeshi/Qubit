@@ -734,6 +734,13 @@ class EndpointHandler:
         grad_accum_steps = int(params.get("grad_accum_steps", 8))
         warmup_steps = int(params.get("warmup_steps", 100))
         max_samples = int(params.get("max_samples_per_dataset", 5000))
+        # Train with a shorter request-specific context while preserving the
+        # checkpoint's full positional capacity. A 10k context with batch 8
+        # exhausts 24 GB GPUs.
+        max_seq_len = int(params.get(
+            "max_seq_len", min(self.config["max_seq_len"], 1024)
+        ))
+        max_seq_len = max(8, min(max_seq_len, self.config["max_seq_len"]))
         dataset_ids = params.get("dataset_ids", None)
 
         self.training_status = {"running": True, "log": [], "message": "Loading datasets..."}
@@ -798,7 +805,6 @@ class EndpointHandler:
                          "log": self.training_status["log"]}]
 
             self.progress.info("Tokenizing...")
-            max_seq_len = self.config["max_seq_len"]
             sequences = tokenize_texts(all_texts, self.tokenizer, max_seq_len)
             self.progress.info(
                 f"Total: {len(all_texts)} texts -> {len(sequences)} sequences"
@@ -823,6 +829,9 @@ class EndpointHandler:
 
         except Exception as e:
             import traceback
+            self.model.zero_grad(set_to_none=True)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             self.progress.end_training_error(str(e), traceback.format_exc())
             self.training_status = self.progress.status
             self.model.eval()
