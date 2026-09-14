@@ -50,6 +50,58 @@ def _suppress_trust_remote_code_noise():
         ds_load_logger.removeFilter(log_filter)
 
 
+
+def _load_hf_parquet_fallback(dataset_id, split="train", **kwargs):
+    """Load a public HF dataset directly from its Parquet shard list.
+
+    Some worker images fail to resolve a perfectly valid Parquet dataset through
+    the high-level datasets builder.  Querying the Hub tree and opening the
+    first matching shard keeps streaming startup reliable and avoids downloading
+    the whole corpus.
+    """
+    if dataset_id != "hotchpotch/fineweb-2-edu-japanese":
+        raise RuntimeError("direct Parquet fallback is not configured for this dataset")
+
+    requested_config = kwargs.pop("name", None) or "default"
+    api_url = (
+        "https://huggingface.co/api/datasets/"
+        f"{dataset_id}/tree/main?recursive=true&expand=false"
+    )
+    request = urllib.request.Request(
+        api_url, headers={"User-Agent": "Qubit-RunPod/1.0"}
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:
+        entries = json.loads(response.read().decode("utf-8"))
+
+    prefix = "data" if requested_config == "default" else requested_config
+    candidates = [
+        item.get("path", "")
+        for item in entries
+        if item.get("type") == "file"
+        and item.get("path", "").startswith(prefix + "/")
+        and item.get("path", "").endswith((".parquet", ".parquet.zst"))
+        and ("/" + split + "-") in ("/" + item.get("path", ""))
+    ]
+    if not candidates:
+        raise RuntimeError(
+            f"No Parquet shard found for {dataset_id}:{requested_config}/{split}"
+        )
+
+    # One shard is enough for the caller's bounded sample loop.
+    shard = sorted(candidates)[0]
+    file_url = (
+        "https://huggingface.co/datasets/"
+        f"{dataset_id}/resolve/main/{urllib.parse.quote(shard, safe='/')}"
+    )
+    logger.warning("Using direct HF Parquet fallback: %s", shard)
+    return _hf_load_dataset(
+        "parquet",
+        data_files={split: file_url},
+        split=split,
+        streaming=True,
+        **kwargs,
+    )
+
 def safe_load_dataset(dataset_id, split="train", streaming=False, **kwargs):
     """load_dataset のラッパー。複数の方法を順に試行する。
 
