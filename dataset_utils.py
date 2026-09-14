@@ -6,6 +6,9 @@ import os
 import shutil
 import logging
 import warnings
+import json
+import urllib.parse
+import urllib.request
 from contextlib import contextmanager
 
 # RunPod workers may inherit offline HF flags from the base image.  This worker
