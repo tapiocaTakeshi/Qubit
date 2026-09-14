@@ -7,6 +7,12 @@ import shutil
 import logging
 import warnings
 from contextlib import contextmanager
+
+# RunPod workers may inherit offline HF flags from the base image.  This worker
+# trains from public Hugging Face datasets, so make the intended online mode
+# explicit before importing datasets (which snapshots these flags at import).
+os.environ["HF_DATASETS_OFFLINE"] = "0"
+os.environ["HF_HUB_OFFLINE"] = "0"
 from datasets import load_dataset as _hf_load_dataset
 
 logger = logging.getLogger(__name__)
