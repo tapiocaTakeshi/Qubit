@@ -120,6 +120,19 @@ def safe_load_dataset(dataset_id, split="train", streaming=False, **kwargs):
             return _hf_load_dataset(dataset_id, split=split, streaming=streaming, **kwargs)
     except Exception as e1:
         err_msg = str(e1).lower()
+        # FineWeb2 Edu Japanese is a public Parquet dataset, but some
+        # datasets/HF Hub combinations fail before the standard builder can
+        # resolve its repository.  Use the direct shard fallback in that case.
+        if dataset_id == "hotchpotch/fineweb-2-edu-japanese":
+            try:
+                return _load_hf_parquet_fallback(
+                    dataset_id, split=split, **dict(kwargs)
+                )
+            except Exception as fallback_error:
+                logger.warning(
+                    "%s: direct Parquet fallback failed: %s",
+                    dataset_id, fallback_error,
+                )
         if "trust_remote_code" not in err_msg and "loading script" not in err_msg:
             raise
 
