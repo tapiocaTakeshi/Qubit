@@ -47,6 +47,7 @@ RUN python -m py_compile handler.py runpod_handler.py commoncrawl_loader.py
 ENV PYTHONUNBUFFERED=1
 ENV MODEL_DIR=/app
 ENV NETWORK_VOLUME_PATH=/runpod-volume
+ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # RunPodのサーバーレスハンドラーを起動
 CMD ["python", "-u", "runpod_handler.py"]
