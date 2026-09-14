@@ -446,6 +446,40 @@ class EndpointHandler:
         # 4. デフォルト
         return "inference"
 
+    @staticmethod
+    def _normalize_training_data(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize dataset options from RunPod top-level input into parameters.
+
+        RunPod clients commonly send dataset, dataset_id, or dataset_ids at the
+        top level. Training handlers historically read only parameters, which
+        silently fell back to DEFAULT_DATASETS.
+        """
+        params = data.get("parameters", {})
+        params = dict(params) if isinstance(params, dict) else {}
+
+        raw_ids = None
+        for key in ("dataset_ids", "dataset_id", "dataset", "training_dataset"):
+            if data.get(key) is not None:
+                raw_ids = data[key]
+                break
+
+        if raw_ids is not None and not params.get("dataset_ids") and not params.get("dataset_id"):
+            ids = raw_ids if isinstance(raw_ids, list) else [raw_ids]
+            ids = [str(item).strip() for item in ids if str(item).strip()]
+            if ids:
+                params["dataset_ids"] = ids
+                # train_qa reads the singular key; keep it compatible too.
+                if len(ids) == 1:
+                    params["dataset_id"] = ids[0]
+
+        for key in ("max_samples_per_dataset", "mode", "epochs", "lr", "batch_size"):
+            if key in data and key not in params:
+                params[key] = data[key]
+
+        normalized = dict(data)
+        normalized["parameters"] = params
+        return normalized
+
     def __call__(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Route request based on "action" field.
@@ -484,6 +518,8 @@ class EndpointHandler:
         }
 
         if action in _routes:
+            if action.startswith("train"):
+                data = self._normalize_training_data(data)
             return _routes[action](data)
         elif action in _routes_no_data:
             return _routes_no_data[action]()
