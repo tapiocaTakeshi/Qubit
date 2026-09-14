@@ -40,6 +40,9 @@ COPY train_split_learning.py .
 # トレーニング履歴
 COPY training_history.json .
 
+# Fail the image build on Python syntax errors instead of creating crash-looping workers.
+RUN python -m py_compile handler.py commoncrawl_loader.py
+
 # 環境変数
 ENV PYTHONUNBUFFERED=1
 ENV MODEL_DIR=/app
