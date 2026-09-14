@@ -2842,6 +2842,15 @@ def _runpod_handler(event):
         if key in job_input:
             data.setdefault("parameters", {})[key] = job_input[key]
 
+    # Report initialization failures through the queue API instead of
+    # crashing before the worker can claim a diagnostic request.
+    if _global_handler is None:
+        return {
+            "status": "error",
+            "message": "Worker model initialization failed",
+            "startup_error": _startup_error,
+        }
+
     # Call the EndpointHandler
     result = _global_handler(data)
 
@@ -2853,9 +2862,17 @@ def _runpod_handler(event):
 
 if __name__ == "__main__":
     import runpod
+    import traceback
 
     MODEL_DIR = os.environ.get("MODEL_DIR", "/app")
-    _global_handler = EndpointHandler(path=MODEL_DIR)
-    print(f"[handler] RunPod serverless mode — model loaded from {MODEL_DIR}")
+    _global_handler = None
+    _startup_error = None
+    try:
+        _global_handler = EndpointHandler(path=MODEL_DIR)
+        print(f"[handler] RunPod serverless mode — model loaded from {MODEL_DIR}")
+    except Exception:
+        _startup_error = traceback.format_exc()
+        print("[handler] Model initialization failed; diagnostic mode enabled")
+        print(_startup_error)
 
     runpod.serverless.start({"handler": _runpod_handler})
