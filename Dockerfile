@@ -41,7 +41,7 @@ COPY train_split_learning.py .
 COPY training_history.json .
 
 # Fail the image build on Python syntax errors instead of creating crash-looping workers.
-RUN python -m py_compile handler.py commoncrawl_loader.py
+RUN python -m py_compile handler.py runpod_handler.py commoncrawl_loader.py
 
 # 環境変数
 ENV PYTHONUNBUFFERED=1
@@ -49,4 +49,4 @@ ENV MODEL_DIR=/app
 ENV NETWORK_VOLUME_PATH=/runpod-volume
 
 # RunPodのサーバーレスハンドラーを起動
-CMD ["python", "-u", "handler.py"]
+CMD ["python", "-u", "runpod_handler.py"]
