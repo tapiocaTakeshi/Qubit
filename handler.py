@@ -49,8 +49,6 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(__file__))
 
 from progress_logger import ProgressLogger
-from commoncrawl_loader import load_commoncrawl_japanese
-# Common Crawl WET loader is included in the image build dependency graph.
 
 # ============================================================
 # Import NeuroQuantum architecture
@@ -1456,6 +1454,9 @@ class EndpointHandler:
                 if isinstance(ds_spec, str) and (
                     ds_spec == "commoncrawl" or ds_spec.startswith("commoncrawl:")
                 ):
+                    # Lazy import keeps worker startup independent from optional
+                    # Common Crawl parsing dependencies.
+                    from commoncrawl_loader import load_commoncrawl_japanese
                     collection = ds_spec.split(":", 1)[1] if ":" in ds_spec else None
                     cc_texts = load_commoncrawl_japanese(
                         collection=collection,
