@@ -7,3 +7,4 @@ datasets>=2.18.0
 accelerate>=1.1.0
 runpod>=1.6.0
 requests>=2.32.0,<3
+warcio>=1.7.5,<2
