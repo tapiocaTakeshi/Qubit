@@ -10,13 +10,13 @@ from typing import List
 import requests
 from warcio.archiveiterator import ArchiveIterator
 
-_JP_RE = re.compile(r"[\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff]")
+_JP_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]")
 _DEFAULT_COLLECTION = "CC-MAIN-2026-34"
 _DEFAULT_BASE = "https://data.commoncrawl.org"
 
 
 def _is_japanese(text: str) -> bool:
-    compact = re.sub(r"\\s+", "", text)
+    compact = re.sub(r"\s+", "", text)
     if len(compact) < 80:
         return False
     jp = len(_JP_RE.findall(compact))
