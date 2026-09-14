@@ -493,7 +493,7 @@ class EndpointHandler:
 
         Supported actions:
             inference, agent, train, train_qa, train_dpo, train_split, train_split_next,
-            split_status, split_reset, status, restore_pre_commoncrawl
+            split_status, split_reset, status, restore_pre_commoncrawl, reset_checkpoint
 
         Returns:
             List of dicts with results.
@@ -517,6 +517,7 @@ class EndpointHandler:
             "split_reset":  self._handle_split_reset,
             "status":       self._handle_status,
             "restore_pre_commoncrawl": self._handle_restore_pre_commoncrawl,
+            "reset_checkpoint": self._handle_reset_checkpoint,
         }
 
         if action in _routes:
@@ -2785,6 +2786,30 @@ class EndpointHandler:
         except Exception as e:
             if os.path.exists(temp):
                 os.remove(temp)
+            return [{"status": "error", "message": str(e)}]
+
+    def _handle_reset_checkpoint(self) -> List[Dict[str, Any]]:
+        """Move the current checkpoint aside so the next worker starts fresh."""
+        target = os.path.join(NETWORK_VOLUME_PATH, "neuroq_checkpoint.pt")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = os.path.join(
+            NETWORK_VOLUME_PATH, f"neuroq_checkpoint.pre_reset.{stamp}.pt"
+        )
+        try:
+            if not os.path.isfile(target):
+                return [{
+                    "status": "success",
+                    "message": "No checkpoint found; worker is already configured for fresh training",
+                    "requires_worker_restart": True,
+                }]
+            os.replace(target, backup)
+            return [{
+                "status": "success",
+                "message": "Checkpoint moved aside for fresh training",
+                "backup": backup,
+                "requires_worker_restart": True,
+            }]
+        except Exception as e:
             return [{"status": "error", "message": str(e)}]
 
     # --------------------------------------------------------
