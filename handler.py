@@ -49,6 +49,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(__file__))
 
 from progress_logger import ProgressLogger
+from commoncrawl_loader import load_commoncrawl_japanese
 
 # ============================================================
 # Import NeuroQuantum architecture
@@ -1447,6 +1448,24 @@ class EndpointHandler:
         """
         from dataset_utils import safe_load_dataset
         all_texts = []
+        for ds_spec in dataset_ids:
+            try:
+                # Common Crawl is handled directly from the public WET bucket.
+                # Use commoncrawl or commoncrawl:CC-MAIN-YYYY-NN.
+                if isinstance(ds_spec, str) and (
+                    ds_spec == "commoncrawl" or ds_spec.startswith("commoncrawl:")
+                ):
+                    collection = ds_spec.split(":", 1)[1] if ":" in ds_spec else None
+                    cc_texts = load_commoncrawl_japanese(
+                        collection=collection,
+                        max_samples=max_samples,
+                        max_wet_files=int(os.environ.get("COMMONCRAWL_MAX_WET_FILES", "2")),
+                    )
+                    all_texts.extend(cc_texts)
+                    self.training_status["log"].append(
+                        f"Loaded Common Crawl {collection or 'latest'}: {len(cc_texts)} Japanese texts"
+                    )
+                    continue
         for ds_spec in dataset_ids:
             try:
                 # Parse "owner/dataset:config" format
