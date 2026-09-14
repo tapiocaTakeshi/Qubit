@@ -792,6 +792,7 @@ class EndpointHandler:
 
             if not all_texts:
                 self.progress.error("No training data loaded")
+                self.training_status["running"] = False
                 self.training_status = self.progress.status
                 return [{"status": "error", "message": "No training data loaded",
                          "log": self.training_status["log"]}]
