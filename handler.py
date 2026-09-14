@@ -1468,8 +1468,7 @@ class EndpointHandler:
                         f"Loaded Common Crawl {collection or 'latest'}: {len(cc_texts)} Japanese texts"
                     )
                     continue
-        for ds_spec in dataset_ids:
-            try:
+
                 # Parse "owner/dataset:config" format
                 if ":" in ds_spec and not ds_spec.startswith("http"):
                     ds_id, ds_config = ds_spec.rsplit(":", 1)
