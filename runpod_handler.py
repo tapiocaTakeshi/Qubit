@@ -13,11 +13,10 @@ returns the result.
 
 import os
 import sys
+import traceback
 import runpod
 
 sys.path.insert(0, os.path.dirname(__file__))
-
-from handler import EndpointHandler
 
 # ------------------------------------------------------------------
 # Global model instance (loaded once at cold start)
@@ -30,8 +29,21 @@ MODEL_DIR = os.environ.get("MODEL_DIR", "/app")
 if os.path.isdir(NETWORK_VOLUME_PATH):
     print(f"[runpod_handler] Network volume available at {NETWORK_VOLUME_PATH}")
 
-handler = EndpointHandler(path=MODEL_DIR)
-print(f"[runpod_handler] Model loaded (MODEL_DIR={MODEL_DIR}, checkpoint={handler.ckpt_path})")
+handler = None
+startup_error = None
+
+# Keep the RunPod queue worker alive even when application imports or model
+# initialization fail.  A status request can then return the full traceback
+# instead of leaving every job stuck in IN_QUEUE while the container restarts.
+try:
+    from handler import EndpointHandler
+
+    handler = EndpointHandler(path=MODEL_DIR)
+    print(f"[runpod_handler] Model loaded (MODEL_DIR={MODEL_DIR}, checkpoint={handler.ckpt_path})")
+except BaseException:
+    startup_error = traceback.format_exc()
+    print("[runpod_handler] Application startup failed; diagnostic mode enabled")
+    print(startup_error)
 
 
 # ------------------------------------------------------------------
@@ -62,6 +74,13 @@ def run_handler(event):
         train_split, train_split_next, train_dpo, train_combined_dpo,
         split_status, split_reset, status
     """
+    if handler is None:
+        return {
+            "status": "error",
+            "message": "Worker application startup failed",
+            "startup_error": startup_error,
+        }
+
     job_input = event.get("input", {})
 
     # Translate RunPod input to EndpointHandler format
