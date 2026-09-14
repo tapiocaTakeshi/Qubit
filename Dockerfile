@@ -29,6 +29,7 @@ COPY neuroquantum_agent_protocol.py train_agent.py ./
 COPY runpod_handler.py .
 COPY runpod_manager.py .
 COPY dataset_utils.py .
+COPY commoncrawl_loader.py .
 COPY dpo_utils.py .
 COPY progress_logger.py .
 
