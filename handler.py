@@ -232,8 +232,16 @@ def extract_texts(ds, text_column, max_samples):
 def tokenize_texts(texts, tok, max_seq_len):
     """Tokenize texts into training sequences with BOS/EOS and BOF/EOF markers."""
     sequences = []
+    # Keep every token inside the model embedding/output range.  Public
+    # datasets can expose text that exercises a tokenizer/model mismatch; an
+    # out-of-range label otherwise triggers a delayed CUDA device-side assert.
+    vocab_limit = int(getattr(tok, "actual_vocab_size", None) or tok.vocab_size)
+    unk_id = int(getattr(tok, "unk_id", 1))
     for t in texts:
-        content_ids = tok.encode(t, add_special=False)
+        content_ids = [
+            token_id if 0 <= int(token_id) < vocab_limit else unk_id
+            for token_id in tok.encode(t, add_special=False)
+        ]
         max_content = max_seq_len - 2
         if max_content <= 0:
             continue
