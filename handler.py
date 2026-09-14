@@ -40,6 +40,7 @@ import random
 import time
 import shutil
 import re
+import urllib.request
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -492,7 +493,7 @@ class EndpointHandler:
 
         Supported actions:
             inference, agent, train, train_qa, train_dpo, train_split, train_split_next,
-            split_status, split_reset, status
+            split_status, split_reset, status, restore_pre_commoncrawl
 
         Returns:
             List of dicts with results.
@@ -515,6 +516,7 @@ class EndpointHandler:
             "split_status": self._handle_split_status,
             "split_reset":  self._handle_split_reset,
             "status":       self._handle_status,
+            "restore_pre_commoncrawl": self._handle_restore_pre_commoncrawl,
         }
 
         if action in _routes:
@@ -2738,6 +2740,52 @@ class EndpointHandler:
             self.training_status["log"].append(traceback.format_exc())
             self.model.eval()
             return [{"error": str(e), "log": self.training_status["log"]}]
+
+    def _handle_restore_pre_commoncrawl(self) -> List[Dict[str, Any]]:
+        """Restore the repository checkpoint created before Common Crawl training."""
+        volume = NETWORK_VOLUME_PATH
+        target = os.path.join(volume, "neuroq_checkpoint.pt")
+        source_url = (
+            "https://media.githubusercontent.com/media/"
+            "tapiocaTakeshi/Qubit/main/neuroq_checkpoint.pt"
+        )
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = os.path.join(
+            volume, f"neuroq_checkpoint.commoncrawl.{stamp}.pt"
+        )
+        temp = target + ".pre_commoncrawl_download"
+
+        try:
+            os.makedirs(volume, exist_ok=True)
+            with urllib.request.urlopen(source_url, timeout=120) as response:
+                with open(temp, "wb") as output:
+                    while True:
+                        chunk = response.read(8 * 1024 * 1024)
+                        if not chunk:
+                            break
+                        output.write(chunk)
+
+            size = os.path.getsize(temp)
+            if size < 100 * 1024 * 1024:
+                raise RuntimeError(
+                    f"Downloaded checkpoint is unexpectedly small: {size} bytes"
+                )
+
+            if os.path.isfile(target):
+                os.replace(target, backup)
+            os.replace(temp, target)
+            return [{
+                "status": "success",
+                "message": "Pre-Common-Crawl checkpoint restored",
+                "checkpoint": target,
+                "backup": backup if os.path.exists(backup) else None,
+                "size_mb": round(size / (1024 * 1024), 2),
+                "requires_worker_restart": True,
+            }]
+        except Exception as e:
+            if os.path.exists(temp):
+                os.remove(temp)
+            return [{"status": "error", "message": str(e)}]
 
     # --------------------------------------------------------
     # Status
