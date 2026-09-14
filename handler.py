@@ -50,6 +50,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from progress_logger import ProgressLogger
 from commoncrawl_loader import load_commoncrawl_japanese
+# Common Crawl WET loader is included in the image build dependency graph.
 
 # ============================================================
 # Import NeuroQuantum architecture
