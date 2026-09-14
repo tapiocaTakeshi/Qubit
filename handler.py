@@ -1505,7 +1505,9 @@ class EndpointHandler:
                     load_kwargs["name"] = ds_config
                 try:
                     ds = safe_load_dataset(ds_id, **load_kwargs)
-                    is_streaming = False
+                    # Direct Parquet fallbacks intentionally return an
+                    # IterableDataset to avoid materializing large shards.
+                    is_streaming = not hasattr(ds, "select")
                 except Exception:
                     load_kwargs["streaming"] = True
                     ds = safe_load_dataset(ds_id, **load_kwargs)
