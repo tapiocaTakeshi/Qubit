@@ -1210,7 +1210,17 @@ class EndpointHandler:
         save_start = time.time()
 
         if not self.ckpt_path:
-            self.ckpt_path = os.path.join(self.model_path or ".", "neuroq_checkpoint.pt")
+            # Prefer the persistent network volume for fresh training.  The
+            # container filesystem can be small and a partial torch archive
+            # there can break later loads after an interrupted save.
+            if os.path.isdir(NETWORK_VOLUME_PATH):
+                self.ckpt_path = os.path.join(
+                    NETWORK_VOLUME_PATH, "neuroq_checkpoint.pt"
+                )
+            else:
+                self.ckpt_path = os.path.join(
+                    self.model_path or ".", "neuroq_checkpoint.pt"
+                )
 
         self.progress.info(f"Saving checkpoint to {self.ckpt_path} ...")
 
@@ -1257,7 +1267,15 @@ class EndpointHandler:
             f"datasets={ds_list}"
         )
 
-        torch.save(checkpoint, self.ckpt_path)
+        # Write atomically so a failed/interrupted serialization never
+        # replaces a valid checkpoint with a truncated archive.
+        temp_ckpt_path = self.ckpt_path + ".tmp"
+        try:
+            torch.save(checkpoint, temp_ckpt_path)
+            os.replace(temp_ckpt_path, self.ckpt_path)
+        finally:
+            if os.path.exists(temp_ckpt_path):
+                os.remove(temp_ckpt_path)
         ckpt_size_mb = os.path.getsize(self.ckpt_path) / (1024 * 1024)
         save_elapsed = time.time() - save_start
         self.progress.info(
@@ -1291,7 +1309,8 @@ class EndpointHandler:
             try:
                 # Sync checkpoint
                 ckpt_dst = os.path.join(vol_path, os.path.basename(self.ckpt_path))
-                shutil.copy2(self.ckpt_path, ckpt_dst)
+                if os.path.abspath(ckpt_dst) != os.path.abspath(self.ckpt_path):
+                    shutil.copy2(self.ckpt_path, ckpt_dst)
                 ckpt_size_mb = os.path.getsize(ckpt_dst) / (1024 * 1024)
                 self.progress.info(
                     f"[{vol_name}] Checkpoint synced: {ckpt_dst} ({ckpt_size_mb:.1f}MB)"
