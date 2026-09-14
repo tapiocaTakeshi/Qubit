@@ -1074,6 +1074,19 @@ class EndpointHandler:
 
         self.model.train()
         global_step = 0
+        # Use the embedding table as the source of truth for valid token IDs.
+        # This protects both content and special tokens from CUDA device asserts.
+        embedding = next(
+            (module for module in self.model.modules() if isinstance(module, nn.Embedding)),
+            None,
+        )
+        model_vocab_size = int(
+            embedding.num_embeddings if embedding is not None
+            else self.config.get("vocab_size", 8000)
+        )
+        safe_unk_id = int(getattr(self.tokenizer, "unk_id", 1))
+        if not 0 <= safe_unk_id < model_vocab_size:
+            safe_unk_id = 0
         best_loss = float("inf")
         epoch_losses = []
         cur_lr = lr
@@ -1095,7 +1108,11 @@ class EndpointHandler:
                 input_ids = []
                 labels = []
                 for s in batch_seqs:
-                    ids = s[:max_len]
+                    ids = [
+                        int(token_id) if 0 <= int(token_id) < model_vocab_size
+                        else safe_unk_id
+                        for token_id in s[:max_len]
+                    ]
                     pad_len = max_len - len(ids)
                     input_ids.append(ids + [self.tokenizer.pad_id] * pad_len)
                     labels.append(ids + [-100] * pad_len)
@@ -1107,7 +1124,7 @@ class EndpointHandler:
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = labels_t[..., 1:].contiguous()
                 loss = F.cross_entropy(
-                    shift_logits.view(-1, self.config["vocab_size"]),
+                    shift_logits.view(-1, shift_logits.size(-1)),
                     shift_labels.view(-1),
                     ignore_index=-100,
                 )
