@@ -86,6 +86,21 @@ def _load_hf_parquet_fallback(dataset_id, split="train", **kwargs):
         and ("/" + split + "-") in ("/" + item.get("path", ""))
     ]
     if not candidates:
+        # The Hub tree endpoint may return only directory entries for very
+        # large repositories.  FineWeb2 Edu Japanese publishes stable shard
+        # names, so use the first known shard as a deterministic fallback.
+        known_shards = {
+            "small_tokens_cleaned": 283,
+            "small_tokens": 283,
+            "sample_10BT": 60,
+            "default": 535,
+        }
+        shard_count = known_shards.get(requested_config)
+        if shard_count and split == "train":
+            candidates = [
+                f"{prefix}/train-00000-of-{shard_count:05d}.parquet"
+            ]
+    if not candidates:
         raise RuntimeError(
             f"No Parquet shard found for {dataset_id}:{requested_config}/{split}"
         )
