@@ -111,7 +111,8 @@ def run_handler(event):
             data.setdefault("parameters", {})[key] = job_input[key]
 
     # Call the EndpointHandler
-    result = handler(data)
+    from neuroquantum_agent_progress import dispatch_job
+    result = dispatch_job(handler, data, event)
 
     # RunPod expects a dict or list, not wrapped in extra list
     if isinstance(result, list) and len(result) == 1:
