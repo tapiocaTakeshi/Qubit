@@ -545,7 +545,7 @@ class EndpointHandler:
     # Inference
     # --------------------------------------------------------
 
-    def _handle_agent(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _handle_agent(self, data: Dict[str, Any], on_event=None) -> List[Dict[str, Any]]:
         from neuroquantum_agent import run_agent
 
         def generate(prompt):
@@ -564,7 +564,7 @@ class EndpointHandler:
             }})[0].get("generated_text", "")
 
         try:
-            return [run_agent(data, generate)]
+            return [run_agent(data, generate, on_event=on_event)]
         except ValueError as exc:
             return [{"error": str(exc)}]
 
@@ -3006,7 +3006,8 @@ def _runpod_handler(event):
         }
 
     # Call the EndpointHandler
-    result = _global_handler(data)
+    from neuroquantum_agent_progress import dispatch_job
+    result = dispatch_job(_global_handler, data, event)
 
     # RunPod expects a dict or list, not wrapped in extra list
     if isinstance(result, list) and len(result) == 1:

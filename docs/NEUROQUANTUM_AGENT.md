@@ -3,15 +3,18 @@
 `action: "agent"` runs a read-only tool loop with the current Qubit checkpoint.
 Each decision chooses one tool; the next decision sees its result. A final
 inference synthesizes the answer. This is orchestration, not additional training.
-The checkpoint must be able to emit JSON tool decisions. Invalid JSON falls back
-to an ordinary answer with an explicit warning; it never pretends a tool ran.
+The checkpoint must be able to emit JSON tool decisions. Protocol 3 allows one
+JSON repair attempt inside the decision budget before falling back with a warning.
+Protocols 1 and 2 retain immediate fallback. A fallback never pretends a tool ran.
 
 ```json
 {"input":{"action":"agent","prompt":"(12+3)*4を計算して",
  "parameters":{"max_steps":3,"history":[],"documents":[]}}}
 ```
 
-- `max_steps`: 1-4 (default 3); at most this many decisions and one final inference.
+- `max_steps`: protocols 1/2 use 1-4 (default 3); protocol 3 uses 1-10 (default 10).
+  At most this many decisions (including repair/rethink) and one final inference.
+- `max_seconds`: 1-240 (default 180), checked before/after model and tool calls.
 - `history`: at most 6 user/assistant messages, 2000 characters each.
 - `documents`: at most 10 request-local strings, 4000 characters each. The web UI accepts one pasted text.
 - Calculator: numbers, parentheses, `+ - * / %`; no eval, powers, imports or calls.
@@ -73,9 +76,101 @@ validation, not grammar-constrained decoding or full OpenAI API compatibility.
 `clarify(question)` returns a question and stops (`stop_reason=clarification`).
 `finish({})` proceeds to answer synthesis. Trace entries have `call_id` and validated
 `arguments`. Observations go to subsequent decisions and final answer synthesis.
-The 1–4 decision limit, repeat detection, sanitized failures and cancellation remain.
+The 1–4 decision limit for protocols 1/2, repeat detection and sanitized failures remain.
 Agent inference disables prose repetition/deduplication controls that can corrupt
 JSON keys/strings. Ordinary chat keeps its existing defaults.
+
+## Action / Observation controller (protocol 3)
+
+`AgentController` in `neuroquantum_agent.py` owns the request-local state, tool
+allowlist, decisions, observations, completion checks and progress events.
+`EndpointHandler._handle_agent` only supplies model inference. `run_agent` remains
+the compatible Python entry point. No model weights or training jobs are changed.
+
+Use this request after deploying the updated Qubit worker:
+
+```json
+{"input":{"action":"agent","prompt":"三重県の明日の天気を調べて傘が必要か判断して","parameters":{
+  "protocol":3,"max_steps":10,"max_seconds":180,"tool_choice":"web_search","history":[]}}}
+```
+
+Web search requires `BRAVE_SEARCH_API_KEY`; unavailable named tools are rejected
+before inference. The model still needs to choose a specific location/date when
+needed. Search snippets are not a dedicated weather API or a factual guarantee.
+
+Model decisions use either of these envelopes:
+
+```json
+{"status":"continue","action":"calculator","arguments":{"expression":"120*2"}}
+```
+
+```json
+{"status":"complete","answer":"2個で240円です。"}
+```
+
+After a tool executes, its real success/error observation goes into the next
+decision prompt. `complete` returns the answer directly without another inference.
+`rethink` with empty arguments consumes a decision without executing a tool.
+`clarify` asks the user and stops; no tool loop runs while waiting for their reply.
+Legacy `{tool,input}` and `{name,arguments}` calls are accepted in protocol 3 too.
+Unknown actions, extra fields and malformed arguments cannot execute. An optional
+`thought` field is discarded; neither raw model decisions nor private reasoning
+are published. Repeated tool+input stops the loop. Failed tool observations can
+lead to a different action. `required`/named tools must succeed before a final
+answer is accepted. A successful tool call is not proof of answer correctness.
+
+Omitting `protocol` retains protocol 1 and its small limits for existing clients.
+The response still uses `agent.version=1`; new clients should check
+`agent.protocol=3` before allowing more than four steps. The controller is shared
+by all three protocols and emits progress for all of them.
+
+### Progress for a chat timeline
+
+Both RunPod entry points (`runpod_handler.py` and `handler.py`) use the adapter in
+`neuroquantum_agent_progress.py`. It calls the SDK's progress updater with JSON
+text. While `/status/{id}` says `IN_PROGRESS`, its `output` can be a progress
+string, not a final result object. Parse it as:
+
+```json
+{"agent_event":{"sequence":1,"type":"started","label":"依頼を受け付けました","max_steps":10,"available_tools":["calculator"]},
+ "agent_events":[{"sequence":1,"type":"started","label":"依頼を受け付けました","max_steps":10,"available_tools":["calculator"]}]}
+```
+
+Every update contains a cumulative snapshot so a polling client can reconstruct
+missed steps. Use increasing `sequence` to ignore stale/duplicate updates, match
+`action` to `observation` by `call_id`, and treat the terminal job result as
+authoritative (SDK progress delivery is asynchronous). On `COMPLETED`, read
+`output.generated_text` and `output.agent.events`. Do not treat an intermediate
+progress string as a completed answer. UI rendering belongs to Qubit-ai-web,
+which is a separate repository and is not modified by this change.
+
+| Event | Display |
+| --- | --- |
+| `started` | 依頼を受け付けました |
+| `decision` | 次の処理を選択中 |
+| `action` | Web検索中／計算中／文書検索中 |
+| `observation` | 処理結果を受け取りました (`status` distinguishes failure) |
+| `retry`, `rethink` | 処理の指定／取得済みの情報を再確認中 |
+| `answer` | 回答を作成中 (separate synthesis only) |
+| `clarification` | 追加情報が必要です |
+| `failed`, `finished` | 失敗／終了 (`status` and `stop_reason` distinguish outcomes) |
+
+The final trace includes `decision_count` and `inference_count`. A direct final
+answer counts as one decision/inference. Budget exhaustion performs at most one
+synthesis; timeout/cancellation launches no more inference. `run_agent` accepts
+trusted `on_event` and `cancelled` Python callbacks, not callbacks from request
+JSON. Cancellation/deadline checks are cooperative and cannot interrupt an
+already-running synchronous GPU kernel or blocking network call. RunPod job
+cancellation still uses `/cancel/{id}`; the adapter does not pretend to provide a
+RunPod cancellation signal to the local callback. SDK background delivery errors
+may only appear in worker logs; final events remain available in the result.
+
+Available tools remain calculator, configured Web search and request-local
+document search. Host filesystem access and arbitrary code execution need a
+separate isolated execution service and are not exposed by this controller.
+
+Tests: `python -m pytest -q tests/test_neuroquantum_agent.py tests/test_agent_protocol.py tests/test_agent_controller.py`.
+These use scripted models and mocked progress delivery, not a live GPU endpoint.
 
 ## Targeted SFT and a separate candidate
 

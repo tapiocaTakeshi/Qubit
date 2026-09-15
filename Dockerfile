@@ -26,6 +26,7 @@ COPY qbnn_layered.py .
 COPY handler.py .
 COPY neuroquantum_agent.py neuroquantum_search.py ./
 COPY neuroquantum_agent_protocol.py train_agent.py ./
+COPY neuroquantum_agent_progress.py ./
 COPY runpod_handler.py .
 COPY runpod_manager.py .
 COPY dataset_utils.py .
