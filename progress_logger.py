@@ -15,6 +15,7 @@
     logger.end_training(final_loss=4.5)
 """
 
+import errno
 import json
 import logging
 import os
@@ -75,12 +76,25 @@ class ProgressLogger:
         """JSON Lines 形式でファイルに追記"""
         entry["timestamp"] = datetime.now(timezone.utc).isoformat()
         entry["source"] = self.source
+        # File logging must never abort training (for example when the
+        # container disk is full). Keep console and in-memory status working.
+        if getattr(self, "_file_logging_disabled", False):
+            return
         with _lock:
-            # The container filesystem can be recreated between worker phases.
-            # Ensure the log directory exists immediately before every write.
-            os.makedirs(self.log_dir, exist_ok=True)
-            with open(self.log_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            try:
+                # The container filesystem can be recreated between worker phases.
+                # Ensure the log directory exists immediately before every write.
+                os.makedirs(self.log_dir, exist_ok=True)
+                with open(self.log_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            except OSError as exc:
+                if exc.errno == errno.ENOSPC:
+                    self._file_logging_disabled = True
+                    self.logger.warning(
+                        "File logging disabled because the log filesystem is full"
+                    )
+                    return
+                raise
 
     def info(self, message: str, **extra: Any) -> None:
         """汎用情報ログ"""
