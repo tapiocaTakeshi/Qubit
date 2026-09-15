@@ -76,6 +76,9 @@ class ProgressLogger:
         entry["timestamp"] = datetime.now(timezone.utc).isoformat()
         entry["source"] = self.source
         with _lock:
+            # The container filesystem can be recreated between worker phases.
+            # Ensure the log directory exists immediately before every write.
+            os.makedirs(self.log_dir, exist_ok=True)
             with open(self.log_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
