@@ -37,11 +37,11 @@ def test_schema_describes_the_exact_allowlist():
 
 def test_protocol_two_executes_observes_and_answers():
     model = Mock(side_effect=[call("calculator", expression="4*5"), call("finish"), "20です"])
-    r = run_agent({"prompt": "4*5", "parameters": {"protocol": 2}}, model)
+    r = run_agent({"prompt": "この式を計算してください", "parameters": {"protocol": 2}}, model)
     assert r["agent"]["protocol"] == 2
     assert r["agent"]["steps"][0]["arguments"] == {"expression": "4*5"}
     assert '"value": 20' in model.call_args_list[1].args[0].replace('\\"', '"')
-    assert model.call_args_list[0].args[0] == decision_prompt("4*5", [], ["calculator"], [])
+    assert model.call_args_list[0].args[0] == decision_prompt("この式を計算してください", [], ["calculator"], [])
 
 
 def test_required_cannot_fall_back_to_unverified_answer():

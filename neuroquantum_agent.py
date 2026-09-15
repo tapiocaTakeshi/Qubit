@@ -7,6 +7,7 @@ import math
 import operator
 import os
 import re
+import unicodedata
 from urllib.parse import urlsplit
 from neuroquantum_agent_protocol import CHOICES, parse_call, decision_prompt, answer_prompt
 
@@ -35,6 +36,65 @@ def calculate(expression):
         return value
 
     return {"expression": expression, "value": visit(tree.body)}
+
+
+_NUMBER = r"(?:\d+(?:\.\d*)?|\.\d+)"
+_ARITHMETIC_EXPRESSION = re.compile(
+    rf"(?<![\d.])([+-]?{_NUMBER}(?:\s*[+\-*/%]\s*[+-]?{_NUMBER})+)(?![\d.])"
+)
+
+
+def extract_calculation_expression(prompt):
+    """Return one unambiguous arithmetic expression embedded in a user prompt."""
+    normalized = unicodedata.normalize("NFKC", prompt).translate(str.maketrans({
+        "×": "*", "÷": "/", "−": "-", "–": "-", "—": "-",
+    }))
+    # The letter x is multiplication only when it is between two numeric values.
+    normalized = re.sub(
+        r"(?<=\d)\s*[xX]\s*(?=[+-]?(?:\d|\.\d))", "*", normalized
+    )
+    # Do not mistake dates or phone-like identifiers for subtraction.
+    if re.search(r"(?<!\d)\d{2,4}-\d{1,4}-\d{1,4}(?!\d)", normalized):
+        return None
+    expressions = _ARITHMETIC_EXPRESSION.findall(normalized)
+    if len(expressions) != 1:
+        return None
+    expression = expressions[0].strip()
+    try:
+        calculate(expression)
+    except (SyntaxError, ValueError, TypeError, ZeroDivisionError):
+        return None
+    return expression
+
+
+def format_calculation_answer(result):
+    """Format a calculator result without asking the language model to restate it."""
+    value = result["value"]
+    if isinstance(value, float):
+        value_text = str(int(value)) if value.is_integer() else format(value, ".12g")
+    else:
+        value_text = str(value)
+    expression = re.sub(r"\s+", " ", result["expression"]).strip()
+    expression = expression.replace("*", " × ").replace("/", " ÷ ")
+    expression = re.sub(r"\s+", " ", expression).strip()
+    return f"{expression} = {value_text}"
+
+
+def has_degenerate_repetition(text):
+    """Detect the repeated phrase loops that make a response unusable."""
+    compact = re.sub(r"\s+", "", text)
+    if len(compact) < 80:
+        return False
+    for span in (12, 24, 48):
+        if len(compact) < span * 3:
+            continue
+        counts = {}
+        for start in range(len(compact) - span + 1):
+            phrase = compact[start:start + span]
+            counts[phrase] = counts.get(phrase, 0) + 1
+            if counts[phrase] >= 3:
+                return True
+    return False
 
 
 def web_search(query):
@@ -103,7 +163,7 @@ def validate_request(data):
     return prompt.strip(), steps, history, docs
 
 
-def run_agent(data, generate, search=None):
+def run_agent(data, generate, search=None, answer_generate=None):
     """At most max_steps decisions + one final answer; no state shared by jobs.
 
     generate(prompt) is an injected inference callback. Only the two explicit
@@ -131,6 +191,26 @@ def run_agent(data, generate, search=None):
         tools = {choice: tools[choice]}
     elif choice == "none":
         tools = {}
+
+    # Do not require a small language model to emit a function-call JSON object
+    # for arithmetic that can be identified safely and answered exactly.
+    if (choice != "none" and "calculator" in tools
+            and choice in ("auto", "required", "calculator")):
+        expression = extract_calculation_expression(prompt)
+        if expression is not None:
+            result = tools["calculator"](expression)
+            arguments = {"expression": expression}
+            step = {
+                "tool": "calculator", "input": expression, "status": "completed",
+                "call_id": "call_1", "arguments": arguments,
+                "output": json.dumps(result, ensure_ascii=False),
+            }
+            return {"generated_text": format_calculation_answer(result), "agent": {
+                "version": 1, "status": "completed", "steps": [step],
+                "protocol": protocol, "tool_choice": choice,
+                "stop_reason": "deterministic_calculator", "warnings": [],
+                "sources": [], "available_tools": list(tools),
+            }}
 
     steps, observations, warnings, sources, seen = [], [], [], [], set()
     outcome = "completed"
@@ -197,7 +277,15 @@ def run_agent(data, generate, search=None):
         outcome = "failed"
         warnings.append("必須の関数呼び出しが成功していません。")
     else:
-        answer = generate(answer_prompt(prompt, history, observations)).strip()
+        raw_answer = (answer_generate or generate)(answer_prompt(prompt, history, observations))
+        answer = raw_answer.strip() if isinstance(raw_answer, str) else ""
+        if answer and has_degenerate_repetition(answer):
+            answer = (
+                "回答生成が繰り返し状態になったため、正確な回答を返せませんでした。"
+                "質問を短くするか、計算・検索を指定して再試行してください。"
+            )
+            outcome = "failed"
+            warnings.append("モデル出力の繰り返しを検出し、回答を抑制しました。")
     if not answer:
         answer = "回答を生成できませんでした。質問を短くして再試行してください。"
         outcome = "failed"
