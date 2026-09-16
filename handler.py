@@ -71,15 +71,17 @@ except ImportError:
 # ============================================================
 
 DEFAULT_CONFIG = {
-    "vocab_size": 8000,
-    "embed_dim": 512,
-    "hidden_dim": 1024,
-    "num_heads": 8,
-    "num_layers": 6,
-    "max_seq_len": 10000,
+    # Qubit 3B: 2560 hidden size × 36 layers ≈ 3.0B parameters
+    "vocab_size": 32000,
+    "embed_dim": 2560,
+    "hidden_dim": 10240,
+    "num_heads": 32,
+    "num_layers": 36,
+    "max_seq_len": 4096,
     "entangle_strength": 0.5,
     "dropout": 0.1,
-    "architecture": "neuroquantum",
+    "architecture": "neuroquantum-3b",
+    "model_size": "3b",
 }
 
 
