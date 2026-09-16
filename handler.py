@@ -579,15 +579,15 @@ class EndpointHandler:
             raw_input = f"質問: {raw_input}\n回答:"
 
         params = data.get("parameters", {})
-        temperature = float(params.get("temperature", 0.7))
+        temperature = float(params.get("temperature", 0.25))
         max_new_tokens = int(params.get("max_new_tokens", params.get("max_tokens", 100)))
-        top_k = int(params.get("top_k", 40))
-        top_p = float(params.get("top_p", 0.9))
-        repetition_penalty = float(params.get("repetition_penalty", 1.3))
+        top_k = int(params.get("top_k", 20))
+        top_p = float(params.get("top_p", 0.8))
+        repetition_penalty = float(params.get("repetition_penalty", 1.15))
         no_repeat_ngram_size = int(params.get("no_repeat_ngram_size", 3))
         presence_penalty = float(params.get("presence_penalty", 0.15))
         frequency_penalty = float(params.get("frequency_penalty", 0.05))
-        min_new_tokens = int(params.get("min_new_tokens", 8))
+        min_new_tokens = int(params.get("min_new_tokens", 0))
         ignore_eos = bool(params.get("ignore_eos", False))
 
         # Match training format: [BOF, BOS] + content + [EOS, EOF]
