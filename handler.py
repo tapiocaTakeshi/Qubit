@@ -587,7 +587,7 @@ class EndpointHandler:
         no_repeat_ngram_size = int(params.get("no_repeat_ngram_size", 3))
         presence_penalty = float(params.get("presence_penalty", 0.15))
         frequency_penalty = float(params.get("frequency_penalty", 0.05))
-        min_new_tokens = int(params.get("min_new_tokens", 0))
+        min_new_tokens = int(params.get("min_new_tokens", 8))
         ignore_eos = bool(params.get("ignore_eos", False))
 
         # Match training format: [BOF, BOS] + content + [EOS, EOF]
