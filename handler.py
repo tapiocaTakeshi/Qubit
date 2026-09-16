@@ -213,6 +213,30 @@ def find_checkpoint(path: str):
     return None
 
 
+def _prune_checkpoint_backups(volume: str, marker: str, keep: int = 2) -> None:
+    """Delete all but the newest `keep` checkpoint backups matching `marker`.
+
+    _handle_reset_checkpoint and _handle_restore_pre_commoncrawl each write a
+    new timestamped "neuroq_checkpoint.<marker>.<stamp>.pt" backup on every
+    call and never removed the old ones. On RunPod's quota-limited network
+    volume, checkpoint-sized backups accumulating unbounded eventually starve
+    unrelated writes (e.g. HF dataset cache) with EDQUOT/ENOSPC.
+    """
+    try:
+        candidates = [
+            f for f in os.listdir(volume)
+            if f.startswith("neuroq_checkpoint.") and f".{marker}." in f and f.endswith(".pt")
+        ]
+    except OSError:
+        return
+    candidates.sort(reverse=True)  # timestamp suffix sorts lexicographically
+    for stale in candidates[keep:]:
+        try:
+            os.remove(os.path.join(volume, stale))
+        except OSError:
+            pass
+
+
 def extract_texts(ds, text_column, max_samples):
     """Extract text from dataset."""
     texts = []
@@ -2950,6 +2974,7 @@ class EndpointHandler:
             if os.path.isfile(target):
                 os.replace(target, backup)
             os.replace(temp, target)
+            _prune_checkpoint_backups(volume, "commoncrawl")
             return [{
                 "status": "success",
                 "message": "Pre-Common-Crawl checkpoint restored",
@@ -2978,6 +3003,7 @@ class EndpointHandler:
                     "requires_worker_restart": True,
                 }]
             os.replace(target, backup)
+            _prune_checkpoint_backups(NETWORK_VOLUME_PATH, "pre_reset")
             return [{
                 "status": "success",
                 "message": "Checkpoint moved aside for fresh training",
