@@ -86,35 +86,37 @@ def run_handler(event):
     # Translate RunPod input to EndpointHandler format
     data = {}
 
-    # Action
     if "action" in job_input:
         data["action"] = job_input["action"]
 
-    # Inputs (prompt text)
     if "prompt" in job_input:
         data["inputs"] = job_input["prompt"]
     elif "inputs" in job_input:
         data["inputs"] = job_input["inputs"]
 
-    # Parameters
     if "parameters" in job_input:
-        data["parameters"] = job_input["parameters"]
+        data["parameters"] = dict(job_input["parameters"])
 
-    # Pass through any extra fields (for training payloads)
-    for key in ("qa_pairs", "dataset_ids", "epochs", "lr", "batch_size",
-                "mode", "num_chunks", "resume",
-                "dpo_beta", "grad_accum_steps", "warmup_steps", "grad_clip",
-                "max_samples_hf", "qa_epochs", "qa_lr", "qa_batch_size",
-                "qa_grad_accum", "dpo_epochs", "dpo_lr", "dpo_batch_size",
-                "dpo_grad_accum"):
+    # Preserve all training controls that may be sent at input top level.
+    # In particular, support both dataset_ids and the common datasets alias.
+    # The previous version silently discarded datasets and max_samples_per_dataset,
+    # causing training to fall back to DEFAULT_DATASETS and default hyperparameters.
+    passthrough_keys = (
+        "qa_pairs", "dataset_ids", "datasets", "dataset", "dataset_id",
+        "training_dataset", "max_samples_per_dataset", "max_seq_len",
+        "epochs", "lr", "batch_size", "mode", "num_chunks", "resume",
+        "dpo_beta", "grad_accum_steps", "warmup_steps", "grad_clip",
+        "max_samples_hf", "qa_epochs", "qa_lr", "qa_batch_size",
+        "qa_grad_accum", "dpo_epochs", "dpo_lr", "dpo_batch_size",
+        "dpo_grad_accum",
+    )
+    for key in passthrough_keys:
         if key in job_input:
             data.setdefault("parameters", {})[key] = job_input[key]
 
-    # Call the EndpointHandler
     from neuroquantum_agent_progress import dispatch_job
     result = dispatch_job(handler, data, event)
 
-    # RunPod expects a dict or list, not wrapped in extra list
     if isinstance(result, list) and len(result) == 1:
         return result[0]
     return result
