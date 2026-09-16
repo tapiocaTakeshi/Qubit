@@ -106,7 +106,7 @@ def load_state():
     if STATE_FILE.exists():
         with open(STATE_FILE) as f:
             return json.load(f)
-    return {"current_stage": 0, "job_ids": [], "completed_stages": []}
+    return {"current_stage": 1, "job_ids": [], "completed_stages": []}
 
 def save_state(state):
     """Save training state to file."""
