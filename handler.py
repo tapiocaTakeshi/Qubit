@@ -10,6 +10,9 @@ Supports both inference and training via the "action" field:
   - action: "train_qa_dataset"    — QA-format fine-tuning on HF datasets
   - action: "train_split"         — split dataset training (chunked)
   - action: "train_split_next"    — train next chunk only (timeout-safe)
+  - action: "train_multistage_3b" — multi-stage 3B pretrain/finetune schedule
+                                     (one stage per call, timeout-safe; see
+                                     training_stages.py)
   - action: "train_dpo"           — Direct Preference Optimization training
   - action: "train_combined_dpo"  — QA + DPO two-phase training
   - action: "split_status"        — check split training progress
@@ -327,6 +330,7 @@ class EndpointHandler:
       - action: "train_split"         — split dataset training (chunked)
       - action: "train_split_next"    — train next chunk only (timeout-safe)
       - action: "train_split_learning" — split learning (model split at cut layer)
+      - action: "train_multistage_3b" — multi-stage 3B pretrain/finetune schedule
       - action: "split_status"        — check split training progress
       - action: "split_reset"         — reset split training state
       - action: "status"              — model status & training info
@@ -339,6 +343,7 @@ class EndpointHandler:
         self.training_status = {"running": False, "log": [], "message": "idle"}
         self.progress = ProgressLogger("handler")
         self.split_state_path = os.path.join(path or ".", "split_training_state.json")
+        self.multistage_state_path = os.path.join(path or ".", "multistage_3b_state.json")
 
         # Find checkpoint
         self.ckpt_path = find_checkpoint(path) if path else None
@@ -509,7 +514,8 @@ class EndpointHandler:
 
         Supported actions:
             inference, agent, train, train_qa, train_dpo, train_split, train_split_next,
-            split_status, split_reset, status, restore_pre_commoncrawl, reset_checkpoint
+            train_multistage_3b, split_status, split_reset, status,
+            restore_pre_commoncrawl, reset_checkpoint
 
         Returns:
             List of dicts with results.
@@ -527,6 +533,7 @@ class EndpointHandler:
             "train_split_next": self._handle_train_split_next,
             "train_split_learning": self._handle_split_learning,
             "train_combined_dpo": self._handle_train_combined_dpo,
+            "train_multistage_3b": self._handle_train_multistage_3b,
         }
         _routes_no_data = {
             "split_status": self._handle_split_status,
@@ -2795,6 +2802,120 @@ class EndpointHandler:
             self.training_status["log"].append(traceback.format_exc())
             self.model.eval()
             return [{"error": str(e), "log": self.training_status["log"]}]
+
+    # --------------------------------------------------------
+    # Multi-stage 3B training (timeout-safe: one stage per call)
+    # --------------------------------------------------------
+
+    def _load_multistage_state(self):
+        if os.path.exists(self.multistage_state_path):
+            try:
+                with open(self.multistage_state_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                return None
+        return None
+
+    def _save_multistage_state(self, state):
+        with open(self.multistage_state_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+
+    def _handle_train_multistage_3b(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Run the multi-stage 3B training schedule from training_stages.py.
+
+        Trains exactly one stage per call (same timeout-safe pattern as
+        train_split_next) so a single RunPod serverless invocation can't
+        exceed the request timeout. Call again with the same action to
+        advance to the next stage; progress is tracked in
+        multistage_3b_state.json so the caller doesn't need to track the
+        stage index itself (an explicit parameters.stage_index overrides
+        the tracked progress, e.g. to retry a specific stage).
+        """
+        if self.training_status["running"]:
+            return [{"status": "error", "message": "Training already in progress"}]
+
+        from training_stages import TRAINING_STAGES, dataset_ids_for_stage, max_samples_for_stage
+
+        params = data.get("parameters", {})
+        state = self._load_multistage_state()
+
+        stage_index = params.get("stage_index")
+        if stage_index is not None:
+            stage_index = int(stage_index)
+        elif state:
+            stage_index = state.get("last_completed_stage", -1) + 1
+        else:
+            stage_index = 0
+
+        if stage_index >= len(TRAINING_STAGES):
+            return [{
+                "status": "completed",
+                "message": f"All {len(TRAINING_STAGES)} stages already trained",
+                "stages_total": len(TRAINING_STAGES),
+            }]
+
+        reset_result = None
+        if bool(params.get("reset_checkpoint", False)) and state is None:
+            # Only reset on a genuine fresh start (no recorded progress) so a
+            # client that always sends reset_checkpoint=True (e.g. the RunPod
+            # submission script) doesn't wipe progress on a retry/resume.
+            # Like the standalone reset_checkpoint action, this only moves
+            # the on-disk checkpoint aside — it can't un-load the model
+            # weights this worker already has in memory, so it only takes
+            # full effect on a fresh worker (see requires_worker_restart).
+            reset_result = self._handle_reset_checkpoint()[0]
+
+        stage = TRAINING_STAGES[stage_index]
+        stage_params = {
+            "dataset_ids": dataset_ids_for_stage(stage),
+            "mode": stage["mode"],
+            "epochs": stage["epochs"],
+            "lr": stage["lr"],
+            "batch_size": int(params.get("batch_size", 2)),
+            "grad_accum_steps": int(params.get("grad_accum_steps", 8)),
+            "warmup_steps": int(params.get("warmup_steps", 100)),
+            "max_samples_per_dataset": max_samples_for_stage(stage),
+            "crafted_repeat": int(params.get("crafted_repeat", 0)),
+        }
+
+        stage_result = self._handle_train({"parameters": stage_params})[0]
+
+        if stage_result.get("status") != "success":
+            return [{
+                "status": "error",
+                "message": f"Stage {stage_index + 1}/{len(TRAINING_STAGES)} "
+                           f"({stage['name']}) failed: {stage_result.get('message')}",
+                "stage_index": stage_index,
+                "stage_name": stage["name"],
+                "stages_total": len(TRAINING_STAGES),
+                "reset_checkpoint": reset_result,
+                "stage_result": stage_result,
+            }]
+
+        new_state = {
+            "last_completed_stage": stage_index,
+            "stage_name": stage["name"],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        self._save_multistage_state(new_state)
+
+        next_index = stage_index + 1
+        done = next_index >= len(TRAINING_STAGES)
+
+        return [{
+            "status": "completed" if done else "success",
+            "message": (
+                f"Stage {stage_index + 1}/{len(TRAINING_STAGES)} ({stage['name']}) complete"
+                + ("; all stages complete" if done
+                   else f"; next stage: {TRAINING_STAGES[next_index]['name']}")
+            ),
+            "stage_index": stage_index,
+            "stage_name": stage["name"],
+            "stages_total": len(TRAINING_STAGES),
+            "next_stage_index": None if done else next_index,
+            "reset_checkpoint": reset_result,
+            "stage_result": stage_result,
+        }]
 
     def _handle_restore_pre_commoncrawl(self) -> List[Dict[str, Any]]:
         """Restore the repository checkpoint created before Common Crawl training."""

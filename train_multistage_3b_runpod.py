@@ -31,6 +31,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from training_stages import TRAINING_STAGES
+
 # Setup logging
 log_dir = Path("training_logs")
 log_dir.mkdir(exist_ok=True)
@@ -47,148 +49,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Training stages with dataset config
-TRAINING_STAGES = [
-    {
-        "name": "fineweb_japanese",
-        "description": "FineWeb-2 Japanese",
-        "datasets": [
-            {"id": "HuggingFaceFW/fineweb-2-edu-japanese", "split": None, "max_samples": 1000000}
-        ],
-        "learning_rate": 1e-4,
-        "epochs": 1,
-    },
-    {
-        "name": "abeja_cc_ja_edu",
-        "description": "ABEJA-CC-JA-edu",
-        "datasets": [
-            {"id": "ABEJA/abeja-cc-ja-edu", "split": None, "max_samples": 500000}
-        ],
-        "learning_rate": 8e-5,
-        "epochs": 1,
-    },
-    {
-        "name": "wikipedia",
-        "description": "Wikipedia (Japanese + English)",
-        "datasets": [
-            {"id": "wikimedia/wikipedia", "split": "20220301.ja", "max_samples": 200000},
-            {"id": "wikimedia/wikipedia", "split": "20220301.en", "max_samples": 200000},
-        ],
-        "learning_rate": 5e-5,
-        "epochs": 1,
-    },
-    {
-        "name": "instruction",
-        "description": "Instruction-following datasets",
-        "datasets": [
-            {"id": "Open-Orca/OpenOrca", "split": None, "max_samples": 100000},
-            {"id": "HuggingFaceH4/ultrachat_200k", "split": None, "max_samples": 100000},
-        ],
-        "learning_rate": 3e-5,
-        "epochs": 2,
-    },
-    {
-        "name": "conversation",
-        "description": "Conversational datasets",
-        "datasets": [
-            {"id": "kunishou/hh-rlhf-ja", "split": None, "max_samples": 50000},
-            {"id": "HuggingFaceH4/ultrachat_200k", "split": None, "max_samples": 50000},
-        ],
-        "learning_rate": 2e-5,
-        "epochs": 2,
-    },
-    {
-        "name": "mathematics",
-        "description": "Mathematical reasoning datasets",
-        "datasets": [
-            {"id": "meta-math/MetaMathQA", "split": None, "max_samples": 100000},
-            {"id": "openai/gsm8k", "split": "main", "max_samples": 50000},
-        ],
-        "learning_rate": 2e-5,
-        "epochs": 2,
-    },
-    {
-        "name": "code",
-        "description": "Code datasets (tokyotech-llm/swallow-code-v2)",
-        "datasets": [
-            {
-                "id": "tokyotech-llm/swallow-code-v2",
-                "split": None,
-                "max_samples": 5000000,
-                "exclude": ["generated", "duplicate", "license_unclear"],
-            }
-        ],
-        "learning_rate": 1e-5,
-        "epochs": 1,
-    },
-]
 
+def run_training_stage(handler, stage_idx, stage_config, reset_checkpoint):
+    """Run one stage via the handler's train_multistage_3b action.
 
-def reset_checkpoint():
-    """Reset checkpoint to start fresh."""
-    logger.info("Resetting checkpoint...")
-    try:
-        from handler import EndpointHandler
-        handler = EndpointHandler(path=".")
-        result = handler._handle_reset_checkpoint()
-        logger.info(f"Checkpoint reset result: {result}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to reset checkpoint: {e}", exc_info=True)
-        return False
-
-
-def run_training_stage(stage_idx, stage_config):
-    """Execute a single training stage."""
-    stage_name = stage_config["name"]
+    handler.train_multistage_3b resolves exactly what to train from
+    training_stages.py by stage_idx, so this only needs to pass the index.
+    """
     description = stage_config["description"]
 
     logger.info(f"\n{'='*60}")
     logger.info(f"Stage {stage_idx + 1}/{len(TRAINING_STAGES)}: {description}")
     logger.info(f"{'='*60}")
 
-    try:
-        from handler import EndpointHandler
+    request = {
+        "action": "train_multistage_3b",
+        "parameters": {
+            "stage_index": stage_idx,
+            "reset_checkpoint": reset_checkpoint,
+        },
+    }
 
-        handler = EndpointHandler(path=".")
+    start_time = time.time()
+    results = handler(request)
+    elapsed = time.time() - start_time
 
-        # Build training request
-        request = {
-            "action": "train",
-            "data": {
-                "datasets": stage_config["datasets"],
-                "learning_rate": stage_config["learning_rate"],
-                "epochs": stage_config["epochs"],
-                "batch_size": 2,  # Adjust based on GPU memory
-                "gradient_accumulation_steps": 4,
-                "save_every_n_steps": 500,
-                "log_every_n_steps": 10,
-            },
-        }
+    result = results[0] if results else {}
+    logger.info(f"Stage completed in {elapsed:.1f}s")
+    logger.info(f"Result: {json.dumps(result, indent=2, default=str, ensure_ascii=False)}")
 
-        logger.info(f"Starting training with config: {json.dumps(request, indent=2)}")
-
-        # Run training
-        start_time = time.time()
-        results = handler(request)
-        elapsed = time.time() - start_time
-
-        logger.info(f"Stage completed in {elapsed:.1f}s")
-        logger.info(f"Results: {json.dumps(results, indent=2, default=str)}")
-
-        # Save checkpoint after stage
-        checkpoint_path = f"checkpoints/stage_{stage_name}.pt"
-        logger.info(f"Saving checkpoint to {checkpoint_path}")
-
-        return True
-
-    except Exception as e:
-        logger.error(f"Stage {stage_name} failed: {e}", exc_info=True)
-        return False
+    return result.get("status") == "success" or result.get("status") == "completed"
 
 
-def run_multistage_training(budget_dollars=10):
-    """Execute all training stages."""
+def run_multistage_training(budget_dollars=10, reset_checkpoint=True):
+    """Execute all training stages sequentially against a single loaded model."""
     logger.info(f"Starting multi-stage 3B training (Budget: ${budget_dollars})")
     logger.info(f"Total stages: {len(TRAINING_STAGES)}")
 
@@ -196,20 +90,32 @@ def run_multistage_training(budget_dollars=10):
     for i, stage in enumerate(TRAINING_STAGES, 1):
         logger.info(f"  {i}. {stage['description']}")
 
-    # Reset checkpoint
-    if not reset_checkpoint():
-        logger.error("Failed to reset checkpoint, aborting")
-        return False
+    from handler import EndpointHandler
 
-    # Run each stage
+    if reset_checkpoint:
+        # Reset the on-disk checkpoint *before* loading the model, since
+        # loading already pulls any existing checkpoint into memory and a
+        # reset afterwards can't undo that (see EndpointHandler's own
+        # requires_worker_restart note on _handle_reset_checkpoint).
+        logger.info("Resetting checkpoint for a fresh run...")
+        reset_handler = EndpointHandler(path=".")
+        logger.info(f"Checkpoint reset result: {reset_handler._handle_reset_checkpoint()}")
+        del reset_handler
+
+    handler = EndpointHandler(path=".")
+
+    # Run each stage against the same loaded model/handler instead of
+    # reloading the 3B checkpoint from disk for every stage.
     successful_stages = 0
     for idx, stage in enumerate(TRAINING_STAGES):
-        if run_training_stage(idx, stage):
+        # reset_checkpoint was already handled above; the handler's own
+        # multistage state file guards against re-resetting mid-run.
+        if run_training_stage(handler, idx, stage, reset_checkpoint=False):
             successful_stages += 1
             logger.info(f"Progress: {successful_stages}/{len(TRAINING_STAGES)} stages completed")
         else:
             logger.error(f"Failed at stage {idx + 1}: {stage['description']}")
-            # Continue to next stage despite error
+            break
 
     logger.info(f"\n{'='*60}")
     logger.info(f"Training complete: {successful_stages}/{len(TRAINING_STAGES)} stages successful")
