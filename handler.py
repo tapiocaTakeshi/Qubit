@@ -71,13 +71,15 @@ except ImportError:
 # ============================================================
 
 DEFAULT_CONFIG = {
-    # Qubit 3B: 2560 hidden size × 36 layers ≈ 3.0B parameters
+    # Qubit 3B: architecture aligned with the canonical 3B tier
+    # (2560 embed / 6912 hidden / 20 heads / 26 layers).
+    # Keep this in sync with neuroquantum_layered.get_optimal_config().
     "vocab_size": 32000,
     "embed_dim": 2560,
-    "hidden_dim": 10240,
-    "num_heads": 32,
-    "num_layers": 36,
-    "max_seq_len": 4096,
+    "hidden_dim": 6912,
+    "num_heads": 20,
+    "num_layers": 26,
+    "max_seq_len": 1024,
     "entangle_strength": 0.5,
     "dropout": 0.1,
     "architecture": "neuroquantum-3b",
