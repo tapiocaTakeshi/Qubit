@@ -527,6 +527,7 @@ class EndpointHandler:
             "train_split_next": self._handle_train_split_next,
             "train_split_learning": self._handle_split_learning,
             "train_combined_dpo": self._handle_train_combined_dpo,
+            "train_multistage_3b": self._handle_train_multistage_3b,
         }
         _routes_no_data = {
             "split_status": self._handle_split_status,
@@ -2841,6 +2842,110 @@ class EndpointHandler:
             if os.path.exists(temp):
                 os.remove(temp)
             return [{"status": "error", "message": str(e)}]
+
+    def _handle_train_multistage_3b(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Multi-stage training orchestrator for 3B model.
+
+        Executes sequential training stages:
+        1. FineWeb-2 Japanese (lr=1e-4)
+        2. ABEJA-CC-JA-edu (lr=8e-5)
+        3. Wikipedia (lr=5e-5)
+        4. Instruction (lr=3e-5)
+        5. Conversation (lr=2e-5)
+        6. Mathematics (lr=2e-5)
+        7. Code (lr=1e-5)
+
+        Each stage saves checkpoints and logs metrics.
+        """
+        stages = [
+            {
+                "name": "fineweb_japanese",
+                "datasets": [{"id": "HuggingFaceFW/fineweb-2-edu-japanese", "split": None, "max_samples": 1000000}],
+                "lr": 1e-4,
+            },
+            {
+                "name": "abeja_cc_ja_edu",
+                "datasets": [{"id": "ABEJA/abeja-cc-ja-edu", "split": None, "max_samples": 500000}],
+                "lr": 8e-5,
+            },
+            {
+                "name": "wikipedia",
+                "datasets": [
+                    {"id": "wikimedia/wikipedia", "split": "20220301.ja", "max_samples": 200000},
+                    {"id": "wikimedia/wikipedia", "split": "20220301.en", "max_samples": 200000},
+                ],
+                "lr": 5e-5,
+            },
+            {
+                "name": "instruction",
+                "datasets": [
+                    {"id": "Open-Orca/OpenOrca", "split": None, "max_samples": 100000},
+                    {"id": "HuggingFaceH4/ultrachat_200k", "split": None, "max_samples": 100000},
+                ],
+                "lr": 3e-5,
+            },
+            {
+                "name": "conversation",
+                "datasets": [
+                    {"id": "kunishou/hh-rlhf-ja", "split": None, "max_samples": 50000},
+                    {"id": "HuggingFaceH4/ultrachat_200k", "split": None, "max_samples": 50000},
+                ],
+                "lr": 2e-5,
+            },
+            {
+                "name": "mathematics",
+                "datasets": [
+                    {"id": "meta-math/MetaMathQA", "split": None, "max_samples": 100000},
+                    {"id": "openai/gsm8k", "split": "main", "max_samples": 50000},
+                ],
+                "lr": 2e-5,
+            },
+            {
+                "name": "code",
+                "datasets": [{"id": "tokyotech-llm/swallow-code-v2", "split": None, "max_samples": 5000000}],
+                "lr": 1e-5,
+            },
+        ]
+
+        results = []
+        reset = data.get("reset_checkpoint", True)
+
+        # Reset checkpoint if requested
+        if reset:
+            reset_result = self._handle_reset_checkpoint()
+            results.append({"stage": "reset", "result": reset_result})
+
+        # Execute each training stage
+        for idx, stage in enumerate(stages, 1):
+            try:
+                stage_data = {
+                    "data": {
+                        "datasets": stage["datasets"],
+                        "learning_rate": stage["lr"],
+                        "epochs": 1,
+                        "batch_size": 2,
+                        "gradient_accumulation_steps": 4,
+                        "save_every_n_steps": 500,
+                        "log_every_n_steps": 10,
+                    }
+                }
+
+                stage_result = self._handle_train(stage_data)
+                results.append({
+                    "stage": idx,
+                    "name": stage["name"],
+                    "status": "completed",
+                    "result": stage_result,
+                })
+            except Exception as e:
+                results.append({
+                    "stage": idx,
+                    "name": stage["name"],
+                    "status": "error",
+                    "error": str(e),
+                })
+
+        return results
 
     def _handle_reset_checkpoint(self) -> List[Dict[str, Any]]:
         """Move the current checkpoint aside so the next worker starts fresh."""
