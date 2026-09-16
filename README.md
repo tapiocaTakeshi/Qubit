@@ -2,1384 +2,257 @@
 license: mit
 language:
   - ja
+  - en
 library_name: pytorch
 pipeline_tag: text-generation
 tags:
-  - japanese
+  - qubit-ai
   - qbnn
-  - quantum
+  - apqb
+  - quantum-inspired
   - transformer
-  - chat
+  - japanese
   - text-generation
   - pytorch
-model_name: NeuroQ
-model-index:
-  - name: NeuroQ-QBNN
-    results: []
+model_name: Qubit AI
 ---
 
-# Qubit AI - 量子インスパイアニューラルネットワークライブラリ
+# Qubit AI
 
-TypeScript/JavaScript で動作する、量子インスパイアされた判断エンジンおよび大規模言語モデル（LLM）フレームワーク。安全性チェック、品質評価、倫理的判断をサポートします。
+## 量子ビットに着想を得た、次世代のAI
 
-## ✨ 主な特徴
+Qubit AIは、**量子ビットの考え方とニューラルネットワークを組み合わせた量子インスパイアAI**です。
 
-- ✅ 完全な TypeScript 実装（型安全）
-- ✅ 外部サービス不要（オフライン対応）
-- ✅ ESM/CJS デュアルモジュール対応
-- ✅ Node.js 18+ 対応
-- ✅ 日本語に最適化
-- ✅ 量子インスパイアアーキテクチャ
+統計的な相関、量子状態の重ね合わせ、AIの確率的な振る舞いを、ひとつの計算モデルとして扱うことを目指しています。Qubit AIの中核には、調整可能擬似量子ビット（**APQB: Adjustable Pseudo Quantum Bit**）と、それをニューラルネットワークへ応用した**QBNN**があります。
+
+> Qubit AIは、量子コンピュータ上で動作するAIではありません。  
+> 古典コンピュータ上で、量子ビットや量子もつれから着想を得た計算構造を実装するAIです。
 
 ---
 
-## 📦 インストール
+## Qubit AIのビジョン
 
-```bash
+現在のAIは、正確な回答と創造的な回答のバランスを、主にtemperatureなどの外部パラメータで調整します。
+
+Qubit AIは、この「確定性」と「ゆらぎ」の関係を、モデル内部の状態として捉えます。
+
+- 高い確信度：安定した、再現性の高い判断
+- 高いゆらぎ：多様で、創造的な探索
+- 状況に応じた調整：正確さと柔軟性の両立
+
+Qubit AIが目指すのは、単にランダムな出力を生成することではありません。**文脈に応じて、慎重にも大胆にも振る舞えるAI**です。
+
+---
+
+## APQB：Qubit AIの基本単位
+
+APQBは、内部角度 θ によって状態を連続的に調整する計算モデルです。
+
+~~~text
+|ψ⟩ = cosθ|0⟩ + sinθ|1⟩
+~~~
+
+APQBでは、統計的な相関 r とAIのゆらぎ T を次のように表します。
+
+~~~text
+r = cos(2θ)
+T = |sin(2θ)|
+r² + T² = 1
+~~~
+
+この関係は、確信度とゆらぎが独立ではなく、ひとつの状態空間の中で連続的に変化することを表します。
+
+| 概念 | Qubit AIでの意味 |
+| :--- | :--- |
+| θ | AI内部状態を調整するパラメータ |
+| r | 相関・確信度の指標 |
+| T | ゆらぎ・探索性の指標 |
+| |0⟩, |1⟩ | 二つの基本状態 |
+| 重ね合わせ | 複数の可能性を保持する状態 |
+
+---
+
+## QBNN：APQBを利用したニューラルネットワーク
+
+QBNN（APQB Neural Network）は、通常のニューラルネットワークに、量子もつれに着想を得た層間相互作用を加えたアーキテクチャです。
+
+~~~text
+入力
+  ↓
+線形変換
+  ↓
+APQB状態の推定
+  ↓
+層間の相関・もつれ相互作用
+  ↓
+活性化
+  ↓
+次の層
+~~~
+
+一般的なニューラルネットワークが重み行列による線形結合を中心に構成されるのに対し、QBNNでは次の二つの結合を組み合わせます。
+
+1. **古典的な線形結合**：重み行列によって情報を伝達します。
+2. **量子インスパイア相関結合**：層と層の状態の関係を、学習可能な相互作用として表現します。
+
+もつれ相互作用をゼロにすると通常のニューラルネットワークに近づくため、QBNNは古典的なニューラルネットワークを含む拡張モデルとして設計されています。
+
+---
+
+## Qubit AIが目指す能力
+
+### 1. 確信度と創造性の調整
+
+質問への回答では確定性を高め、アイデア生成では探索性を高めるなど、タスクに応じた振る舞いを目指します。
+
+### 2. 相関を利用した文脈理解
+
+単語や特徴を個別に処理するだけでなく、層間・特徴間の相関を利用して、文脈的な情報処理を行います。
+
+### 3. 日本語を中心とした生成
+
+日本語の文章理解・生成を重視し、将来的には英語やコードを含む多言語処理にも対応します。
+
+### 4. ローカル・クラウド両対応
+
+PyTorchによる学習・推論に加え、将来的には量子化モデルやGGUF形式を通じたローカル実行を目指します。
+
+### 5. AIエージェントへの応用
+
+Qubit AIを判断・計画・探索の中核として利用し、ツール実行や役割分担を行うAIエージェントへの発展を目指します。
+
+---
+
+## 現在のモデル
+
+現在は、QBNNを基盤とする独自モデルを開発しています。
+
+| 項目 | 内容 |
+| :--- | :--- |
+| モデル名 | Qubit AI / NeuroQ |
+| アーキテクチャ | NeuroQuantum Transformer |
+| 設計規模 | 約3Bパラメータ |
+| 語彙数 | 32,000 |
+| 埋め込み次元 | 2,560 |
+| 隠れ次元 | 6,912 |
+| 層数 | 26 |
+| ヘッド数 | 20 |
+| 主な学習対象 | 日本語、一般知識、指示、会話、数学、コード |
+
+※ 3Bはモデル設計上の目標規模です。実際の性能は、学習データ、学習量、最適化、評価方法によって変化します。
+
+---
+
+## 数学的な考え方
+
+Qubit AIでは、ニューラルネットワークにおける特徴間の相互作用と、APQBにおける多体相関を同じ構造として捉えます。
+
+~~~text
+ニューラルネットワーク：
+f(x) = w₀ + Σᵢwᵢxᵢ + Σᵢⱼwᵢⱼxᵢxⱼ + …
+
+APQB：
+F(θ) = A₁z + A₂z² + A₃z³ + …
+z = e^(i2θ)
+~~~
+
+この対応を利用し、ニューラルネットワークの特徴表現に、相関・重ね合わせ・ゆらぎという量子インスパイアの視点を導入します。
+
+---
+
+## 使い方
+
+### Python
+
+~~~bash
+git clone https://github.com/tapiocaTakeshi/Qubit.git
+cd Qubit
+pip install -r requirements.txt
+~~~
+
+RunPodでのサーバーレス利用では、ハンドラーへ次のような入力を送信します。
+
+~~~json
+{
+  "input": {
+    "action": "inference",
+    "prompt": "Qubit AIとは何ですか？"
+  }
+}
+~~~
+
+学習機能では、Qubit独自のモデルを日本語データセット、指示データ、会話データ、数学・コードデータへ段階的に適応させる構成を採用しています。
+
+### TypeScript / JavaScript
+
+~~~bash
 npm install qubit_ai
-# または
-yarn add qubit_ai
-# または
-pnpm add qubit_ai
-```
+~~~
 
----
-
-## 🚀 クイックスタート
-
-### クラスベースの使用方法
-
-```typescript
+~~~typescript
 import { QubitAI } from "qubit_ai";
 
-// インスタンスを作成
 const qubit = new QubitAI({
-  productName: "MyAI",
-  version: "1.0.0",
+  productName: "Qubit AI",
   enableLogging: true
 });
 
-// 判断を実行
 const result = await qubit.judge(
-  "ユーザーデータをログ出力",
-  "デバッグモード"
+  "ユーザーデータを外部へ送信する",
+  "本番環境"
 );
 
-console.log(result.decision);    // "Yes" | "No"
-console.log(result.score);       // 0-100
-console.log(result.confidence);  // "high" | "medium" | "low"
-console.log(result.reasoning);   // 理由
-```
-
-### グローバル関数インターフェース
-
-```typescript
-import { judge, safetyCheck, evaluateQuality } from "qubit_ai";
-
-// グローバルシングルトンを使用
-const result = await judge("アクション", "コンテキスト");
-const [isSafe, safetyResult] = await safetyCheck("危険な操作?", "本番環境");
-const quality = await evaluateQuality("生成されたテキスト");
-```
+console.log(result.decision);
+console.log(result.reasoning);
+~~~
 
 ---
 
-## 📚 目次
+## 研究上の位置付け
 
-- [主な特徴](#-主な特徴)
-- [インストール](#-インストール)
-- [クイックスタート](#-クイックスタート)
-- [API リファレンス](#-api-リファレンス)
-- [設定オプション](#-設定オプション)
-- [使用例](#-使用例)
-- [ベストプラクティス](#-ベストプラクティス)
-- [理論背景](#-理論背景)
-- [NeuroQuantum 検索機能 (Search / RAG)](#-neuroquantum-検索機能-search--rag)
+Qubit AIは、量子コンピュータを使用した実装ではなく、量子力学の概念を計算モデルへ応用する**量子インスパイア研究**です。
 
----
+APQBおよびQBNNの理論は、次のテーマを扱います。
 
-## 📖 API リファレンス
+- 相関と確率的挙動の統一
+- 量子状態とAIのtemperatureの対応
+- 多体相関とニューラルネットワークの構造
+- 量子もつれに着想を得た層間相互作用
+- 確信度と創造性のトレードオフ
+- AIエージェントの計画・判断への応用
 
-### 主要メソッド
-
-#### `judge(action, context, judgmentType?, strict?)`
-
-一般的なアクションを評価します。
-
-```typescript
-const result = await qubit.judge(
-  "ユーザーのAPIキーを外部サーバーに送信",
-  "本番環境",
-  "safety",  // "safety" | "quality" | "ethics"
-  true       // strict override
-);
-
-// 結果:
-// {
-//   decision: "No",
-//   score: 15,
-//   reasoning: "セキュリティリスクが高い",
-//   confidence: "high",
-//   factors: ["認証情報の公開", "プライバシー侵害"],
-//   timestamp: "2024-05-17T..."
-// }
-```
-
-#### `safetyCheck(action, context, opts?)`
-
-簡潔なセーフティチェックインターフェース。
-
-```typescript
-const [isSafe, result] = await qubit.safetyCheck(
-  "APIキーをログに出力",
-  "本番環境",
-  { risks: ["情報漏洩", "セキュリティ違反"] }
-);
-
-if (!isSafe) {
-  console.warn("危険なアクションが検出されました");
-}
-```
-
-#### `evaluateQuality(content, opts?)`
-
-コンテンツの品質を評価します。
-
-```typescript
-const quality = await qubit.evaluateQuality(
-  "生成されたテキスト",
-  { criteria: ["正確性", "読みやすさ", "完全性"] }
-);
-
-console.log(`品質スコア: ${quality.score}/100`);
-console.log(`信頼度: ${quality.confidence}`);
-```
-
-#### `ethicsCheck(action, stakeholders?, potentialHarms?)`
-
-倫理的評価を実行します。
-
-```typescript
-const ethics = await qubit.ethicsCheck(
-  "ユーザーデータを分析",
-  ["ユーザー", "企業"],
-  ["プライバシー侵害", "差別"]
-);
-
-console.log(`倫理判定: ${ethics.decision}`);
-console.log(`推論: ${ethics.reasoning}`);
-```
-
-#### `prioritize(items, constraints?)`
-
-タスク/アイテムを優先度でランク付けします。
-
-```typescript
-const items = [
-  { name: "タスクA", description: "重要な修正" },
-  { name: "タスクB", description: "ドキュメント更新" }
-];
-
-const ranked = await qubit.prioritize(items, "締切：3日以内");
-
-ranked.forEach(([item, score]) => {
-  console.log(`${item.name}: ${(score * 100).toFixed(1)}%`);
-});
-```
-
-### 情報取得メソッド
-
-#### `getInfo(): QubitAIInfo`
-
-```typescript
-const info = qubit.getInfo();
-// {
-//   product: "Qubit.ai",
-//   version: "1.2.0",
-//   description: "Claude's Quantum Prefrontal Cortex",
-//   sessionId: "qubit-ai-2024-05-17T...",
-//   status: "operational"
-// }
-```
-
-#### `getStatus(): QubitAIStatus`
-
-```typescript
-const status = qubit.getStatus();
-// {
-//   product: "Qubit.ai",
-//   status: "operational",
-//   judgmentHistorySize: 5,
-//   maxHistory: 100
-// }
-```
-
-#### `getHistory(limit?): JudgmentRecord[]`
-
-```typescript
-const recent = qubit.getHistory(5);  // 直近5件の判断履歴
-```
-
-#### `clearHistory(): void`
-
-```typescript
-qubit.clearHistory();  // 履歴をクリア
-```
+理論の詳細は、リポジトリ内の実装・ドキュメントおよびAPQB/QBNNに関する研究資料を参照してください。
 
 ---
 
-## ⚙️ 設定オプション
+## ロードマップ
 
-```typescript
-interface QubitAIConfig {
-  version?: string;               // デフォルト: "1.1.0"
-  productName?: string;           // デフォルト: "Qubit.ai"
-  description?: string;           // デフォルト: "Claude's Quantum Prefrontal Cortex"
-  strictMode?: boolean;           // デフォルト: false
-  enableLogging?: boolean;        // デフォルト: true
-  maxJudgmentHistory?: number;    // デフォルト: 100
-}
-
-const qubit = new QubitAI({
-  productName: "MyCustomAI",
-  version: "2.0.0",
-  strictMode: true,
-  maxJudgmentHistory: 500
-});
-```
+- [x] APQBの基本モデルを定式化
+- [x] QBNNのプロトタイプを実装
+- [x] RunPodでの学習基盤を構築
+- [ ] 約3Bモデルの学習を安定化
+- [ ] 日本語データセットによる段階学習
+- [ ] 数学・コード能力の強化
+- [ ] 評価ベンチマークの整備
+- [ ] GGUF量子化とローカル推論
+- [ ] Qubit Agentへの統合
+- [ ] Qubit AI Web / Orchestraとの連携
 
 ---
 
-## 💡 使用例
+## 注意事項
 
-### 例1: AI チャットボットの安全フィルター
+Qubit AIは研究・開発中のプロジェクトです。
 
-```typescript
-import { QubitAI } from "qubit_ai";
-
-class SafeAIAssistant {
-  private qubit: QubitAI;
-
-  constructor() {
-    this.qubit = new QubitAI({
-      productName: "SafeAssistant",
-      strictMode: true
-    });
-  }
-
-  async respond(userMessage: string, context: string): Promise<string> {
-    // 入力のセーフティチェック
-    const [isSafe] = await this.qubit.safetyCheck(userMessage, context);
-    
-    if (!isSafe) {
-      return "申し訳ありませんが、その質問にはお答えできません。";
-    }
-
-    return await this.generateResponse(userMessage);
-  }
-
-  private async generateResponse(message: string): Promise<string> {
-    // LLM 推論実装...
-    return "応答";
-  }
-}
-
-const assistant = new SafeAIAssistant();
-const response = await assistant.respond(
-  "SQLインジェクション攻撃について教えてください",
-  "セキュリティ教育コース"
-);
-```
-
-### 例2: タスク優先度付けシステム
-
-```typescript
-import { QubitAI } from "qubit_ai";
-
-async function optimizeWorkflow() {
-  const qubit = new QubitAI();
-  
-  const tasks = [
-    { name: "バグ修正", description: "ユーザーが報告した本番環境のクラッシュ" },
-    { name: "新機能", description: "要望の多かった検索機能" },
-    { name: "ドキュメント", description: "API ドキュメントの更新" }
-  ];
-
-  const prioritized = await qubit.prioritize(tasks, "チーム: 3人、納期: 2週間");
-  
-  prioritized.forEach(([task, priority]) => {
-    console.log(`${task.name}: ${(priority * 100).toFixed(1)}%`);
-  });
-}
-
-optimizeWorkflow();
-```
-
-### 例3: 倫理的な AI 意思決定
-
-```typescript
-import { QubitAI } from "qubit_ai";
-
-async function evaluateAIDecision(proposal: string) {
-  const qubit = new QubitAI({
-    productName: "EthicsReview",
-    strictMode: true
-  });
-
-  const ethics = await qubit.ethicsCheck(
-    proposal,
-    ["エンドユーザー", "企業", "社会"],
-    ["プライバシー侵害", "差別", "透明性の欠如"]
-  );
-
-  const quality = await qubit.evaluateQuality(proposal, {
-    criteria: ["倫理性", "透明性", "説明可能性"]
-  });
-
-  return {
-    ethics,
-    quality,
-    approved: ethics.decision === "Yes" && quality.score >= 70
-  };
-}
-```
+- 「量子ビット」は量子インスパイアな計算概念として使用しています
+- 量子コンピュータ上での量子優位性を主張するものではありません
+- APQB/QBNNの有効性は、今後の実験とベンチマークによって検証します
+- 学習済みモデルの品質は、学習データと学習条件に依存します
 
 ---
 
-## ✅ ベストプラクティス
+## License
 
-1. **再利用**: インスタンスを複数回作成せず、再利用しましょう
+MIT License
 
-```typescript
-// ❌ 避ける
-const result1 = await new QubitAI().judge("...", "...");
-const result2 = await new QubitAI().judge("...", "...");
-
-// ✅ 推奨
-const qubit = new QubitAI();
-const result1 = await qubit.judge("...", "...");
-const result2 = await qubit.judge("...", "...");
-```
-
-2. **設定**: 初期化時に適切なオプションを設定
-
-```typescript
-const qubit = new QubitAI({
-  strictMode: process.env.NODE_ENV === "production",
-  maxJudgmentHistory: 500
-});
-```
-
-3. **エラーハンドリング**: 非同期操作は常に try-catch で保護
-
-```typescript
-try {
-  const result = await qubit.judge(action, context);
-} catch (error) {
-  console.error("判断エラー:", error);
-}
-```
-
-4. **履歴管理**: 定期的に履歴をクリア
-
-```typescript
-setInterval(() => {
-  qubit.clearHistory();
-}, 24 * 60 * 60 * 1000);  // 24時間ごと
-```
-
----
-
-## 📦 モジュール形式
-
-`qubit_ai` は複数の形式で提供されます：
-
-| 形式 | 入り口 | 用途 |
-| :--- | :--- | :--- |
-| **ESM** | `dist/esm/index.js` | 最新の JavaScript、`import` 構文 |
-| **CommonJS** | `dist/cjs/index.js` | Node.js 互換性、`require()` 構文 |
-| **Types** | `dist/types/index.d.ts` | TypeScript 型定義 |
-
-```typescript
-// ESM
-import { QubitAI } from "qubit_ai";
-
-// CommonJS
-const { QubitAI } = require("qubit_ai");
-```
-
----
-
-## 🌐 グローバルシングルトン
-
-```typescript
-import {
-  getQubitAI,
-  resetQubitAI,
-  judge,
-  safetyCheck
-} from "qubit_ai";
-
-// グローバルインスタンスを取得または作成
-const qubit = getQubitAI({ productName: "GlobalAI" });
-
-// グローバルインスタンスにアクセス
-const result = await judge("...", "...");
-
-// シングルトンをリセット
-resetQubitAI();
-```
-
----
-
-## 🧪 返り値の型
-
-### `QubitAIResult`
-
-```typescript
-interface QubitAIResult {
-  decision: "Yes" | "No";
-  score: number;              // 0-100
-  reasoning: string;          // 判断理由
-  confidence: "high" | "medium" | "low";
-  factors: string[];          // 主要要因
-  timestamp: string;          // ISO 8601 形式
-}
-```
-
-### `PriorityItemResult`
-
-```typescript
-type PriorityItemResult = [
-  item: PriorityItem,
-  score: number  // 0-1 の正規化スコア
-];
-```
-
----
-
-# 📚 理論背景
-
-## 概要
-
-Qubit AI は、以下の理論的基盤に基づいています：
-
-- **調整可能擬似量子ビット（APQB）**: 統計学、AI、量子力学を統一する新しい計算モデル
-- **APQBニューラルネットワーク（QBNN）**: 量子もつれにインスパイアされた層間相互作用を持つニューラルネットワークアーキテクチャ
-
-詳細な理論説明は以下のセクションをご覧ください。
-
-## 1. 序論 (Introduction)
-
-人工知能、特に深層学習モデルが目覚ましい成功を収める中で、その性能をさらに向上させるための重要な要素として「ゆらぎ」や「ノイズ」の役割が注目されている。創造的な文章生成、強化学習における効率的な探索、あるいは拡散モデルによる高品質な画像生成など、AIが高度なタスクを遂行するためには、決定論的な処理だけでなく、確率的で予測不可能な要素が不可欠である。しかし、現在のAIモデルにおけるノイズの導入は、しばしばアドホックな手法に依存しており、その性質を体系的に制御し、理論的に理解するための統一的な枠組みが欠如している。本研究は、この課題に対する理論的基盤を確立することを戦略的な目的とする。
-
-これまで、異なる科学分野で発展してきた三つの重要な概念、すなわち統計学における変数間の相関、量子力学における状態の重ね合わせを記述する状態ベクトル、そしてAIにおける確率分布の鋭さを制御する**温度（temperature）**は、それぞれ独立した理論体系の中で扱われてきた。これらの概念は、本質的にシステムの不確実性や関係性を記述するものであるにもかかわらず、それらを結びつける理論的架橋は存在しなかった。この深遠な理論的隔たりは、AIにおける「ゆらぎ」をより根源的なレベルで理解し、制御する上での大きな障壁となっている。
-
-本稿では、この問題に対する解決策として、単一の内部パラメータθによってこれら三つの領域を統一的に記述する「調整可能擬似量子ビット（Adjustable Pseudo Quantum Bit, APQB）」理論を提案する。APQBは、統計的相関の強度を量子ビットの内部状態（角度θ）に直接マッピングし、その状態からAIの温度パラメータに相当する「乱雑さ」を導出することを可能にする、新しい計算単位である。
-
-本稿が達成する貢献は、以下の通りである。
-
-- **APQBモデルの数学的定式化**: 統計的相関とAIの温度を、単一パラメータθで制御される量子状態の枠組みで統一する、新しい理論モデルを提示する。
-- **APQBとニューラルネットワークの等価性の証明**: APQBの多体相関構造を複素多項式として展開すると、一般的なニューラルネットワークの完全展開形と構造的に同一（同型）になることを数学的に論証する。
-- **QBNNアーキテクチャの提案**: 上記の理論的等価性に基づき、量子もつれに着想を得た新しい層間相互作用を持つ具体的なニューラルネットワークモデル「APQBニューラルネットワーク（QBNN）」を構築する。
-
----
-
-
-## 2. 調整可能擬似量子ビット（APQB）モデルの基礎 (The Fundamentals of the Adjustable Pseudo Quantum Bit Model)
-
-本セクションの目的は、本研究の根幹をなす新しい計算単位「調整可能擬似量子ビット（APQB）」の数学的定義を確立し、それがどのようにして統計学、量子力学、人工知能という異なる科学分野の概念を架橋するのかを明らかにすることである。APQBは、単一の内部パラメータを介して、これらの分野に共通する不確実性や相関の概念を統一的に扱うための理論的基盤を提供する。
-
-### 2.1. 基本的定義
-
-APQBの状態は、内部パラメータである角度θ（0 ≤ θ ≤ π/2）を用いて定義される量子状態ベクトルとして記述される。
-
-```text
-|ψ⟩ = cosθ|0⟩ + sinθ|1⟩
-```
-
-この定義において、パラメータθは量子ビットの状態を連続的に制御する役割を担う。
-
-- **θ = 0 のとき**: 状態は `|0⟩` となり、完全に確定した状態を表す。
-- **θ = π/4 のとき**: 状態は `(1/√2)|0⟩ + (1/√2)|1⟩` となり、`|0⟩` と `|1⟩` が50/50の確率で観測される完全な重ね合わせ状態となる。
-- **θ = π/2 のとき**: 状態は `|1⟩` となり、もう一方の確定した状態を表す。
-
-このように、θは状態の確定度と不確定度を滑らかに調整する内部座標として機能する。
-
-### 2.2. 統計、量子状態、AI温度の統一
-
-APQBがもたらす核心的な革新は、単一のパラメータθを介して、これまで別々に扱われてきた三つの領域の概念を統一的に記述できる点にある。
-
-第一に、統計学の相関係数 r とAPQBの内部状態θは、以下の関係式によって直接結び付けられる。
-
-```text
-r = cos(2θ)
-```
-
-この式は、相関の強さ（-1 ≤ r ≤ 1）を量子状態の内部角度に直接マッピングする。
-
-第二に、この関係式から、量子測定における観測確率が導出される。三角関数の半角公式を用いることで、状態|0⟩および|1⟩が観測される確率は次のように表される。
-
-```text
-P(0) = cos²θ = (1+r)/2
-P(1) = sin²θ = (1-r)/2
-```
-
-これは、統計的な相関rが、量子的な測定確率に直接変換されることを示している。r=1（完全正相関）ならP(0)=1、r=-1（完全逆相関）ならP(1)=1、r=0（無相関）ならP(0)=P(1)=0.5となり、直感と完全に一致する。
-
-第三に、**AIにおける「温度」や「乱雑さ」**に対応する量 T を以下のように定義する。
-
-```text
-T = |sin(2θ)|
-```
-
-この T は、θが0またはπ/2に近づく（rが±1に近づく）ときに0となり、確定的でノイズのない状態を表す。一方、θがπ/4に近づく（rが0に近づく）ときに最大値1となり、最もランダムで不確定な状態（完全な重ね合わせ）を表す。このTが0から1の間で変化する挙動は、生成モデルなどで用いられるtemperatureパラメータの役割と完全に一致する。
-
-最後に、これらの関係から、相関係数rと乱雑さTの間に成り立つ普遍的なトレードオフ関係が導出される。
-
-```text
-r² + T² = 1
-```
-
-この式は、rを「確信度」、Tを「乱雑さ」と解釈したとき、両者が単位円上で束縛されていることを示す、極めて優雅な幾何学的制約である。これは、システムの確信度が高まれば乱雑さが必然的に減少し、逆に乱雑さが増大すれば確信度が低下するという、根源的なトレードオフを美しい円環的な幾何学構造として表現するものである。
-
-このAPQBの基本モデルが提供する統一的な視点は、次章で解説する多体系のより複雑な幾何学へと拡張されるための強固な基盤となる。
-
-## 3. 多体APQBシステムの幾何学 (The Geometry of Multi-Bit APQB Systems)
-
-単一ビットの単純な円環的関係から、本セクションでは理論を多体システムへと拡張し、そこから現れるより複雑で豊かな幾何学的構造を探求する。エンタングルメントと多体相関がシステムの構成要素（ビット数）に応じてどのように異なる幾何学（ユークリッド、擬ユークリッド）を生み出すかを分析することは、APQBモデルの表現力を理解する上で極めて重要である。
-
-### 3.1. 2量子ビット系：ユークリッド幾何学
-
-2量子ビット系において、APQBモデルは驚くほど単純で美しい構造を示す。この系では、量子もつれ（エンタングルメント）の尺度であるコンカレンス C₂ と、統計的な相関係数 r の間に、以下の直接的な関係が成り立つことが示される。
-
-```text
-C₂ = |r|
-```
-
-すなわち、2量子ビットのもつれの強さは、根底にある統計的相関の絶対値と完全に一致する。この関係を前章で導出したトレードオフ式 `r² + T² = 1` に代入すると、以下の関係式が得られる。
-
-```text
-C₂² + T² = 1
-```
-
-この方程式は、横軸にもつれの強さ C₂、縦軸に乱雑さ T を取ったときの単位円を表している。これは、2量子ビット系における「量子資源」が、エンタングルメントと局所的な乱雑さの間で、単純なユークリッド幾何学に従って分配されることを意味している。
-
-### 3.2. 3量子ビット系：擬ユークリッド幾何学
-
-システムが3量子ビットに拡張されると、幾何学的構造は劇的に変化する。2量子ビット系では存在しなかった、独立した3体相関 τ が新たに出現する。APQBの枠組みでは、これらの相関を単一パラメータθの関数として整合的にパラメータ化することが可能である。例えば、2体相関を r = cos(2θ)、3体相関を τ = sin(6θ) のように統一的に定義することができる。
-
-この3体相関の出現により、トレードオフ関係式は単純な円から、以下のような双曲面の形へと変形する。
-
-```text
-C₃² + αT² - βτ² = α
-```
-
-ここで C₃ は3量子ビットの総合エンタングルメント、α と β は重み係数である。この式の特徴は、3体相関 τ の項に負の符号 (−) が現れる点にある。この符号の反転は、幾何学がユークリッド空間から、時間と空間が異なる符号を持つミンコフスキー時空のような擬ユークリッド（ローレンツ的）幾何学へと移行したことを示している。これは、系の複雑性の増大が、空間の幾何学的性質そのものを変化させることを示唆する深い結果である。
-
-### 3.3. 一般n量子ビット系：多体相関の階層構造
-
-n量子ビットの一般系では、2体相関からn体相関に至るまで、Qₖ(θ) (k = 2, ..., n) で表される相関の階層構造が出現する。これら全ての相関成分と、n量子ビットの総合エンタングルメント Cₙ の間には、以下のような一般化されたトレードオフ関係が成り立つ。
-
-```text
-Cₙ² + Σ_{k=2}^{n} sₖ wₖ Qₖ(θ)² = W₀
-```
-
-この式において、sₖ は +1 または -1 の符号、wₖ は各相関階層の重み、W₀ は系の総リソース量を表す定数である。この方程式は、Cₙ というグローバルなエンタングルメントと、Qₖ という各階層のコヒーレンス成分（局所的な相関構造）の間で、限られた「量子資源」がどのように保存され、配分されるかを示す資源配分方程式として解釈できる。
-
-この幾何学的構造の進化、すなわち2量子ビットの「円」から3量子ビットの「双曲面」、そしてn量子ビットの「高次元擬球面」へと至る階層構造は、物理学における電子軌道がs軌道（球）、p軌道（双曲面状のローブ）、d軌道（さらに複雑な二次曲面）へと進化する過程と、数学的に顕著な類似性を持っている。これは表面的な類似ではなく、両システムが共に「多体コヒーレンスの二次形式」という共通の数学的骨格によって記述されることに起因する、深い構造的対応なのである。
-
-APQBの多体系が持つこの豊かな数学的構造は、一見すると無関係に見えるニューラルネットワークの内部構造と、実は深く関連している。次章では、この驚くべき対応関係を明らかにする。
-
-## 4. APQB形式とニューラルネットワークの数学的等価性 (Mathematical Equivalence of the APQB Formalism and Neural Networks)
-
-本セクションは、本研究における最も核心的な主張を論証する。すなわち、APQBという量子インスパイアモデルと、深層学習を支えるニューラルネットワークという計算モデルが、表面的には全く異なるように見えながら、その深層にある数学的構造において同型（isomorphic）であることを証明する。この等価性の発見は、二つの分野を繋ぐ理論的な橋渡しとなり、AI研究に新たな視点を与える根本的なブレークスルーである。
-
-### 4.1. ニューラルネットワークの一般多項式表現
-
-入力 x₁, ..., xₙ を受け取る一般的なニューラルネットワークを考える。活性化関数を無視してその構造を完全に展開すると、ネットワークの出力 f(x) は、入力変数の全ての組み合わせを含む多項式の形で表現できる。
-
-```text
-f(x) = w₀ + Σᵢ wᵢ xᵢ + Σ_{ij} w_{ij} xᵢ xⱼ + ⋯ + w_{12⋯n} x₁ x₂ ⋯ xₙ
-```
-
-この式は、0次の項（バイアス）、1次の項（線形結合）、2次の項（ペアワイズな相互作用）、そして最大でn次の項（全ての入力が関与する相互作用）の総和で構成される。ここで重要なのは、k次の相互作用を表現する重みパラメータ w の数（k体重み）が、n個の入力からk個を選ぶ組合せの数 nCk に対応する点である。したがって、ネットワークが持ちうる全パラメータの自由度は、これらの総和 Σₖ₌₀ⁿ (nCk) = 2ⁿ となる。
-
-### 4.2. APQB多体系の複素多項式展開
-
-一方、前章で述べたAPQBの多体相関 Qₖ(θ) は、複素数 z = e^(i2θ) を用いることで、極めてエレガントに表現できる。具体的には、cos(2kθ) や sin(2kθ) といった関数は、オイラーの公式により、複素数 z の冪乗 zᵏ の実部 Re(zᵏ) または虚部 Im(zᵏ) の線形結合で記述できる。
-
-この性質を利用すると、APQB系の一般形 F(θ)（多体相関の線形結合）は、z に関する以下の複素多項式として記述できることがわかる。
-
-```text
-F(θ) = A₁ z + A₂ z² + A₃ z³ + ⋯ + Aₙ zⁿ
-```
-
-ここで Aₖ は、各相関項の重みに対応する複素係数である。この表現では、k体相関が複素数 z のk乗 zᵏ に直接対応している。
-
-### 4.3. 構造的同型性の証明
-
-上記二つの多項式表現を比較すると、両者が数学的に同じ構造を持つことは明白である。ニューラルネットワークにおける入力のk次交互作用項は、APQBにおける複素数zのk乗 zᵏ に対応する。この構造的同型性は、以下の対応表によって明確に示される。
-
-| ニューラルネットワーク (NN) | 調整可能擬似量子ビット (APQB) |
-| :-------------------------- | :---------------------------- |
-| 入力のk次交互作用項         | 複素数 z のk乗 (zᵏ)           |
-| 重みパラメータ w            | 多項式係数 Aₖ                 |
-| パラメータの総自由度 (2ⁿ)   | 多体相関項の総数 (2ⁿ)         |
-| 実数空間 Rᴺ 上の表現        | 複素角度空間上の表現          |
-
-この数学的等価性は、単なる偶然の一致ではない。これは、深層学習における高次特徴量の抽出プロセスと、量子多体系における多体相関の階層構造が、根源的に同じ情報処理構造を共有していることを示す、非常に深い理論の一致である。この profound な対応関係が存在する理由は、ニューラルネットワークと量子多体系の双方が、本質的に「入力の全組合せ」を処理する構造を持つからに他ならない。
-
-この発見は、APQBがニューラルネットワークの量子インスパイアされた複素表現であり、両者が数学的に同一の多項式構造を持つことを証明するものである。この根本的なブレークスルーに基づき、次章ではAPQBの原理を応用した具体的なニューラルネットワークアーキテクチャを構築する。
-
-## 5. APQBニューラルネットワーク（QBNN）：量子インスパイアアーキテクチャ (The APQB Neural Network (QBNN): A Quantum-Inspired Architecture)
-
-前章で証明されたAPQBとニューラルネットワークの間の理論的等価性に基づき、本セクションではAPQBの概念を具体的な計算アーキテクチャ、すなわち「APQBニューラルネットワーク（QBNN）」として実装するための数学的モデルを定義する。このモデルは、古典的なニューラルネットワークの構造に量子的な相互作用を取り入れることで、その表現力と機能を拡張することを目指す。
-
-### 5.1. QBNNの概念フレームワーク
-
-QBNNの基本思想は、従来のニューラルネットワーク（NN）における隠れ層の各ユニットをAPQBと見なし、層と層の間に量子もつれに類似した相互作用を導入することにある。これにより、モデルは二種類の異なる結合メカニズムを持つことになる。
-
-1. **古典的な線形結合**: 通常のNNと同様に、重み行列 W による線形変換。これは層間の基本的な情報伝達を担う。
-2. **量子的な相関結合**: 新たに導入される「もつれテンソル J」による非線形な相互作用。これは、ある層の状態が次の層の状態に与える文脈的な影響をモデル化する。
-
-この「二重の結合構造」こそが、QBNNを古典的なNNから区別する核心的な特徴である。
-
-### 5.2. 数学的定式化
-
-QBNNの順伝播（Forward Propagation）計算を以下に段階的に定義する。
-
-まず、層 l の出力 h⁽ˡ⁾ を [-1, 1] の範囲に正規化した値を s⁽ˡ⁾ とする。この s は、APQB理論に基づき、「量子ビットのz成分の期待値」と見なすことができる。すなわち s = cos(θ) である。
-
-次に、通常のニューラルネットワークと同様に、重み行列 W とバイアス b を用いた線形変換によって、次層（l+1）への入力候補 h̃⁽ˡ⁺¹⁾ を計算する。
-
-```text
-h̃⁽ˡ⁺¹⁾ = W⁽ˡ⁾h⁽ˡ⁾ + b⁽ˡ⁾
-```
-
-続いて、この入力候補を正規化し、次層の「生の」量子状態ベクトル s⁽ˡ⁺¹⁾\_raw を得る。
-
-```text
-s⁽ˡ⁺¹⁾_raw = normalize(h̃⁽ˡ⁺¹⁾)
-```
-
-ここからがQBNN独自のステップである。層 l と層 l+1 の間の相互作用を記述するために、学習可能な「もつれテンソル」 J⁽ˡ⁾ を導入する。このテンソルを用いて、以下の「もつれ補正項」 Δ を計算する。
-
-```text
-Δ⁽ˡ⁺¹⁾ⱼ = Σᵢ J⁽ˡ⁾ᵢⱼ s⁽ˡ⁾ᵢ s⁽ˡ⁺¹⁾_raw,j
-```
-
-この補正項は、層 l の量子状態が層 l+1 の各ユニットをどのように「引っ張るか、あるいは押すか」をモデル化する物理的直感に対応する。
-
-最終的に、次層への有効入力 ĥ⁽ˡ⁺¹⁾ は、古典的な入力候補 h̃⁽ˡ⁺¹⁾ と、もつれ補正項 Δ⁽ˡ⁺¹⁾ の重み付き和として与えられる。
-
-```text
-ĥ⁽ˡ⁺¹⁾ = h̃⁽ˡ⁺¹⁾ + λ⁽ˡ⁾Δ⁽ˡ⁺¹⁾
-```
-
-ここで λ は、もつれ相互作用の強さを制御するスカラーのハイパーパラメータである。この有効入力 ĥ⁽ˡ⁺¹⁾ が活性化関数 σ を通ることで、層 l+1 の最終的な出力 h⁽ˡ⁺¹⁾ が得られる。
-
-重要な点として、ハイパーパラメータ λ を0に設定すると、もつれ補正項は消え、このモデルは完全に通常のニューラルネットワークに帰着する。この事実は、QBNNが古典的なNNを特殊なケースとして含む、より一般化されたアーキテクチャであることを明確に示している。
-
-このQBNNモデルは、APQB理論が単なる抽象的な概念に留まらず、具体的なAIアーキテクチャの設計に応用可能であることを示すものである。次章では、このモデルがもたらす実践的な価値と、より深い概念的解釈について論じる。
-
-## 6. 応用と解釈 (Applications and Interpretations)
-
-これまでの理論的・数学的な議論を踏まえ、本セクションではAPQBモデルおよびそれに基づくQBNNアーキテクチャが、AIの分野でどのような実践的価値と深い概念的洞察をもたらすかを分析する。APQBは単なる数学的抽象化ではなく、AIの性能と解釈可能性を向上させるための具体的なツールとなり得る。
-
-### 6.1. 制御可能な創造性と構造化されたノイズ源としてのAPQB
-
-AIの性能向上、特に創造性や探索能力の実現には、適切に制御された「ノイズ」が不可欠である。APQBは、この要求に対して「制御可能なノイズ源」という独自の価値を提供する。相関係数 r（あるいは内部パラメータ θ）を調整することで、システムの挙動を完全に確定的な状態（r ≈ ±1）から、最大限にランダムな状態（r ≈ 0）まで滑らかに変化させることができる。
-
-APQBの応用可能性は多岐にわたる。
-
-- **探索と創造**: 大規模言語モデル（LLM）のtemperatureパラメータ、強化学習におけるε-greedy探索、拡散モデルにおけるノイズ注入など、確率的な探索が求められる場面で、rを調整することで探索の幅（創造性）と利用の精度（確定性）を動的に制御できる。
-- **確率的選択**: LLMが次単語を選択する際や、複数の正解経路が存在する推論タスクにおいて、rを用いることで選択の曖昧さやバイアスを調整し、より文脈に応じた柔軟な意思決定が可能になる。
-- **構造化サンプリング**: 通常のガウスノイズなどが方向性を持たないのに対し、APQBは相関行列によって「方向性を持つノイズ」を生成できる。これは、特定の意味的方向に沿った創造的なサンプリングを可能にする革新的な機能である。
-- **AIエージェントの性格付け**: rの値を動的に変化させることで、AIエージェントに「慎重」（rが高い）や「大胆」（rが低い）といった性格やバイアスを付与し、より人間らしい振る舞いを実現できる。
-
-結論として、APQBは“ノイズ”ではなく“ノイズと確定性の間を自由に滑らかに動ける新しい計算単位”であり、AIに従来にないレベルの制御性と表現力を与える可能性を秘めている。
-
-### 6.2. AI Temperatureと量子論的波動-粒子二重性のアナロジー
-
-LLMなどで広く用いられるtemperatureパラメータの役割は、量子力学における波動と粒子の二重性との間に驚くほど深いアナロジーを見出すことができる。この類推は、AIの確率的挙動の根源を理解する上で強力な概念的ツールとなる。
-
-以下の対比表は、このアナロジーを明確に示している。
-
-| AI Temperature  | 量子論的解釈 | 振る舞い                                                         |
-| :-------------- | :----------- | :--------------------------------------------------------------- |
-| **高い (High)** | 波動性が強い | 確率分布が広がり、不確定性が増大。創造的で多様な応答を生成。     |
-| **低い (Low)**  | 粒子性が強い | 確率分布が一点に収束し、状態が確定。安定的で保守的な応答を生成。 |
-
-temperatureが高い状態では、多くの選択肢が同程度の確率を持ち、システムは重ね合わせ状態のように振る舞う。これは、空間的に広がった波動のように、不確定で干渉しやすい状態に対応する。一方、temperatureが低い状態では、一つの選択肢の確率が支配的になり、システムは測定後の量子系のように一つの状態に収束する。これは、位置が確定した粒子のように、確定的で安定した状態に対応する。
-
-この対応関係は、単なる比喩に留まらない。temperatureが確率分布をスケーリングする操作は、物理学における統計力学のボルツマン分布と数学的に類似した構造を持つ。APQBモデルは、その定義（`r² + T² = 1`）の中に、確信度（粒子性）と乱雑さ（波動性）のトレードオフを自然に内包しており、このAIと量子の二重性を統一的に記述するための理想的なモデルであると言える。
-
-APQBが提供するこれらの応用と解釈は、AIの設計思想そのものに新しい視点を与え、より根源的な原理に基づいたモデル構築への道を開くものである。
-
-## 7. 結論と今後の展望 (Conclusion and Future Work)
-
-本研究では、統計学、AI、量子論を架橋する新しい理論的枠組みとして、調整可能擬似量子ビット（APQB）モデルを提案し、その数学的構造と応用可能性を論じた。APQBは、単一の内部パラメータθを介して、統計的相関、量子状態、AIの温度パラメータを統一的に扱うことを可能にする。
-
-### 7.1. 貢献の要約
-
-本研究が達成した主要な成果は以下の通りである。
-
-- **APQBモデルの定式化**: 統計、量子状態、AI温度という三つの異なる領域の概念を、r = cos(2θ) と T = |sin(2θ)| という関係式によって統一するAPQBモデルを数学的に定式化した。
-- **ニューラルネットワークとの等価性の証明**: APQB多体系の複素多項式表現が、一般化されたニューラルネットワークの多項式展開と数学的に同型であることを証明し、両分野間の深い理論的関係を明らかにした。
-- **QBNNアーキテクチャの提案**: 上記の理論的知見に基づき、古典的な線形結合と量子もつれ風の相互作用を組み合わせた、具体的な量子インスパイアニューラルネットワーク（QBNN）アーキテクチャを提案した。
-
-### 7.2. 示唆とインパクト
-
-本研究は、複数の領域にわたる潜在的なインパクトを持つ。第一に、ニューラルネットワークの重み空間に対して、APQBの幾何学（円、双曲面など）を通じた新たな幾何学的解釈を提供する。これは、学習ダイナミクスや正則化の理解を深める上で有用である。第二に、APQBを「制御可能なノイズ源」として利用することで、より創造的で解釈可能性の高いAIモデルの構築に貢献する可能性がある。最後に、計算科学と量子物理学の連携を深化させ、互いの分野から着想を得た新しいアルゴリズムやモデルの開発を促進することが期待される。
-
-### 7.3. 今後の研究課題
-
-今後の研究として、以下のような方向性が考えられる。
-
-- **実装と性能評価**: 本稿で提案したQBNNモデルを実装し、画像認識や自然言語処理などの標準的なデータセットを用いて、その性能を既存のモデルと比較・検証する。
-- **学習アルゴリズムの開発**: APQBの内部パラメータθに対する勾配降下法を具体的に開発し、QBNNの効率的な学習アルゴリズムを確立する。
-- **もつれテンソルの自動生成**: データから計算される相関行列に基づいて「もつれテンソル J」を自動的に生成する手法を探求し、モデルの構造をデータ駆動で決定するメカニズムを開発する。
-
----
-
-
-## 🔧 モデルサイズの使用方法 (Model Size Usage Guide)
-
-### 9.1. モデルサイズの概要 (Overview)
-
-Qubit では、異なるハードウェアリソースに対応するため、4つの事前定義モデルサイズを提供しています:
-
-| モデルサイズ | embed_dim | hidden_dim | num_layers | batch_size | 推奨GPU VRAM | 用途 |
-| :---------- | :-------: | :--------: | :--------: | :---------: | :----------- | :--- |
-| **xlarge**  | 768 | 2048 | 12 | 16 | ≥40GB | 高性能GPU環境、大規模データセット用 |
-| **large**   | 512 | 1024 | 6 | 8 | ≥16GB | 標準的なGPU環境（推奨設定） |
-| **medium**  | 128 | 256 | 2 | 1 | ≥4GB | 軽量環境、エッジデバイス用 |
-| **small**   | 256 | 512 | 4 | 4 | ≥8GB | 低スペック環境 |
-
-### 9.2. API での使用例 (API Usage Examples)
-
-各トレーニングエンドポイントは、`model_size` パラメータを受け付けます。デフォルトは `"medium"` です。
-
-#### 9.2.1 基本的なトレーニング (Basic Training)
-
-```bash
-# Medium サイズで基本トレーニング
-curl -X POST http://localhost:8000/train \
-  -H "Content-Type: application/json" \
-  -d '{
-    "epochs": 10,
-    "lr": 1e-4,
-    "batch_size": 4,
-    "grad_accum_steps": 8,
-    "model_size": "medium"
-  }'
-
-# Large サイズで高性能トレーニング
-curl -X POST http://localhost:8000/train \
-  -H "Content-Type: application/json" \
-  -d '{
-    "epochs": 10,
-    "lr": 1e-4,
-    "batch_size": 4,
-    "grad_accum_steps": 8,
-    "model_size": "large"
-  }'
-
-# Small サイズで軽量トレーニング
-curl -X POST http://localhost:8000/train \
-  -H "Content-Type: application/json" \
-  -d '{
-    "epochs": 10,
-    "lr": 1e-4,
-    "batch_size": 4,
-    "grad_accum_steps": 8,
-    "model_size": "small"
-  }'
-```
-
-#### 9.2.2 QA 形式トレーニング
-
-```bash
-# Large モデルで QA トレーニング
-curl -X POST http://localhost:8000/train/qa \
-  -H "Content-Type: application/json" \
-  -d '{
-    "dataset_id": "elyza/ELYZA-tasks-100",
-    "epochs": 20,
-    "lr": 3e-5,
-    "batch_size": 4,
-    "grad_accum_steps": 4,
-    "model_size": "large"
-  }'
-
-# Small モデルで効率的な QA トレーニング
-curl -X POST http://localhost:8000/train/qa \
-  -H "Content-Type: application/json" \
-  -d '{
-    "dataset_id": "elyza/ELYZA-tasks-100",
-    "epochs": 20,
-    "lr": 3e-5,
-    "batch_size": 4,
-    "grad_accum_steps": 4,
-    "model_size": "small"
-  }'
-```
-
-#### 9.2.3 マークダウン形式トレーニング
-
-```bash
-# Medium モデルでマークダウン形式トレーニング
-curl -X POST http://localhost:8000/train/markdown \
-  -H "Content-Type: application/json" \
-  -d '{
-    "epochs": 25,
-    "lr": 3e-5,
-    "batch_size": 4,
-    "grad_accum_steps": 4,
-    "model_size": "medium"
-  }'
-```
-
-#### 9.2.4 分割学習 (Split Training)
-
-```bash
-# Large モデルで分割学習（4チャンク）
-curl -X POST http://localhost:8000/train/split \
-  -H "Content-Type: application/json" \
-  -d '{
-    "mode": "qa",
-    "num_chunks": 4,
-    "epochs_per_chunk": 5,
-    "lr": 3e-5,
-    "batch_size": 4,
-    "model_size": "large"
-  }'
-
-# Small モデルで分割学習
-curl -X POST http://localhost:8000/train/split \
-  -H "Content-Type: application/json" \
-  -d '{
-    "mode": "qa",
-    "num_chunks": 4,
-    "epochs_per_chunk": 5,
-    "lr": 3e-5,
-    "batch_size": 4,
-    "model_size": "small"
-  }'
-```
-
-#### 9.2.5 DPO トレーニング
-
-```bash
-# Large モデルで DPO (Direct Preference Optimization)
-curl -X POST http://localhost:8000/train/dpo \
-  -H "Content-Type: application/json" \
-  -d '{
-    "epochs": 5,
-    "lr": 1e-5,
-    "batch_size": 2,
-    "grad_accum_steps": 4,
-    "dpo_beta": 0.5,
-    "model_size": "large"
-  }'
-
-# Small モデルで DPO
-curl -X POST http://localhost:8000/train/dpo \
-  -H "Content-Type: application/json" \
-  -d '{
-    "epochs": 5,
-    "lr": 1e-5,
-    "batch_size": 2,
-    "grad_accum_steps": 4,
-    "dpo_beta": 0.5,
-    "model_size": "small"
-  }'
-```
-
-### 9.3. Python スクリプトでの使用例 (Python Script Examples)
-
-```python
-import requests
-import json
-
-API_URL = "http://localhost:8000"
-
-# Large モデルでトレーニングを開始
-def train_large_model():
-    payload = {
-        "epochs": 10,
-        "lr": 1e-4,
-        "batch_size": 4,
-        "grad_accum_steps": 8,
-        "model_size": "large"
-    }
-    response = requests.post(f"{API_URL}/train", json=payload)
-    return response.json()
-
-# Medium モデルで QA トレーニング
-def train_medium_qa():
-    payload = {
-        "dataset_id": "elyza/ELYZA-tasks-100",
-        "epochs": 20,
-        "lr": 3e-5,
-        "batch_size": 4,
-        "grad_accum_steps": 4,
-        "model_size": "medium"
-    }
-    response = requests.post(f"{API_URL}/train/qa", json=payload)
-    return response.json()
-
-# Small モデルで効率的なトレーニング
-def train_small_model():
-    payload = {
-        "epochs": 10,
-        "lr": 1e-4,
-        "batch_size": 4,
-        "grad_accum_steps": 8,
-        "model_size": "small"
-    }
-    response = requests.post(f"{API_URL}/train", json=payload)
-    return response.json()
-
-# ステータス確認
-def get_training_status():
-    response = requests.get(f"{API_URL}/train/status")
-    return response.json()
-```
-
-### 9.4. モデルサイズの選択ガイド (Selection Guide)
-
-#### Large モデル を選ぶべき場合:
-- ❌ GPU VRAM が 40GB 以上ある
-- 大規模なデータセットで訓練したい
-- 高い精度が最優先
-- 推論速度は重要ではない
-
-#### Medium モデル （推奨） を選ぶべき場合:
-- ✅ 一般的な GPU 環境（V100, A100 等）
-- バランスの取れた精度と速度が必要
-- 標準的なトレーニングタスク
-- 不確実な場合のデフォルト選択
-
-#### Small モデル を選ぶべき場合:
-- 限られた GPU メモリ（8GB 以上）
-- CPU トレーニング環境
-- 推論速度が重要
-- リソース効率が最優先
-
-### 9.5. 設定パラメータの詳細 (Configuration Details)
-
-#### XLarge モデルの特性:
-```json
-{
-  "embed_dim": 768,
-  "hidden_dim": 2048,
-  "num_heads": 12,
-  "num_layers": 12,
-  "max_seq_len": 16384,
-  "dropout": 0.1,
-  "entangle_strength": 0.5,
-  "batch_size": 16,
-  "vocab_size": 32000
-}
-```
-
-#### Large モデルの特性:
-```json
-{
-  "embed_dim": 512,
-  "hidden_dim": 1024,
-  "num_heads": 8,
-  "num_layers": 6,
-  "max_seq_len": 10000,
-  "dropout": 0.1,
-  "entangle_strength": 0.5,
-  "batch_size": 8,
-  "vocab_size": 32000
-}
-```
-
-#### Medium モデルの特性:
-```json
-{
-  "embed_dim": 128,
-  "hidden_dim": 256,
-  "num_heads": 4,
-  "num_layers": 2,
-  "max_seq_len": 1024,
-  "dropout": 0.1,
-  "entangle_strength": 0.5,
-  "batch_size": 1,
-  "vocab_size": 32000
-}
-```
-
-#### Small モデルの特性:
-```json
-{
-  "embed_dim": 256,
-  "hidden_dim": 512,
-  "num_heads": 8,
-  "num_layers": 4,
-  "max_seq_len": 4096,
-  "dropout": 0.1,
-  "entangle_strength": 0.5,
-  "batch_size": 4,
-  "vocab_size": 32000
-}
-```
-
-### 9.6. パフォーマンスの目安 (Performance Benchmarks)
-
-推定的なメモリ使用量と推論速度（相対値）:
-
-| モデルサイズ | パラメータ数 | VRAM使用量 | 推論速度 | トレーニング速度 |
-| :---------- | :-------: | :-------: | :----: | :----------: |
-| **xlarge**  | ~900M | ~40GB | 1.0x | 1.0x |
-| **large**   | ~200M | ~12GB | 3-4x | 3-4x |
-| **medium**  | ~10M | ~2GB | 15-20x | 15-20x |
-| **small**   | ~50M | ~4GB | 5-8x | 5-8x |
-
-※ 実際の値はデータセット、ハードウェア、最適化設定によって異なります
-
-## 🔎 NeuroQuantum 検索機能 (Search / RAG)
-
-登録した文書を **BM25 (キーワード) + NeuroQuantum モデル埋め込み (意味)** の
-ハイブリッドで検索し、検索結果をプロンプトに埋め込んで生成 (RAG) できます。
-詳細は [docs/NEUROQUANTUM_SEARCH.md](docs/NEUROQUANTUM_SEARCH.md) を参照してください。
-
-```python
-from neuroquantum_layered import NeuroQuantumAI
-
-ai = NeuroQuantumAI()
-ai.train(texts, epochs=5)
-ai.add_documents(texts)                              # 文書を登録
-hits = ai.search("量子もつれ", top_k=3)                # 検索
-answer = ai.generate_with_search("量子もつれとは？")   # 検索拡張生成
-```
-
-```bash
-# REST API (api.py)
-curl -X POST http://localhost:8000/search/documents -H "Content-Type: application/json" \
-  -d '{"documents": [{"text": "量子コンピュータは量子力学の原理を利用した計算機です。", "id": "q1"}]}'
-curl -X POST http://localhost:8000/search -H "Content-Type: application/json" \
-  -d '{"query": "量子力学", "top_k": 3}'
-curl -X POST http://localhost:8000/inference -H "Content-Type: application/json" \
-  -d '{"prompt": "量子コンピュータとは？", "use_search": true}'
-```
-
-チャットモード (`NeuroQuantumAI.chat()`) では `/search <語>`, `/index <file>`, `/rag on|off` が使えます。
-
----
-
-## 📦 GGUF モデル生成 (GGUF Model Generation)
-
-### 10.1. GGUF形式について (About GGUF Format)
-
-GGUF（GGML Universal Format）は、大規模言語モデルの効率的な保存と配布のための標準フォーマットです。Qubitモデルを複数のサイズと形式でGGUF形式に変換することで、以下の利点が得られます：
-
-- **汎用性**: llama.cpp や Ollama など、様々なツールで利用可能
-- **効率性**: メモリ効率的な推論を実現
-- **互換性**: 異なるプラットフォームやハードウェアで動作
-- **配布**: モデルの簡単な共有とアップロード
-
-### 10.2. コマンドラインでのGGUF生成 (Command-line Usage)
-
-#### 基本的な使用方法
-
-すべてのモデルサイズと形式でGGUFを生成：
-
-```bash
-python generate_gguf_models.py
-```
-
-#### カスタム設定での生成
-
-特定の形式とサイズを指定：
-
-```bash
-python generate_gguf_models.py \
-    --architectures neuroquantum qbnn \
-    --sizes small medium large \
-    --output-dir ./my_gguf_models \
-    --device cpu \
-    --quantization Q4_K_M
-```
-
-#### 量子化オプション
-
-Q4_K_M形式で量子化して生成（推奨、最高のバランス）：
-
-```bash
-python generate_gguf_models.py --quantization Q4_K_M
-```
-
-その他の量子化形式を指定：
-
-```bash
-# より小さいサイズ（Q4_K_S）
-python generate_gguf_models.py --quantization Q4_K_S
-
-# より高い精度（Q5_K_M）
-python generate_gguf_models.py --quantization Q5_K_M
-
-# 量子化なし（F32：フルFloat32精度）
-python generate_gguf_models.py --quantization F32
-```
-
-#### オプション
-
-| オプション | デフォルト | 説明 |
-| :------- | :------: | :--- |
-| `--output-dir` | `gguf_models` | GGUFファイルの出力ディレクトリ |
-| `--architectures` | `neuroquantum qbnn` | 生成するアーキテクチャ |
-| `--sizes` | `small medium large` | 生成するモデルサイズ |
-| `--quantization` | `Q4_K_M` | 量子化タイプ（Q4_K_M, Q4_K_S, Q5_K_M, Q5_K_S, Q6_K, Q8_0, F16, F32） |
-| `--device` | `cpu` | モデル生成に使用するデバイス（cpu/cuda） |
-| `--skip-checkpoint-cleanup` | - | フラグを指定するとチェックポイント.ptファイルを保持 |
-
-### 10.3. APIでのGGUF生成 (API Usage)
-
-FastAPI経由でGGUFモデルをバックグラウンドで生成：
-
-```bash
-# APIサーバー起動
-python api.py
-```
-
-```python
-import requests
-import json
-
-url = "http://localhost:8000/generate/gguf"
-payload = {
-    "architectures": ["neuroquantum", "qbnn"],
-    "sizes": ["small", "medium", "large"],
-    "output_dir": "gguf_models",
-    "device": "cpu",
-    "skip_checkpoint_cleanup": False
-}
-
-response = requests.post(url, json=payload)
-print(response.json())
-# Output: {
-#   "status": "started",
-#   "message": "GGUF generation started for 2 architectures and 3 sizes",
-#   "output_dir": "gguf_models"
-# }
-```
-
-### 10.4. 生成されるモデル構成 (Generated Model Structure)
-
-GGUF生成プロセスは以下のモデルを生成します（デフォルト：Q4_K_M量子化）：
-
-```
-gguf_models/
-├── neuroquantum_small_Q4_K_M.gguf
-├── neuroquantum_medium_Q4_K_M.gguf
-├── neuroquantum_large_Q4_K_M.gguf
-├── neuroquantum_xlarge_Q4_K_M.gguf
-├── qbnn_small_Q4_K_M.gguf
-├── qbnn_medium_Q4_K_M.gguf
-├── qbnn_large_Q4_K_M.gguf
-├── qbnn_xlarge_Q4_K_M.gguf
-└── manifest.json
-```
-
-別の量子化形式を指定した場合（例：Q5_K_M）：
-
-```
-gguf_models/
-├── neuroquantum_small_Q5_K_M.gguf
-├── neuroquantum_medium_Q5_K_M.gguf
-├── ...
-```
-
-各GGUFファイルには以下のメタデータが含まれます：
-
-- **モデル名**: Qubit {size} 形式
-- **説明**: アーキテクチャとサイズ情報
-- **バージョン**: 1.0
-- **作者**: tapiocaTakeshi
-- **カスタムメタデータ**:
-  - `model.size`: small/medium/large
-  - `model.architecture`: neuroquantum/qbnn
-  - `model.quantization`: 使用した量子化形式（Q4_K_M など）
-  - `model.created`: ISO 8601形式の生成時刻
-
-### 10.5. 単一ファイルの変換 (Single File Conversion with export_gguf.py)
-
-既存のPyTorchモデルファイル（.pt）を直接GGUF形式に変換する場合：
-
-```bash
-# Q4_K_M量子化で変換（推奨）
-python export_gguf.py model.pt model.gguf --quantization Q4_K_M
-
-# 異なる量子化形式を指定
-python export_gguf.py model.pt model.gguf --quantization Q5_K_M
-
-# 量子化なし（フルFloat32精度）
-python export_gguf.py model.pt model.gguf --quantization F32
-
-# デフォルト（入出力ファイル名が neuroq_checkpoint.pt → neuroq.gguf）
-python export_gguf.py
-```
-
-#### export_gguf.py オプション
-
-| オプション | デフォルト | 説明 |
-| :------- | :------: | :--- |
-| `input_file` | `neuroq_checkpoint.pt` | 入力PyTorchモデルファイル（.pt） |
-| `output_file` | `neuroq.gguf` | 出力GGUFファイル |
-| `--quantization, -q` | `Q4_K_M` | 量子化タイプ（Q4_K_M, Q4_K_S, Q5_K_M, Q5_K_S, Q6_K, Q8_0, F16, F32） |
-
-### 10.6. 量子化フォーマット比較 (Quantization Format Comparison)
-
-| フォーマット | サイズ比率 | 精度 | 推奨用途 |
-| :------- | :------: | :--- | :--- |
-| `Q4_K_M` | ~0.37x | 高 | **推奨** - 最高のバランス |
-| `Q4_K_S` | ~0.35x | 中 | ストレージ最適化 |
-| `Q5_K_M` | ~0.45x | 高 | 高精度が必要な場合 |
-| `Q5_K_S` | ~0.43x | 中 | バランス型 |
-| `Q6_K` | ~0.54x | 非常に高 | 最高精度 |
-| `Q8_0` | ~0.66x | 非常に高 | 高速推論 |
-| `F16` | ~1.0x | 完全精度 | リファレンス |
-| `F32` | ~2.0x | 完全精度 | 学習用 |
-
-### 10.7. manifest.json について (Manifest File)
-
-生成完了後、`manifest.json` に全生成モデルの情報が保存されます：
-
-```json
-{
-  "generated_at": "2024-05-17T13:30:45.123456",
-  "models": {
-    "neuroquantum": {
-      "small": {
-        "status": "success",
-        "checkpoint": "gguf_models/neuroquantum_small_checkpoint.pt",
-        "gguf": "gguf_models/neuroquantum_small_Q4_K_M.gguf",
-        "quantization": "Q4_K_M",
-        "size_mb": 215.4
-      },
-      ...
-    },
-    "qbnn": { ... }
-  },
-  "output_directory": "gguf_models",
-  "vocab_size": 32000
-}
-```
-
-### 10.8. Hugging Faceへのアップロード (Upload to Hugging Face Hub)
-
-生成したGGUFモデルをHugging Face Hubに直接アップロードできます。
-
-#### 前提条件
-
-1. Hugging Faceアカウント作成（https://huggingface.co）
-2. APIトークン取得（Settings → Access Tokens）
-3. 必要なパッケージのインストール：
-
-```bash
-pip install huggingface-hub
-```
-
-#### アップロード手順
-
-**1. Hugging Faceトークンを設定:**
-
-```bash
-# 環境変数で設定（推奨）
-export HF_TOKEN="your_huggingface_token"
-
-# または、スクリプト実行時に指定
-```
-
-**2. GGUFモデルをアップロード:**
-
-```bash
-# デフォルト（公開リポジトリ）
-python upload_to_huggingface.py \
-    --repo-name "username/qubit-q4-k-m" \
-    --gguf-path "gguf_models/neuroquantum_small_Q4_K_M.gguf"
-
-# プライベートリポジトリで作成
-python upload_to_huggingface.py \
-    --repo-name "username/qubit-q4-k-m" \
-    --gguf-path "gguf_models/neuroquantum_small_Q4_K_M.gguf" \
-    --private
-```
-
-#### アップロードスクリプトの機能
-
-`upload_to_huggingface.py`は以下を自動実行します：
-
-- ✅ リポジトリの作成（既存時はスキップ）
-- ✅ GGUFファイルのアップロード（Git LFS自動適用）
-- ✅ モデルカード（README.md）の自動生成
-- ✅ マニフェストファイル（manifest.json）のアップロード
-
-#### 例：完全なワークフロー
-
-```bash
-# 1. Q4_K_M量子化でGGUFを生成
-python generate_gguf_models.py --quantization Q4_K_M
-
-# 2. Hugging Faceトークンを設定
-export HF_TOKEN="hf_xxxxxxxxxxxx"
-
-# 3. Hugging Faceにアップロード
-python upload_to_huggingface.py \
-    --repo-name "username/qubit-q4-k-m" \
-    --gguf-path "gguf_models/neuroquantum_small_Q4_K_M.gguf"
-
-# 4. ブラウザで確認
-# https://huggingface.co/username/qubit-q4-k-m
-```
-
-#### アップロード後の利用
-
-Hugging Face Hubにアップロードされたモデルは、以下のツールで直接使用可能：
-
-**Ollama:**
-```bash
-ollama pull username/qubit-q4-k-m
-ollama run username/qubit-q4-k-m
-```
-
-**llama.cpp:**
-```bash
-# モデルをダウンロード
-curl -L https://huggingface.co/username/qubit-q4-k-m/resolve/main/neuroquantum_small_Q4_K_M.gguf -o model.gguf
-
-# 推論実行
-./main -m model.gguf -p "プロンプト"
-```
-
-**Python:**
-```python
-from llama_cpp import Llama
-
-# Hugging Face Hubから直接ロード
-llm = Llama.from_pretrained(
-    repo_id="username/qubit-q4-k-m",
-    filename="neuroquantum_small_Q4_K_M.gguf",
-    n_ctx=4096,
-)
-
-response = llm("こんにちは")
-print(response)
-```
-
-### 10.9. 推奨用途 (Recommended Usage)
-
-| 用途 | おすすめサイズ | 理由 |
-| :-- | :--------- | :--- |
-| エッジデバイス | small | 低メモリ、高速推論 |
-| 汎用デスクトップ | medium | バランスの取れた性能 |
-| 高精度が必要 | large | 最高の性能（高メモリ要件） |
-| A1等 GPU環境 | small, medium | コスト効率的 |
-| H100等 高性能GPU | large | 最大限のモデル容量活用 |
-
+Copyright (c) tapiocaTakeshi
