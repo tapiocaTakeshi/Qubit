@@ -45,6 +45,53 @@ _TRUST_REMOTE_CODE_PATTERNS = [
     "standard format like parquet",
 ]
 
+_DISK_FULL_MARKERS = (
+    "disk quota exceeded",
+    "no space left on device",
+    "[errno 28]",
+    "[errno 122]",
+)
+
+
+def _is_disk_full_error(err):
+    """Detect EDQUOT/ENOSPC-style failures from datasets/huggingface_hub."""
+    msg = str(err).lower()
+    return any(marker in msg for marker in _DISK_FULL_MARKERS)
+
+
+def clear_hf_dataset_cache(reason=None):
+    """Purge cached Hugging Face dataset/hub downloads.
+
+    These directories only exist to speed up repeat loads; nothing in them
+    is needed once a caller has pulled the rows it wants out of a dataset.
+    RunPod's network volume enforces a hard disk quota, so caches left over
+    from an earlier dataset (or an earlier job on a warm container) can
+    starve the very next load before it writes a single byte. Clearing them
+    on a disk-full error frees quota for the retry that follows.
+    """
+    freed_any = False
+    for cache_dir in (HF_DATASETS_CACHE, HF_HUB_CACHE):
+        if not os.path.isdir(cache_dir):
+            continue
+        for entry in os.listdir(cache_dir):
+            entry_path = os.path.join(cache_dir, entry)
+            try:
+                if os.path.isdir(entry_path) and not os.path.islink(entry_path):
+                    shutil.rmtree(entry_path)
+                else:
+                    os.remove(entry_path)
+                freed_any = True
+            except OSError as e:
+                logger.warning(
+                    "Failed to remove %s during cache cleanup: %s", entry_path, e
+                )
+    if freed_any:
+        logger.warning(
+            "Cleared Hugging Face dataset cache%s",
+            f" ({reason})" if reason else "",
+        )
+    return freed_any
+
 
 class _TrustRemoteCodeFilter(logging.Filter):
     """datasets ライブラリの trust_remote_code 関連ログメッセージを抑制する。"""
@@ -162,6 +209,7 @@ def safe_load_dataset(dataset_id, split="train", streaming=False, **kwargs):
         with _suppress_trust_remote_code_noise():
             return _hf_load_dataset(dataset_id, split=split, streaming=streaming, **kwargs)
     except Exception as e1:
+        last_error = e1
         err_msg = str(e1).lower()
         # FineWeb2 Edu Japanese is a public Parquet dataset, but some
         # datasets/HF Hub combinations fail before the standard builder can
@@ -176,7 +224,13 @@ def safe_load_dataset(dataset_id, split="train", streaming=False, **kwargs):
                     "%s: direct Parquet fallback failed: %s",
                     dataset_id, fallback_error,
                 )
-        if "trust_remote_code" not in err_msg and "loading script" not in err_msg:
+        disk_full = _is_disk_full_error(e1)
+        if disk_full:
+            # A full cache dir fails even the smallest dataset before it
+            # writes anything useful. Reclaim the space and fall through to
+            # the retries below instead of giving up immediately.
+            clear_hf_dataset_cache(reason=f"disk quota hit while loading {dataset_id}")
+        elif "trust_remote_code" not in err_msg and "loading script" not in err_msg:
             raise
 
     # Attempt 2: trust_remote_code=True (datasets <3.0)
@@ -202,6 +256,13 @@ def safe_load_dataset(dataset_id, split="train", streaming=False, **kwargs):
                 return _hf_load_dataset(dataset_id, split=split, streaming=True, **kwargs)
         except Exception:
             pass
+
+    if disk_full:
+        raise RuntimeError(
+            f"{dataset_id} のロードに失敗しました: ディスククォータ超過。"
+            f"キャッシュ ({HF_DATASETS_CACHE}) をクリアして再試行しましたが、"
+            f"依然として空き容量が不足しています。"
+        ) from last_error
 
     raise RuntimeError(
         f"{dataset_id} のロードに失敗しました。"
