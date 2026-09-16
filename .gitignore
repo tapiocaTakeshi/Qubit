@@ -8,3 +8,4 @@ gguf_models/
 *.log
 training_history_small_oasst_ja.json
 # checkpoints/は LFS経由でトラック
+multistage_state.json
