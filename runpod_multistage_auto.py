@@ -133,18 +133,34 @@ def submit_stage(stage):
             "Content-Type": "application/json",
             "Authorization": f"Bearer {RUNPOD_API_KEY}",
         }
+
+        # Convert dataset dicts to string IDs (handler expects "owner/dataset" format)
+        dataset_ids = []
+        for ds in stage["datasets"]:
+            if isinstance(ds, dict):
+                ds_id = ds.get("id")
+                split = ds.get("split")
+                # Format: "owner/dataset" or "owner/dataset:config" for split
+                if split:
+                    dataset_ids.append(f"{ds_id}:{split}")
+                else:
+                    dataset_ids.append(ds_id)
+            else:
+                dataset_ids.append(str(ds))
+
         payload = {
             "input": {
                 "action": "train",
                 "data": {
-                    "datasets": stage["datasets"],
-                    "learning_rate": stage["learning_rate"],
-                    "epochs": stage["epochs"],
-                    "batch_size": 2,
-                    "gradient_accumulation_steps": 4,
-                    "save_every_n_steps": 100,
-                    "log_every_n_steps": 10,
-                    "clear_cache": True,
+                    "parameters": {
+                        "dataset_ids": dataset_ids,
+                        "epochs": stage["epochs"],
+                        "lr": stage["learning_rate"],
+                        "batch_size": 2,
+                        "grad_accum_steps": 4,
+                        "mode": "general",
+                        "max_samples_per_dataset": stage["datasets"][0].get("max_samples", 10000),
+                    }
                 }
             }
         }
