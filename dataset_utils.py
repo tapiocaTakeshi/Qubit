@@ -11,11 +11,30 @@ import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 
+# Keep Hugging Face metadata, locks, and streaming cache on the persistent
+# network volume.  The container root filesystem is intentionally small and
+# filling /root/.cache causes otherwise unrelated training failures.
+NETWORK_VOLUME_PATH = os.environ.get("NETWORK_VOLUME_PATH", "/runpod-volume")
+HF_CACHE_ROOT = os.path.join(NETWORK_VOLUME_PATH, "huggingface-cache")
+HF_DATASETS_CACHE = os.path.join(HF_CACHE_ROOT, "datasets")
+HF_HUB_CACHE = os.path.join(HF_CACHE_ROOT, "hub")
+for _cache_dir in (HF_CACHE_ROOT, HF_DATASETS_CACHE, HF_HUB_CACHE):
+    try:
+        os.makedirs(_cache_dir, exist_ok=True)
+    except OSError:
+        # Fall back to the container cache only if the mounted volume is absent.
+        pass
+
 # RunPod workers may inherit offline HF flags from the base image.  This worker
 # trains from public Hugging Face datasets, so make the intended online mode
 # explicit before importing datasets (which snapshots these flags at import).
 os.environ["HF_DATASETS_OFFLINE"] = "0"
 os.environ["HF_HUB_OFFLINE"] = "0"
+os.environ["HF_HOME"] = HF_CACHE_ROOT
+os.environ["HF_DATASETS_CACHE"] = HF_DATASETS_CACHE
+os.environ["HF_HUB_CACHE"] = HF_HUB_CACHE
+os.environ["HUGGINGFACE_HUB_CACHE"] = HF_HUB_CACHE
+os.environ["TRANSFORMERS_CACHE"] = os.path.join(HF_CACHE_ROOT, "transformers")
 from datasets import load_dataset as _hf_load_dataset
 
 logger = logging.getLogger(__name__)
@@ -112,11 +131,14 @@ def _load_hf_parquet_fallback(dataset_id, split="train", **kwargs):
         f"{dataset_id}/resolve/main/{urllib.parse.quote(shard, safe='/')}"
     )
     logger.warning("Using direct HF Parquet fallback: %s", shard)
+    # Explicitly pass the persistent cache directory: datasets may still
+    # materialize builder metadata even when the data reader is streaming.
     return _hf_load_dataset(
         "parquet",
         data_files={split: file_url},
         split=split,
         streaming=True,
+        cache_dir=HF_DATASETS_CACHE,
         **kwargs,
     )
 
@@ -129,6 +151,12 @@ def safe_load_dataset(dataset_id, split="train", streaming=False, **kwargs):
 
     trust_remote_code 廃止に関する警告は自動的に抑制される。
     """
+    # FineWeb2 is too large for a regular materialized load on a worker.
+    # Always use streaming for this bounded training pipeline.
+    if dataset_id == "hotchpotch/fineweb-2-edu-japanese":
+        streaming = True
+        kwargs.setdefault("cache_dir", HF_DATASETS_CACHE)
+
     # Attempt 1: standard load
     try:
         with _suppress_trust_remote_code_noise():
@@ -186,7 +214,7 @@ def safe_load_dataset(dataset_id, split="train", streaming=False, **kwargs):
 # ============================================================
 # Network Volume sync utility
 # ============================================================
-NETWORK_VOLUME_PATH = os.environ.get("NETWORK_VOLUME_PATH", "/runpod-volume")
+# NETWORK_VOLUME_PATH is initialized above before importing datasets.
 
 
 def sync_checkpoint_to_network_volume(ckpt_path, tokenizer_path=None):
