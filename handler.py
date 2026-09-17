@@ -1250,10 +1250,31 @@ class EndpointHandler:
             except Exception as e:
                 self.progress.warning(f"Could not load previous checkpoint: {e}")
 
-        new_log_entries = [
-            {"epoch": len(prev_log) + i + 1, "loss": float(l.split("Loss: ")[1])}
-            for i, l in enumerate(self.training_status["log"]) if "Loss:" in l
-        ]
+        # Prefer structured epoch metrics emitted by ProgressLogger. The
+        # split-training path used to write only human-readable status lines,
+        # so checkpoints incorrectly contained training_log=0 even when
+        # optimizer steps had run.
+        new_log_entries = []
+        for i, metric in enumerate(self.progress.metrics):
+            if "loss" not in metric:
+                continue
+            entry = dict(metric)
+            entry["epoch"] = len(prev_log) + i + 1
+            new_log_entries.append(entry)
+
+        # Backward-compatible fallback for older training paths.
+        if not new_log_entries:
+            for line in self.training_status["log"]:
+                if "Loss:" not in line:
+                    continue
+                try:
+                    loss_text = line.split("Loss:", 1)[1].strip().split()[0]
+                    new_log_entries.append({
+                        "epoch": len(prev_log) + len(new_log_entries) + 1,
+                        "loss": float(loss_text),
+                    })
+                except (IndexError, ValueError):
+                    self.progress.warning(f"Could not parse training loss log: {line}")
 
         ds_list = list(set(prev_datasets + (datasets or [])))
 
@@ -1661,6 +1682,27 @@ class EndpointHandler:
         chunk_start_time = time.time()
         timeout_seconds = max_minutes * 60 if max_minutes else None
 
+        self.progress.start_training(
+            epochs=epochs_per_chunk,
+            total_sequences=len(sequences),
+            batch_size=batch_size,
+            lr=lr,
+            chunk=chunk_idx + 1,
+            total_chunks=total_chunks,
+            grad_accum_steps=grad_accum_steps,
+            total_optimizer_steps=total_steps,
+        )
+        self.progress.info(
+            f"Training chunk started: {chunk_idx+1}/{total_chunks} | "
+            f"sequences={len(sequences)} | batches/epoch={steps_per_epoch} | "
+            f"optimizer_steps={total_steps}"
+        )
+        self.training_status["log"].append(
+            f"Training started: chunk {chunk_idx+1}/{total_chunks}, "
+            f"{len(sequences)} sequences, {total_steps} optimizer steps"
+        )
+        log_interval = max(1, (steps_per_epoch + 9) // 10)
+
         for epoch in range(epochs_per_chunk):
             random.shuffle(sequences)
             total_loss = 0
@@ -1670,6 +1712,7 @@ class EndpointHandler:
                 f"Chunk {chunk_idx+1}/{total_chunks} | "
                 f"Epoch {epoch+1}/{epochs_per_chunk}..."
             )
+            self.progress.start_epoch(epoch + 1, epochs_per_chunk)
 
             for i in range(0, len(sequences), batch_size):
                 if timeout_seconds and (time.time() - chunk_start_time) >= timeout_seconds:
@@ -1724,6 +1767,25 @@ class EndpointHandler:
                     optimizer.zero_grad()
                     global_step += 1
 
+                    if global_step == 1 or n_batches % log_interval == 0:
+                        batch_avg_loss = total_loss / max(n_batches, 1)
+                        self.progress.info(
+                            f"Optimizer step {global_step}/{total_steps} | "
+                            f"chunk={chunk_idx+1}/{total_chunks} | "
+                            f"epoch={epoch+1}/{epochs_per_chunk} | "
+                            f"batch={n_batches}/{steps_per_epoch} | "
+                            f"loss={batch_avg_loss:.6f} | lr={cur_lr:.2e}"
+                        )
+                        self.progress.log_batch(
+                            epoch=epoch + 1,
+                            batch=n_batches,
+                            loss=batch_avg_loss,
+                            total_batches=steps_per_epoch,
+                            lr=cur_lr,
+                            optimizer_step=global_step,
+                            chunk=chunk_idx + 1,
+                        )
+
             if timed_out:
                 if n_batches % grad_accum_steps != 0:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
@@ -1733,6 +1795,15 @@ class EndpointHandler:
                     avg_loss = total_loss / n_batches
                     if avg_loss < best_loss:
                         best_loss = avg_loss
+                    self.progress.log_epoch(
+                        epoch=epoch + 1,
+                        total_epochs=epochs_per_chunk,
+                        loss=avg_loss,
+                        lr=optimizer.param_groups[0]["lr"],
+                        chunk=chunk_idx + 1,
+                        optimizer_steps=global_step,
+                        timed_out=True,
+                    )
                 break
 
             if n_batches % grad_accum_steps != 0:
@@ -1747,10 +1818,35 @@ class EndpointHandler:
             self.training_status["log"].append(msg)
             self.training_status["message"] = msg
 
+            self.progress.log_epoch(
+                epoch=epoch + 1,
+                total_epochs=epochs_per_chunk,
+                loss=avg_loss,
+                lr=optimizer.param_groups[0]["lr"],
+                chunk=chunk_idx + 1,
+                optimizer_steps=global_step,
+                timed_out=False,
+            )
+            self.progress.info(
+                f"Epoch complete: chunk={chunk_idx+1}/{total_chunks} | "
+                f"epoch={epoch+1}/{epochs_per_chunk} | loss={avg_loss:.6f} | "
+                f"optimizer_steps={global_step}"
+            )
+
             if avg_loss < best_loss:
                 best_loss = avg_loss
 
         self.model.eval()
+        self.progress.info(
+            f"Training chunk complete: {chunk_idx+1}/{total_chunks} | "
+            f"best_loss={best_loss:.6f} | optimizer_steps={global_step} | "
+            f"timed_out={timed_out}"
+        )
+        self.training_status["log"].append(
+            f"Training complete: chunk {chunk_idx+1}/{total_chunks}, "
+            f"best_loss={best_loss:.6f}, optimizer_steps={global_step}, "
+            f"timed_out={timed_out}"
+        )
         return best_loss, timed_out
 
     # --------------------------------------------------------
