@@ -525,6 +525,7 @@ class EndpointHandler:
         # Action routing table
         _routes = {
             "agent":            self._handle_agent,
+            "jev_judge":        self._handle_jev_judge,
             "train":            self._handle_train,
             "train_qa":         self._train_qa,
             "train_qa_dataset": self._handle_train_qa,
@@ -551,6 +552,36 @@ class EndpointHandler:
             return _routes_no_data[action]()
         else:
             return self._handle_inference(data)
+
+    def _handle_jev_judge(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Run TypeSafe AI Jev as a typed decision layer."""
+        params = data.get("parameters", {})
+        if not isinstance(params, dict):
+            params = {}
+        text = data.get("inputs", data.get("prompt", params.get("text", "")))
+        if isinstance(text, list):
+            text = text[0] if text else ""
+        labels = params.get(
+            "labels",
+            ["answer", "needs_retry", "needs_tool"],
+        )
+        instruction = params.get(
+            "instruction",
+            "判定この入力に対して、最も適切なラベルと確率を返してください。",
+        )
+        try:
+            from typesafe_jev import TypeSafeJevError, judge_with_jev
+            decision = judge_with_jev(
+                str(text),
+                labels,
+                instruction=instruction,
+                context=params.get("context"),
+            )
+            return [{"status": "ok", "decision": decision}]
+        except TypeSafeJevError as exc:
+            return [{"status": "error", "error": str(exc), "provider": "typesafe-jev"}]
+        except Exception as exc:
+            return [{"status": "error", "error": str(exc), "provider": "typesafe-jev"}]
 
     # --------------------------------------------------------
     # Inference
