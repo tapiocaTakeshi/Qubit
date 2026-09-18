@@ -270,3 +270,39 @@ Qubit AIは研究・開発中のプロジェクトです。
 MIT License
 
 Copyright (c) tapiocaTakeshi
+
+---
+
+## TypeSafe AI Jevによる判断レイヤー
+
+Qubit AIは、TypeSafe AIのJevをチャット生成モデルとしてではなく、回答評価・再試行判断・エージェント分岐を行う型付き判断レイヤーとして利用できます。
+
+### サーバー設定
+
+RunPodワーカーの環境変数に次を設定します。
+
+~~~bash
+TYPESAFE_JEV_URL=https://<your-typesafe-endpoint>
+TYPESAFE_API_KEY=<your-typesafe-api-key>
+TYPESAFE_JEV_MODEL=jev
+TYPESAFE_JEV_TIMEOUT=20
+~~~
+
+APIキーはクライアントへ渡さず、RunPodワーカー側だけに設定してください。
+
+### RunPodリクエスト
+
+~~~json
+{
+  "input": {
+    "action": "jev_judge",
+    "prompt": "ユーザーの質問に対するQubit AIの回答です。",
+    "parameters": {
+      "labels": ["answer", "needs_retry", "needs_tool"],
+      "instruction": "この回答が質問に適切か判断してください。"
+    }
+  }
+}
+~~~
+
+返却値はJevの判断結果を `decision` に格納します。Qubit AIの生成処理と分離しているため、Jevが未設定でも通常の推論は動作します。TypeSafe AIの実際のAPI URLとレスポンス形式に合わせて、`TYPESAFE_JEV_URL`を設定してください。
