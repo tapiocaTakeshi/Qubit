@@ -239,6 +239,25 @@ APQBおよびQBNNの理論は、次のテーマを扱います。
 
 ---
 
+## Qubit Computer / QubitOS
+
+APQBを量子ビットの基本単位とする量子コンピュータ（状態ベクトル・シミュレータ）と、その上で動くオペレーティングシステム **QubitOS** を別リポジトリで開発しています。
+
+- リポジトリ: https://github.com/tapiocaTakeshi/Qubit-Computer
+- 依存ライブラリなしの純Python実装。`pip install -e .` 後に `qubitos` でシェルが起動します
+- APQBゲート `apqb(θ) = RY(2θ)`、相関係数 r からのレジスタ準備、各量子ビットからの r / η / θ 読み出し
+- Bell型・GHZ型APQB状態で concurrence C₂ = η、three-tangle τ₃ = η² を数値検証
+- QBNN層（乗算的APQBゲーティング、K次部分集合特徴）をOSのジョブとして実行
+- カーネルのAPQBスケジューラは、システムAPQBの η を探索率へ写像して動作します
+
+~~~bash
+git clone https://github.com/tapiocaTakeshi/Qubit-Computer.git
+cd Qubit-Computer && pip install -e .
+qubitos -c "run bell_apqb 0.4 --shots 512; ent last"
+~~~
+
+---
+
 ## ロードマップ
 
 - [x] APQBの基本モデルを定式化
@@ -249,6 +268,7 @@ APQBおよびQBNNの理論は、次のテーマを扱います。
 - [ ] 数学・コード能力の強化
 - [ ] 評価ベンチマークの整備
 - [ ] GGUF量子化とローカル推論
+- [x] Qubit Computer / QubitOS（APQB量子コンピュータとOS）
 - [ ] Qubit Agentへの統合
 - [ ] Qubit AI Web / Orchestraとの連携
 
