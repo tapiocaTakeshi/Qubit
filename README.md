@@ -249,6 +249,7 @@ APQBを量子ビットの基本単位とする量子コンピュータ（状態�
 - Bell型・GHZ型APQB状態で concurrence C₂ = η、three-tangle τ₃ = η² を数値検証
 - QBNN層（乗算的APQBゲーティング、K次部分集合特徴）をOSのジョブとして実行
 - カーネルのAPQBスケジューラは、システムAPQBの η を探索率へ写像して動作します
+- React Native（Expo）アプリ版を `app/` に同梱。スマートフォン上で qsh ターミナル、プログラム実行、量子ビットメモリ操作、APQB の Bloch 大円可視化、QBNN 学習が動きます
 
 ~~~bash
 git clone https://github.com/tapiocaTakeshi/Qubit-Computer.git
