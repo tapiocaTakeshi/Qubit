@@ -1,0 +1,35 @@
+name: Test Qubit Search Engine
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "qubit_search_engine.py"
+      - "neuroquantum_search.py"
+      - "tests/test_qubit_search_engine.py"
+      - "docker/Dockerfile.search"
+      - ".github/workflows/test-search.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "qubit_search_engine.py"
+      - "neuroquantum_search.py"
+      - "tests/test_qubit_search_engine.py"
+      - "docker/Dockerfile.search"
+      - ".github/workflows/test-search.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # 検索エンジンは標準ライブラリのみで動くので torch は入れない
+      - run: python -m pip install pytest
+      - run: python -m pytest -q tests/test_qubit_search_engine.py
