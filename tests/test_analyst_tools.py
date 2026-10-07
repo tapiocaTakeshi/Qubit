@@ -651,8 +651,10 @@ def test_every_tool_is_json_safe_on_degenerate_data(tool):
         "correlate": [{}, {"method": "spearman"}, {"x": "flat", "y": "one"}, {"x": "empty", "y": "flat"}],
         "group_by": [{"by": b, "value": v, "agg": a} for b in ("cat", "flat", "empty", "when")
                      for v in numeric for a in ("sum", "mean", "median", "min", "max", "count")],
-        "trend": [{"value": v, **t} for v in numeric for t in ({}, {"time": "when"}, {"time": "flat"})],
-        "outliers": [{"column": v, "method": m} for v in numeric for m in ("iqr", "zscore")],
+        "trend": [{"value": v, **t, **b} for v in numeric for t in ({}, {"time": "when"}, {"time": "flat"})
+                  for b in ({}, {"by": "cat"})],
+        "outliers": [{"column": v, "method": m, **b} for v in numeric for m in ("iqr", "zscore")
+                     for b in ({}, {"by": "cat"})],
         "compare": [{"value": v, "by": b} for v in numeric for b in ("cat", "empty", "flat")],
         "crosstab": [{"row": "cat", "col": "flat"}, {"row": "empty", "col": "cat"}],
         "top_n": [{"column": v} for v in numeric] + [{"column": "when"}],
@@ -707,7 +709,10 @@ def test_validate_args_normalises(sales):
     ("outliers", {"column": "売上", "threshold": 5.5}),
     ("outliers", {"column": "売上", "method": "zscore", "threshold": 1}),
     ("outliers", {"column": "売上", "threshold": float("nan")}), ("outliers", {"column": "売上", "threshold": "2"}),
-    ("outliers", {"column": "メモ"}), ("compare", {"value": "売上"}), ("compare", {"value": "売上", "by": "店舗", "a": 1}),
+    ("outliers", {"column": "メモ"}), ("outliers", {"column": "売上", "by": "客数"}),
+    ("outliers", {"column": "売上", "by": "メモ"}), ("outliers", {"column": "売上", "by": "日付"}),
+    ("trend", {"value": "売上", "by": "客数"}), ("trend", {"value": "売上", "by": "日付"}),
+    ("trend", {"value": "売上", "by": 1}), ("compare", {"value": "売上"}), ("compare", {"value": "売上", "by": "店舗", "a": 1}),
     ("compare", {"value": "売上", "by": "店舗", "a": "東京", "b": "東京"}), ("compare", {"value": "売上", "by": "店舗", "a": " "}),
     ("crosstab", {"row": "店舗", "col": "店舗"}), ("crosstab", {"row": "店舗"}),
     ("top_n", {"column": "売上", "n": True}), ("top_n", {"column": "売上", "n": 0}), ("top_n", {"column": "売上", "n": 51}),
@@ -905,3 +910,387 @@ def test_cagr_for_year_columns_and_never_across_zero():
     assert run_tool(swing, "trend", {"value": "利益", "time": "年度"})["cagr"] is None
     plain = load_table({"t": list(range(2018, 2025)), "v": [100, 108, 115, 120, 131, 140, 150]})
     assert run_tool(plain, "trend", {"value": "v", "time": "t"})["cagr"] is None    # not a year column
+
+
+# ---------------------------------------------------------------- ANOVA, per-group outliers and trends
+
+# R: oneway.test(count ~ spray, InsectSprays) -> F = 36.065, num df = 5, denom df = 30.043, p = 7.999e-12
+INSECT_SPRAYS = {"A": [10, 7, 20, 14, 14, 12, 10, 23, 17, 20, 14, 13], "B": [11, 17, 21, 11, 16, 14, 17, 17, 19, 21, 7, 13],
+                 "C": [0, 1, 7, 2, 3, 1, 2, 1, 3, 0, 1, 4], "D": [3, 5, 12, 6, 4, 3, 5, 5, 5, 5, 2, 4],
+                 "E": [3, 5, 3, 5, 3, 6, 1, 1, 3, 2, 6, 4], "F": [11, 9, 15, 22, 15, 16, 13, 10, 26, 26, 24, 13]}
+
+
+def welch_anova_reference(groups):
+    """Welch (1951) written out independently with numpy, for the randomized cross-check."""
+    import numpy as np
+    k = len(groups)
+    n = np.array([len(g) for g in groups], float)
+    m = np.array([np.mean(g) for g in groups])
+    w = n / np.array([np.var(g, ddof=1) for g in groups])
+    centre = (w * m).sum() / w.sum()
+    lam = (((1 - w / w.sum()) ** 2) / (n - 1)).sum()
+    f = ((w * (m - centre) ** 2).sum() / (k - 1)) / (1 + 2 * (k - 2) * lam / (k * k - 1))
+    return f, (k * k - 1) / (3 * lam)
+
+
+@pytest.mark.parametrize("f,d1,d2,expected", [
+    (2.5, 3, 12, 0.10915471239500621), (0.7, 2, 30, 0.5045150193942447), (4.1, 5, 7.3, 0.04372910055385989),
+    (15.0, 1, 1, 0.16086124651033248), (1.0, 10, 1000, 0.44136583209978697)])
+def test_f_distribution_matches_scipy(f, d1, d2, expected):
+    assert close(T.f_sf(f, d1, d2), expected, rel=1e-9)
+    assert T.f_sf(0, 3, 4) == 1.0 and T.f_sf(-1, 3, 4) == 1.0 and T.f_sf(1e308, 3, 4) == 0.0
+    assert T.f_sf(1.0, 0, 4) is None and T.f_sf(float("nan"), 3, 4) is None and T.f_sf(True, 3, 4) is None
+
+
+def test_anova_matches_scipy_and_r_reference_values():
+    classic = T.anova_oneway([X, Y, Z])          # scipy.stats.f_oneway(X, Y, Z)
+    assert close(classic["f"], 8.139607785959031) and close(classic["p_value"], 0.00200245539249616, rel=1e-8)
+    assert (classic["df1"], classic["df2"]) == (2, 24) and close(classic["eta_squared"], 0.4041592007384481)
+    welch = T.welch_anova([X, Y, Z])
+    assert close(welch["f"], 12.502214968840612) and close(welch["df2"], 15.822417853646636)
+    assert close(welch["p_value"], 0.0005535653357277769, rel=1e-8)
+    sprays = T.welch_anova(list(INSECT_SPRAYS.values()))
+    assert round(sprays["f"], 3) == 36.065 and sprays["df1"] == 5 and round(sprays["df2"], 3) == 30.043
+    assert close(sprays["p_value"], 7.999e-12, rel=1e-3)
+    assert close(T.anova_oneway(list(INSECT_SPRAYS.values()))["f"], 34.7022820554917)
+    # two groups: Welch's F is the squared Welch t (same df and p), the classic F the squared Student t
+    two, t = T.welch_anova([X, Z]), T.welch_ttest(X, Z)
+    assert close(two["f"], t["t"] ** 2) and close(two["df2"], t["df"]) and close(two["p_value"], t["p_value"])
+    # affine invariance keeps extreme magnitudes finite
+    for scale in (1e45, 1e-200):
+        big = T.welch_anova([[v * scale for v in g] for g in (X, Y, Z)])
+        assert close(big["f"], welch["f"], rel=1e-9) and close(big["p_value"], welch["p_value"], rel=1e-7)
+    assert T.anova_oneway([[1, 1], [1, 1], [1, 1]])["reason"] and T.welch_anova([[1, 1], [2, 2]])["f"] is None
+    assert T.anova_oneway([[1, 1], [2, 2], [3, 3]])["eta_squared"] == 1.0
+    assert T.welch_anova([[1, 2], [3]])["reason"] and T.anova_oneway([[1], [2]])["reason"]
+
+
+def test_anova_matches_scipy_and_the_welch_formula_on_random_samples():
+    pytest.importorskip("scipy")
+    from scipy import stats
+
+    def same(ours, ref, rel=1e-9):
+        assert ours is not None and (abs(ours - ref) <= 1e-12 or abs(ours - ref) <= rel * abs(ref)), (ours, ref)
+
+    for seed in range(200):
+        rng = random.Random(seed)
+        groups = [_random_sample(rng, rng.choice([2, 3, 5, 12, 60])) for _ in range(rng.randint(2, 8))]
+        if any(max(g) == min(g) for g in groups):
+            continue
+        classic, ref = T.anova_oneway(groups), stats.f_oneway(*groups)
+        same(classic["f"], float(ref.statistic))
+        assert abs(classic["p_value"] - float(ref.pvalue)) < 1e-9
+        welch, (f, df2) = T.welch_anova(groups), welch_anova_reference(groups)
+        same(welch["f"], float(f))
+        same(welch["df2"], float(df2))
+        assert abs(welch["p_value"] - float(stats.f.sf(f, len(groups) - 1, df2))) < 1e-9
+        d1, d2, x = rng.choice([1, 2, 3.5, 10, 50]), rng.choice([1, 2.5, 7, 30, 500, 20000]), rng.uniform(0, 10)
+        same(T.f_sf(x, d1, d2), float(stats.f.sf(x, d1, d2)))
+
+
+def test_compare_runs_an_anova_for_three_or_more_groups():
+    table = load_table({"g": [k for k, v in INSECT_SPRAYS.items() for _ in v],
+                        "v": [x for v in INSECT_SPRAYS.values() for x in v]})
+    out = strict_json(run_tool(table, "compare", {"value": "v", "by": "g"}))
+    assert out["mode"] == "anova" and out["test"] == "welch_anova" and out["welch_note"] is None
+    assert out["defaulted"] is True and out["groups_tested"] == 6 and out["skipped_groups"] == 0 and out["n"] == 72
+    assert [g["label"] for g in out["groups"]] == ["F", "B", "A", "D", "E", "C"]          # by mean, descending
+    assert out["groups"][0] == {"label": "F", "n": 12, "mean": T.round_sig(T.mean(INSECT_SPRAYS["F"])),
+                                "std": T.round_sig(T.sample_std(INSECT_SPRAYS["F"])), "median": 15.0}
+    assert out["f"] == out["welch"]["f"] == T.round_sig(36.06544389357724)
+    assert out["p_value"] == out["welch"]["p_value"] and out["significant"] is True
+    assert out["classic"]["f"] == T.round_sig(34.7022820554917) and out["classic"]["df2"] == 66
+    assert out["eta_squared"] == T.round_sig(0.724439015562794)
+    pair = out["pairwise"]
+    assert (pair["a"]["label"], pair["b"]["label"], pair["comparisons"]) == ("F", "C", 15)
+    w = T.welch_ttest(INSECT_SPRAYS["F"], INSECT_SPRAYS["C"])
+    assert pair["p_value"] == T.round_sig(w["p_value"]) and pair["p_adjusted"] == T.round_sig(min(1, 15 * w["p_value"]))
+    assert pair["significant"] is True and pair["t"] == T.round_sig(w["t"])
+    # explicit groups keep the 2-group comparison; a single named group too
+    for args in ({"a": "A", "b": "B"}, {"a": "C"}):
+        pair_mode = run_tool(table, "compare", {"value": "v", "by": "g", **args})
+        assert pair_mode["mode"] == "pair" and "groups" not in pair_mode and pair_mode["a"]["label"] == args["a"]
+    # groups of one value are skipped and counted; fewer than 3 groups of 2+ values stay pairwise
+    extra = load_table({"g": list("AAABBBCCCD"), "v": [1, 2, 3, 5, 6, 7, 9, 9.5, 11, 40]})
+    out = run_tool(extra, "compare", {"value": "v", "by": "g"})
+    assert out["mode"] == "anova" and out["skipped_groups"] == 1 and out["groups_tested"] == 3
+    assert run_tool(load_table({"g": list("AABBC"), "v": [1, 2, 3, 4, 5]}), "compare",
+                    {"value": "v", "by": "g"})["mode"] == "pair"
+
+
+def test_anova_primary_test_falls_back_to_classic_when_welch_is_unreliable():
+    noisy = load_table({"g": [f"g{i // 2}" for i in range(40)], "v": [(i * 37) % 11 for i in range(40)]})
+    out = run_tool(noisy, "compare", {"value": "v", "by": "g"})       # 20 groups of 2: Welch over-rejects
+    assert out["test"] == "anova" and out["welch_note"] == "small_groups"
+    assert out["p_value"] == out["classic"]["p_value"] and out["welch"]["p_value"] is not None
+    constant = load_table({"g": list("AAABBBCCC"), "v": [1, 1, 1, 4, 5, 6, 8, 9, 10]})
+    out = run_tool(constant, "compare", {"value": "v", "by": "g"})
+    assert out["test"] == "anova" and out["welch_note"] == "constant_group" and out["welch"]["reason"]
+    assert out["p_value"] == out["classic"]["p_value"] and out["significant"] is True
+    flat = run_tool(load_table({"g": list("AABBCC"), "v": [2] * 6}), "compare", {"value": "v", "by": "g"})
+    assert flat["p_value"] is None and flat["reason"] and flat["significant"] is None
+    assert T.welch_primary([5, 5, 5]) and not T.welch_primary([4, 9, 9]) and not T.welch_primary([6] * 7)
+
+
+def regional_sales(double=("大阪", 8)):
+    """Three regions on different scales; one 大阪 month doubled stays inside the pooled range."""
+    rows = []
+    for m in range(18):
+        for region, base in (("東京", 700), ("大阪", 500), ("福岡", 350)):
+            value = base + 8 * m + (m * 37 + len(region) * 11) % 60
+            if (region, m) == double:
+                value *= 2
+            rows.append({"月": f"{2024 + m // 12}-{m % 12 + 1:02d}", "地域": region, "売上": value})
+    return rows
+
+
+def test_outliers_within_groups_find_a_value_that_is_ordinary_overall():
+    table = load_table(regional_sales())
+    row = 8 * 3 + 2                                  # 1-based row of 大阪, month 9
+    assert table.column("売上").values[row - 1] > 1000
+    pooled = run_tool(table, "outliers", {"column": "売上"})
+    assert row not in [r["row"] for r in pooled["rows"]]
+    out = strict_json(run_tool(table, "outliers", {"column": "売上", "by": "地域"}))
+    assert out["by"] == "地域" and out["bounds"] is None and out["count"] >= 1
+    top = out["rows"][0]
+    assert (top["row"], top["group"], top["side"]) == (row, "大阪", "high") and top["value"] > top["upper"]
+    assert out["groups_checked"] == 3 and out["groups_skipped"] == 0 and out["n"] == 54 and out["min_group_n"] == 5
+    osaka = next(g for g in out["groups"] if g["key"] == "大阪")
+    values = sorted(table.column("売上").values[i] for i in range(54) if table.column("地域").values[i] == "大阪")
+    q1, q3 = T.quantile(values, 0.25), T.quantile(values, 0.75)
+    assert osaka["upper"] == T.round_sig(q3 + 1.5 * (q3 - q1)) and osaka["n"] == 18
+    z = run_tool(table, "outliers", {"column": "売上", "by": "地域", "method": "zscore", "threshold": 2.5})
+    assert z["rows"][0]["row"] == row and z["rows"][0]["z"] > 2.5 and z["min_group_n"] == 9
+
+
+def test_outliers_by_skips_small_or_flat_groups_and_counts_them():
+    values = [10, 11, 9, 10, 12, 11, 10, 95, 9, 10] + [5, 5, 5, 5, 5, 5] + [1, 2, 300]
+    table = load_table({"g": ["A"] * 10 + ["B"] * 6 + ["C"] * 3, "v": values})
+    out = strict_json(run_tool(table, "outliers", {"column": "v", "by": "g"}))
+    assert out["groups_checked"] == 1 and out["groups_skipped"] == 2 and out["groups_without_spread"] == 1
+    assert out["skipped_rows"] == 9 and out["n"] == 10 and [r["row"] for r in out["rows"]] == [8]
+    small = run_tool(table, "outliers", {"column": "v", "by": "g", "method": "zscore"})    # needs n >= 11
+    assert small["count"] is None and small["reason"] and small["groups_checked"] == 0
+    keys = load_table({"g": ["A"] * 6 + [None] * 2, "v": [1, 2, 3, 4, 5, 60, 7, 8]})
+    out = run_tool(keys, "outliers", {"column": "v", "by": "g"})
+    assert out["missing_keys"] == 2 and out["n"] == 6 and out["rows"][0]["row"] == 6
+    assert validate_args(keys, "outliers", {"column": "v", "by": "g"}) == {
+        "column": "v", "method": "iqr", "threshold": 1.5, "by": "g"}
+
+
+def test_trend_by_group_summarises_each_group_and_ranks_growth():
+    rows = []
+    for m in range(12):
+        for region, base, growth in (("東", 1000, 30), ("西", 100, 8), ("南", 500, -20)):
+            rows.append({"月": f"2024-{m + 1:02d}-01", "地域": region, "売上": base + growth * m + (m * 7) % 5})
+    rows += [{"月": "2024-01-01", "地域": "北", "売上": 50}, {"月": "2024-02-01", "地域": "北", "売上": 60}]
+    table = load_table(rows)
+    out = strict_json(run_tool(table, "trend", {"value": "売上", "time": "月", "period": "month", "by": "地域"}))
+    assert out["by"] == "地域" and out["n"] == 12 and out["direction"] == "increasing"   # overall unchanged
+    assert out["n_groups"] == 4 and out["groups_trended"] == 3 and out["groups_skipped"] == 1   # 北: 2 points
+    assert out["rank_by"] == "slope_pct" and [g["key"] for g in out["groups"]] == ["西", "東", "南"]
+    assert (out["increasing"], out["decreasing"], out["flat"]) == (2, 1, 0)
+    east = next(g for g in out["groups"] if g["key"] == "東")
+    ys = [r["売上"] for r in rows if r["地域"] == "東"]
+    xs = [float((datetime.date(2024, m + 1, 1) - datetime.date(2024, 1, 1)).days) for m in range(12)]
+    reg = T.linregress(xs, ys)
+    assert east["slope"] == T.round_sig(reg["slope"]) and east["p_value"] == T.round_sig(reg["p_value"])
+    assert east["first_period"] == "2024-01" and east["last_period"] == "2024-12" and east["n"] == 12
+    assert east["pct_change"] == T.round_sig((ys[-1] - ys[0]) / ys[0] * 100)
+    assert east["slope_pct"] == T.round_sig(reg["slope"] * out["period_step"] / T.mean(ys) * 100)
+    plain = run_tool(table, "trend", {"value": "売上", "time": "月", "period": "month"})
+    assert "groups" not in plain and {k: v for k, v in out.items() if k in plain} == strict_json(plain)
+    # a rate column (or a non-positive mean) is ranked by the slope itself, in its own unit
+    rates = load_table({"月": [f"2024-{m:02d}" for m in range(1, 7)] * 2, "店舗": ["a"] * 6 + ["b"] * 6,
+                        "率": [f"{v}%" for v in (10, 11, 12, 13, 14, 15, 50, 52, 54, 56, 58, 60)]})
+    out = run_tool(rates, "trend", {"value": "率", "time": "月", "by": "店舗"})
+    assert out["rank_by"] == "slope_per_period" and out["groups"][0]["key"] == "b"
+    rows_only = run_tool(load_table({"g": list("ab") * 6, "v": list(range(12))}), "trend", {"value": "v", "by": "g"})
+    assert rows_only["groups_trended"] == 2 and all(g["direction"] == "increasing" for g in rows_only["groups"])
+
+
+def test_trend_by_drops_the_partial_periods_of_the_overall_series():
+    days = [datetime.date(2024, 1, 1) + datetime.timedelta(days=i) for i in range(0, 100)]
+    table = load_table({"日付": [d.isoformat() for d in days] * 2, "店舗": ["a"] * 100 + ["b"] * 100,
+                        "売上": [10 + i % 7 for i in range(100)] + [20 + i % 5 for i in range(100)]})
+    out = run_tool(table, "trend", {"value": "売上", "time": "日付", "period": "month", "by": "店舗"})
+    assert out["partial_periods"] == ["2024-04"] and out["groups_trended"] == 2
+    assert all(g["last_period"] == "2024-03" and g["n"] == 3 for g in out["groups"])
+    short = load_table({"日付": [d.isoformat() for d in days[:80]] * 2, "店舗": ["a"] * 80 + ["b"] * 80,
+                        "売上": list(range(160))})
+    out = run_tool(short, "trend", {"value": "売上", "time": "日付", "period": "month", "by": "店舗"})
+    assert out["partial_periods"] == ["2024-03"] and out["n"] == 2
+    assert out["groups_skipped"] == 2 and out["groups"] == [] and out["rank_by"] is None   # 3 points is the floor
+    out = run_tool(table, "trend", {"value": "売上", "time": "日付", "by": "店舗"})
+    assert out["groups_trended"] == 2 and all(g["n"] == 100 for g in out["groups"])
+
+
+def test_per_group_tools_stay_fast_at_the_row_limit():
+    rng = random.Random(5)
+    n = T.LIMITS["max_rows"]
+    days = [(datetime.date(2020, 1, 1) + datetime.timedelta(days=rng.randrange(1500))).isoformat() for _ in range(n)]
+    for groups in (3, 1000):
+        table = load_table({"日付": days, "店舗": [f"S{rng.randrange(groups)}" for _ in range(n)],
+                            "売上": [rng.gauss(1000, 200) for _ in range(n)]})
+        assert table.column("店舗").kind == "categorical"
+        started = time.monotonic()
+        for tool, args in [("outliers", {"column": "売上", "by": "店舗"}),
+                           ("outliers", {"column": "売上", "by": "店舗", "method": "zscore"}),
+                           ("compare", {"value": "売上", "by": "店舗"}),
+                           ("trend", {"value": "売上", "time": "日付", "by": "店舗"}),
+                           ("trend", {"value": "売上", "time": "日付", "by": "店舗", "period": "month"})]:
+            strict_json(run_tool(table, tool, args))
+        assert time.monotonic() - started < 5      # tools are not interruptible: the deadline is checked between them
+    ids = load_table({"k": [f"id{i // 2}" for i in range(n)], "v": [rng.gauss(0, 1) for _ in range(n)]})
+    started = time.monotonic()
+    out = run_tool(ids, "compare", {"value": "v", "by": "k"})
+    assert out["groups_tested"] == n // 2 and len(out["groups"]) == T.LIMITS["max_groups"] and out["truncated"]
+    assert out["test"] == "anova" and out["welch_note"] == "small_groups" and time.monotonic() - started < 5
+
+
+# ---------------------------------------------------------------- third review round
+
+def weekdays(start, end):
+    days = [start + datetime.timedelta(days=i) for i in range((end - start).days + 1)]
+    return [d.isoformat() for d in days if d.weekday() < 5]
+
+
+def test_full_weekday_months_and_years_are_not_partial():
+    for start, end, period in (((2024, 1, 1), (2024, 2, 29), "month"), ((2022, 1, 1), (2023, 12, 31), "year")):
+        days = weekdays(datetime.date(*start), datetime.date(*end))
+        out = run_tool(load_table({"d": days, "v": [100 + i for i in range(len(days))]}), "trend",
+                       {"value": "v", "time": "d", "period": period})
+        assert out["n"] == 2 and out["partial_periods"] == []
+    for start, end, partial in (((2024, 1, 15), (2024, 2, 29), "2024-01"), ((2024, 1, 1), (2024, 2, 14), "2024-02")):
+        days = weekdays(datetime.date(*start), datetime.date(*end))      # real cut-offs are still caught
+        out = run_tool(load_table({"d": days, "v": [1] * len(days)}), "trend", {"value": "v", "time": "d", "period": "month"})
+        assert out["partial_periods"] == [partial]
+
+
+def test_a_sparse_first_month_covering_the_month_is_kept():
+    jan = [4, 9, 12, 18, 22, 26]          # 6 dates spanning the month; March has only 5
+    other = {2: [1, 5, 8, 10, 13, 16, 19, 22, 26, 28], 3: [2, 9, 15, 22, 29], 4: [1, 5, 9, 13, 18, 23, 26, 30],
+             5: [1, 3, 6, 8, 10, 13, 15, 17, 20, 22, 24, 27, 29, 31], 6: [3, 6, 10, 13, 17, 20, 23, 25, 27, 29]}
+    days = [datetime.date(2024, 1, d) for d in jan] + [datetime.date(2024, m, d) for m, ds in other.items() for d in ds]
+    out = run_tool(load_table({"d": [d.isoformat() for d in days], "v": [1] * len(days)}), "trend",
+                   {"value": "v", "time": "d", "period": "month"})
+    assert out["partial_periods"] == [] and out["n"] == 6 and out["rows_used"] == len(days)
+
+
+def test_year_columns_need_a_year_name_not_just_the_character():
+    table = load_table({"部署": list("ABAB"), "年収": [3500, 9500, 5200, 7100], "年商": [2000, 2100, 2050, 2400],
+                        "yearly_sales": [2020, 2021, 2022, 2023], "会計年度": [2020, 2021, 2022, 2023],
+                        "fiscal_year": [2020, 2021, 2022, 2023], "入社年": [2001, 2010, 2015, 2020]})
+    assert not any(table.column(n).is_year for n in ("年収", "年商", "yearly_sales"))
+    assert all(table.column(n).is_year for n in ("会計年度", "fiscal_year", "入社年"))
+
+
+def test_one_stray_percent_cell_does_not_relabel_a_plain_column():
+    table = load_table({"region": list("東西南北東西南北"), "sales": [1200, 1300, 900, 950, 700, 650, 400, "5%"]})
+    col = table.column("sales")
+    assert col.kind == "numeric" and col.unit is None and col.coerced == 1 and col.values[-1] is None
+    assert "unit" not in run_tool(table, "group_by", {"by": "region", "value": "sales"})
+    rates = load_table({"r": ["5%", "6%", "7%", 8]})       # a unit carried by the majority still applies
+    assert rates.column("r").unit == "%" and rates.column("r").values[-1] == 8.0
+
+
+def test_fiscal_years_bucket_april_to_march():
+    months = [f"{2020 + (3 + i) // 12}-{(3 + i) % 12 + 1:02d}-01" for i in range(48)]
+    table = load_table({"月": months, "売上": [1000 + 10 * i for i in range(48)]})
+    out = run_tool(table, "trend", {"value": "売上", "time": "月", "period": "year", "fiscal_start": 4})
+    assert out["n"] == 4 and out["partial_periods"] == [] and out["rows_used"] == 48
+    assert (out["first_period"], out["last_period"]) == ("2020年度", "2023年度")
+    calendar_years = run_tool(table, "trend", {"value": "売上", "time": "月", "period": "year"})
+    assert calendar_years["partial_periods"] == ["2020", "2024"]
+    fc = run_tool(table, "forecast", {"value": "売上", "time": "月", "period": "year", "fiscal_start": 4})
+    assert [p["period"] for p in fc["points"]] == ["2024年度", "2025年度", "2026年度"]
+    assert "fiscal_start" not in validate_args(table, "trend", {"value": "売上", "time": "月", "period": "year",
+                                                                "fiscal_start": 1})
+    with pytest.raises(DataError):
+        validate_args(table, "trend", {"value": "売上", "time": "月", "fiscal_start": 4})
+
+
+def test_a_store_opening_mid_month_drops_its_own_partial_month():
+    rows, day = {"日付": [], "店舗": [], "売上": []}, datetime.date(2024, 1, 1)
+    rng = random.Random(2)
+    while day <= datetime.date(2024, 6, 30):
+        for store in ("A", "B") + (("C",) if day >= datetime.date(2024, 3, 20) else ()):
+            rows["日付"].append(day.isoformat())
+            rows["店舗"].append(store)
+            rows["売上"].append(round(rng.gauss(100, 5)))
+        day += datetime.timedelta(days=1)
+    out = run_tool(load_table(rows), "trend", {"value": "売上", "time": "日付", "period": "month", "by": "店舗"})
+    c = next(g for g in out["groups"] if g["key"] == "C")
+    assert c["first_period"] == "2024-04" and c["partial_periods"] == ["2024-03"] and abs(c["slope_pct"]) < 2
+    assert out["groups"][0]["key"] != "C" and all(g["partial_periods"] == [] for g in out["groups"] if g["key"] != "C")
+
+
+def test_amount_names_with_month_are_not_dotted_year_months():
+    for name in ("月間売上", "monthly_sales", "月額料金"):
+        table = load_table(f"店舗,{name}\nA,1980.5\nB,2010.3\nC,1995.7\nD,2050.1\nE,2003.2\n")
+        assert table.column(name).kind == "numeric"
+    assert load_table("対象月,v\n2024.1,1\n2024.2,2\n2024.3,3\n").column("対象月").kind == "datetime"
+
+
+def test_forecast_calendar_steps_use_the_usual_day_and_4_weekly_data_steps_by_days():
+    days = ["2023-09-30", "2023-10-30", "2023-11-30", "2023-12-30", "2024-01-30", "2024-02-29"]
+    fc = run_tool(load_table({"d": days, "v": [1, 2, 3, 4, 5, 7]}), "forecast", {"value": "v", "time": "d"})
+    assert [p["period"] for p in fc["points"]] == ["2024-03-30", "2024-04-30", "2024-05-30"]
+    days = [(datetime.date(2024, 1, 1) + datetime.timedelta(days=28 * i)).isoformat() for i in range(13)]
+    fc = run_tool(load_table({"d": days, "v": [100 + i for i in range(13)]}), "forecast",
+                  {"value": "v", "time": "d", "periods": 12})
+    assert fc["points"][-1]["period"] == "2025-11-03" and close(fc["points"][-1]["estimate"], 124.0, abs_=1e-6)
+
+
+def test_previous_period_change_skips_a_missing_month():
+    months = [f"2024-{m:02d}" for m in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12)]
+    out = run_tool(load_table({"月": months, "v": [100 + 10 * i for i in range(10)] + [300]}), "trend",
+                   {"value": "v", "time": "月", "period": "month"})
+    assert out["last_periods"][-1]["period"] == "2024-12" and out["last_periods"][-1]["pct_change"] is None
+    assert out["last_periods"][-2]["pct_change"] is not None
+    quarters = [f"{2022 + i // 4}-{3 * (i % 4) + 1:02d}-01" for i in range(8)]   # the usual gap here is 3 months
+    q = run_tool(load_table({"d": quarters, "v": list(range(100, 180, 10))}), "trend", {"value": "v", "time": "d", "period": "month"})
+    assert q["last_periods"][-1]["pct_change"] is not None and q["period_step"] >= 89
+    years = run_tool(load_table({"年": [2018, 2019, 2020, 2022], "v": [1, 2, 3, 4]}), "trend", {"value": "v", "time": "年"})
+    assert [p["pct_change"] is None for p in years["last_periods"]] == [True, False, False, True]
+
+
+def test_no_percent_change_from_a_negative_base():
+    table = load_table({"期": [f"{2020 + i // 4}-{3 * (i % 4) + 3:02d}-01" for i in range(8)],
+                        "部門": ["a", "b"] * 4, "営業利益": ["▲125", "40", "▲60", "45", "10", "52", "120", "60"]})
+    out = run_tool(table, "trend", {"value": "営業利益", "time": "期"})
+    assert out["pct_change"] is None and out["change"] > 0
+    by = run_tool(table, "trend", {"value": "営業利益", "time": "期", "by": "部門"})
+    assert by["rank_by"] == "slope_per_period" and next(g for g in by["groups"] if g["key"] == "a")["slope_pct"] is None
+    cmp = run_tool(table, "compare", {"value": "営業利益", "by": "部門", "a": "b", "b": "a"})
+    assert cmp["pct_diff"] is None and cmp["diff"] > 0
+
+
+def test_trailing_total_rows_are_excluded():
+    table = load_table("店舗,売上,客数\n新宿,1200,3400\n渋谷,980,2900\n池袋,1100,3100\n合計,3280,9400\n")
+    assert table.n_rows == 3 and table.dropped_rows == [(4, "合計")]
+    assert "合計" not in table.column("店舗").values
+    kept = load_table("店舗,売上\n新宿,1200\n渋谷,980\n合計,100\n")    # not the sum: a store named 合計 stays
+    assert kept.n_rows == 3 and kept.dropped_rows == []
+    two = load_table("店舗,売上\nA,10\nB,20\n小計,30\nTotal,30\n")
+    assert two.n_rows == 2 and [r for r, _ in two.dropped_rows] == [3, 4]
+
+
+def test_fiscal_year_strings_are_dates():
+    assert T.parse_date("2016年度") == datetime.date(2016, 4, 1) == T.parse_date("FY2016")
+    assert T.parse_date("2016年3月期") == datetime.date(2016, 3, 1)
+    table = load_table({"年度": [f"{y}年度" for y in range(2016, 2025)], "来場者数": list(range(995, 1400, 45))})
+    assert table.column("年度").kind == "datetime"
+
+
+def test_top_n_labels_rows_by_their_date_without_a_name_column():
+    table = load_table({"決算期": ["2024-03-31", "2024-06-30", "2024-09-30"], "営業利益": [195, 223, 262]})
+    out = run_tool(table, "top_n", {"column": "営業利益", "n": 1})
+    assert out["label_column"] == "決算期" and out["rows"][0]["label"] == "2024-09-30"
+    years = run_tool(load_table({"年": [2022, 2023, 2024], "v": [3, 1, 2]}), "top_n", {"column": "v", "n": 1})
+    assert years["rows"][0]["label"] == 2022
+
+
+def test_boolean_columns_keep_their_own_words():
+    col = load_table({"離職意向": ["はい", "いいえ", "いいえ", "はい"]}).column("離職意向")
+    assert col.kind == "boolean" and col.bool_labels == {True: "はい", False: "いいえ"}

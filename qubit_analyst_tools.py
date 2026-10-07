@@ -54,10 +54,12 @@ def _clip(text, limit=80):
 class Column:
     """Parsed column: values hold float / datetime.date / bool / str, or None when missing."""
 
-    def __init__(self, name, kind, values, raw_missing=0, coerced=0, unit=None):
+    def __init__(self, name, kind, values, raw_missing=0, coerced=0, unit=None, bool_labels=None):
         self.name, self.kind, self.values = name, kind, list(values)
         self.raw_missing, self.coerced, self.unit = raw_missing, coerced, unit
+        self.bool_labels = bool_labels or {}      # {True: "はい", False: "いいえ"}: the data's own tokens
         self._year = None
+        self.cache = {}                           # per-column derived facts (values never change)
 
     @property
     def missing(self):
@@ -68,19 +70,24 @@ class Column:
 
     @property
     def is_year(self):
-        """Numeric column named like year/年/年度 holding 4-digit years (cached: values never change)."""
+        """Numeric column whose whole name says year (年, 年度, 会計年度, 入社年, year, fiscal_year, FY; not
+        年収, 年商, 年齢, yearly_sales) holding integer calendar years (cached: values never change)."""
         if self._year is None:
-            values = self.present() if self.kind == "numeric" and re.search(r"year|年", name_key(self.name)) else []
-            self._year = bool(values) and all(v.is_integer() and 1000 <= v <= 9999 for v in values)
+            values = self.present() if self.kind == "numeric" and _YEAR_NAME.search(name_key(self.name)) else []
+            self._year = bool(values) and all(v.is_integer() and 1800 <= v <= 2200 for v in values)
         return self._year
 
     def __repr__(self):
         return f"Column({self.name!r}, {self.kind!r}, rows={len(self.values)})"
 
 
+_YEAR_NAME = re.compile(r"(?:年|年度|西暦)$|^(?:fy|西暦)$|(?<![a-z])year(?![a-z])|year$")
+
+
 class Table:
-    def __init__(self, columns, name="data"):
+    def __init__(self, columns, name="data", dropped_rows=()):
         self.columns, self.name = list(columns), name
+        self.dropped_rows = list(dropped_rows)      # [(row number, label)] of excluded 合計/Total rows
         self.n_rows = len(self.columns[0].values) if self.columns else 0
         self._exact = {c.name: c for c in self.columns}
         self._loose = {}
@@ -125,6 +132,8 @@ _DATE = re.compile(r"(\d{4})([-/.])(\d{1,2})\2(\d{1,2})"
                    r"(?:[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\s*(?:Z|[+-]\d{2}:?\d{2})?)?", re.ASCII)
 _MONTH = re.compile(r"(\d{4})[-/](\d{1,2})", re.ASCII)
 _JDATE = re.compile(r"(\d{4})\s*年(?:\s*(\d{1,2})\s*月(?:\s*(\d{1,2})\s*日)?)?", re.ASCII)
+# Fiscal years: "2016年度" / "FY2016" start in April; "2016年3月期" is dated by its closing month.
+_FY = re.compile(r"(?:fy\s*)?(\d{4})\s*(?:年度|年\s*(\d{1,2})\s*月期)|fy\s*(\d{4})", re.ASCII | re.I)
 _DOT_MONTH = re.compile(r"(?:19|20)\d{2}\.(?:0?[1-9]|1[0-2])", re.ASCII)
 
 
@@ -182,6 +191,8 @@ def parse_date(value):
         parts = m.group(1), m.group(2), 1
     elif (m := _JDATE.fullmatch(text)):
         parts = m.group(1), m.group(2) or 1, m.group(3) or 1
+    elif (m := _FY.fullmatch(text)):
+        parts = m.group(1) or m.group(3), m.group(2) or 4, 1
     else:
         return None
     try:
@@ -374,8 +385,9 @@ def _dotted_months(name, present):
     if not present or not all(isinstance(v, str) and _DOT_MONTH.fullmatch(v) for _, v in present):
         return False
     texts = {v for _, v in present}
-    return len({float(v) for v in texts}) < len(texts) or bool(re.search(r"月|month|date|period|日付|時期",
-                                                                          name_key(name)))
+    # names of amounts per month (月間売上, 月額, 月商, monthly_sales) are not period names
+    return len({float(v) for v in texts}) < len(texts) or bool(re.search(
+        r"月(?!間|額|商|収|謝|給|販)|month(?!ly)|date|period|日付|時期", name_key(name)))
 
 
 def _infer(name, cells):
@@ -398,19 +410,28 @@ def _infer(name, cells):
         else:
             if not total:
                 continue
-            values, unit = [None] * len(cells), None
+            values, unit, labels = [None] * len(cells), None, None
             if kind == "numeric":
-                # The majority explicit unit wins; cells in another unit (one "5%" among yen) are coerced.
-                units = Counter(u for _, (_, u) in parsed if u)
-                unit = units.most_common(1)[0][0] if units else None
-                odd = {i for i, (_, u) in parsed if u and u != unit}
+                # The majority unit wins, counting unitless cells: one "5%" among plain amounts leaves the
+                # column unitless and is coerced; a unit applies only when at least half the cells carry it.
+                tagged = [(i, u) for i, (_, u) in parsed if u]
+                units = Counter(u for _, u in tagged)
+                unit = units.most_common(1)[0][0] if units and 2 * len(tagged) >= len(parsed) else None
+                odd = {i for i, u in tagged if u != unit and (unit is not None or u == "%")}
                 failures += len(odd)
-                if failures > allowed:
+                if failures > max(allowed, 1):     # one stray-unit cell never turns a short column into text
                     continue
                 parsed = [(i, x) for i, (x, _) in parsed if i not in odd]
+            elif kind == "boolean":     # keep the data's own words (はい/いいえ) for display
+                raw = dict(present)
+                tokens = {}
+                for i, value in parsed:
+                    if isinstance(raw[i], str):
+                        tokens.setdefault(value, Counter())[raw[i]] += 1
+                labels = {b: c.most_common(1)[0][0] for b, c in tokens.items()}
             for i, value in parsed:
                 values[i] = value
-            return Column(name, kind, values, len(cells) - total, failures, unit)
+            return Column(name, kind, values, len(cells) - total, failures, unit, labels)
     values = [None if v is None else _label(v) for v in cells]
     unique = len({v for v in values if v is not None})
     kind = "categorical" if unique <= max(20, 0.05 * len(cells)) else "text"
@@ -434,7 +455,47 @@ def load_table(data, *, name="data"):
         raise DataError("データはCSV文字列、レコードの配列、または列ごとの配列で指定してください")
     if not raw or not raw[0]:
         raise DataError("データ行がありません")
-    return Table([_infer(n, cells) for n, cells in zip(_unique_names(names), raw)], title)
+    names = _unique_names(names)
+    columns = [_infer(n, cells) for n, cells in zip(names, raw)]
+    dropped = _total_rows(columns)
+    if dropped:          # re-type without the 合計 row so that its label and amount never count as data
+        keep = len(raw[0]) - len(dropped)
+        columns = [_infer(n, cells[:keep]) for n, cells in zip(names, raw)]
+    return Table(columns, title, dropped)
+
+
+TOTAL_LABELS = frozenset({"合計", "総計", "小計", "計", "total", "grand total", "sum", "合計値", "総合計"})
+
+
+def _total_rows(columns):
+    """Trailing 合計/Total rows (at most 2) of a spreadsheet export -> [(row number, label)]: the row's first
+    label cell is a total word and, for some numeric column, its value is the sum of the rows above it."""
+    labels = [c for c in columns if c.kind in ("categorical", "text")]
+    nums = [c for c in columns if c.kind == "numeric"]
+    n = len(columns[0].values) if columns else 0
+    if not labels or not nums or n < 3:
+        return []
+
+    def label(r):
+        return next((c.values[r] for c in labels if c.values[r] is not None), None)
+
+    trailing = []
+    for r in (n - 1, n - 2):
+        text = label(r)
+        if text is None or re.sub(r"\s+", " ", _nfkc(text).casefold()).strip() not in TOTAL_LABELS:
+            break
+        trailing.append(r)
+    found = []
+    for r in trailing:
+        for c in nums:
+            v = c.values[r]
+            sums = {_fsum(x for x in c.values[:end] if x is not None) for end in (r, min(trailing))}
+            if v is not None and any(s and abs(v - s) <= 0.005 * abs(s) for s in sums):
+                found.append((r + 1, label(r)))
+                break
+        else:
+            break
+    return sorted(found)          # contiguous from the last row: a failed check stops the scan
 
 
 # ---------------------------------------------------------------- statistics
@@ -794,6 +855,92 @@ def chi2_sf(x, k):
     if k is None or x is None:
         return None
     return 1.0 if x <= 0 else gammaincc(k / 2.0, x / 2.0)
+
+
+def f_sf(f, d1, d2):
+    """P(F > f) for Snedecor's F with (d1, d2) degrees of freedom (fractional allowed):
+    I_{d2/(d2+d1 f)}(d2/2, d1/2), with the complement passed exactly."""
+    f, d1, d2 = _as_float(f), _valid_df(d1), _valid_df(d2)
+    if None in (f, d1, d2):
+        return None
+    if f <= 0:
+        return 1.0
+    scaled = d1 * f
+    if math.isinf(scaled):
+        return 0.0
+    denominator = d2 + scaled
+    return _out(_betainc(d2 / 2.0, d1 / 2.0, d2 / denominator, scaled / denominator))
+
+
+def _rescaled(groups):
+    """Groups shifted by the grand mean and divided by the largest deviation (None when every value
+    is equal). F, Welch's F and eta-squared are affine-invariant, so this only keeps squares of
+    1e50 or 1e-200 magnitudes from overflowing or underflowing."""
+    values = [v for g in groups for v in g]
+    if max(values) == min(values):
+        return None
+    m = _fsum(values) / len(values)
+    scale = max(abs(v - m) for v in values)
+    if not 0 < scale < math.inf:
+        return None
+    return [[(v - m) / scale for v in g] for g in groups]
+
+
+def _group_ss(g, m):
+    return 0.0 if max(g) == min(g) else _sq(g, m)
+
+
+def anova_oneway(groups):
+    """Classic one-way ANOVA (scipy.stats.f_oneway) -> f, df1, df2, p_value, eta_squared, k, n."""
+    groups = [g for g in (_clean(g) for g in groups) if g]
+    k, n = len(groups), sum(map(len, groups))
+    result = {"f": None, "df1": k - 1 if k >= 2 else None, "df2": n - k if n > k >= 2 else None,
+              "p_value": None, "eta_squared": None, "k": k, "n": n}
+    if k < 2 or n <= k:
+        return {**result, "reason": "2グループ以上と、グループ数を超えるデータ数が必要です"}
+    z = _rescaled(groups)
+    if z is None:
+        return {**result, "reason": _FLAT}
+    means = [_fsum(g) / len(g) for g in z]
+    grand = _fsum(v for g in z for v in g) / n
+    ssb = _fsum(len(g) * (m - grand) * (m - grand) for g, m in zip(z, means))
+    ssw = _fsum(_group_ss(g, m) for g, m in zip(z, means))
+    result["eta_squared"] = _out(ssb / (ssb + ssw))
+    if not ssw > 0:
+        return {**result, "reason": "グループ内のばらつきが0のため検定できません"}
+    f = (ssb / (k - 1)) / (ssw / (n - k))
+    return {**result, "f": _out(f), "p_value": f_sf(f, k - 1, n - k)}
+
+
+def welch_anova(groups):
+    """Welch's heteroscedastic one-way ANOVA (Welch 1951) -> f, df1, df2 (fractional), p_value.
+
+    w_i = n_i / s_i², m_w = Σ w_i m_i / W, A = Σ w_i (m_i − m_w)² / (k − 1),
+    Λ = Σ (1 − w_i / W)² / (n_i − 1), F = A / (1 + 2(k − 2)Λ / (k² − 1)), df2 = (k² − 1) / (3Λ).
+    """
+    groups = [g for g in (_clean(g) for g in groups) if g]
+    k = len(groups)
+    result = {"f": None, "df1": k - 1 if k >= 2 else None, "df2": None, "p_value": None, "k": k,
+              "n": sum(map(len, groups))}
+    if k < 2 or any(len(g) < 2 for g in groups):
+        return {**result, "reason": "2グループ以上で、各グループに2件以上の値が必要です"}
+    z = _rescaled(groups)
+    if z is None:
+        return {**result, "reason": _FLAT}
+    variances = [_variance(g) for g in z]
+    if not all(v > 0 for v in variances):
+        return {**result, "reason": "値が一定のグループがあるため Welch の分散分析は計算できません"}
+    means = [_fsum(g) / len(g) for g in z]
+    weights = [len(g) / v for g, v in zip(z, variances)]
+    total = _fsum(weights)
+    centre = _fsum(w * m for w, m in zip(weights, means)) / total
+    a = _fsum(w * (m - centre) * (m - centre) for w, m in zip(weights, means)) / (k - 1)
+    lam = _fsum((1.0 - w / total) ** 2 / (len(g) - 1) for w, g in zip(weights, z))
+    if not lam > 0 or not math.isfinite(a):
+        return {**result, "reason": "数値が極端なため計算できません"}
+    f = a / (1.0 + 2.0 * (k - 2) * lam / (k * k - 1.0))
+    df2 = (k * k - 1.0) / (3.0 * lam)
+    return {**result, "f": _out(f), "df2": _out(df2), "p_value": f_sf(f, k - 1, df2)}
 
 
 def welch_ttest(a, b):
@@ -1157,38 +1304,76 @@ def group_by(table, args):
     return out
 
 
+def _bucket_end(key, period):
+    """Last day of the month / (fiscal) year bucket that starts on key."""
+    return _add_months(key, 1 if period == "month" else 12) - datetime.timedelta(days=1)
+
+
 def _partial_edges(keys, days, period):
-    """First/last month (year) bucket observed on < 80% as many distinct dates as a full one."""
-    distinct = sorted(set().union(*days.values()))
-    gaps = [float((b - a).days) for a, b in zip(distinct, distinct[1:])]
-    step = max(1.0, median(gaps)) if gaps else 1.0
+    """First/last month (year) bucket that covers only part of its period: observed on < 80% as many
+    distinct dates as a full bucket (the median of the middle buckets; with 2 buckets, the bucket's
+    length / the mean gap between dates) AND its data starts (ends) more than 2 mean gaps after (before)
+    the bucket's start (end). The coverage test keeps full months of weekday-only or sparse dates."""
+    distinct = sorted(set().union(*(days[k] for k in keys)))
+    mean_gap = max(1.0, (distinct[-1] - distinct[0]).days / (len(distinct) - 1)) if len(distinct) > 1 else 1.0
+    middle = median([float(len(days[j])) for j in keys[1:-1]]) if len(keys) >= 3 else None
 
     def expected(k):
-        if len(keys) >= 3:
-            return median([float(len(days[j])) for j in keys[1:-1]])
-        length = calendar.monthrange(k.year, k.month)[1] if period == "month" else 365 + calendar.isleap(k.year)
-        return length / step
-    return [k for k in dict.fromkeys((keys[0], keys[-1])) if len(days[k]) < 0.8 * expected(k)]
+        return middle if middle is not None else ((_bucket_end(k, period) - k).days + 1) / mean_gap
+
+    def stretch(k):
+        lead = (min(days[k]) - k).days if k == keys[0] else 0
+        trail = (_bucket_end(k, period) - max(days[k])).days if k == keys[-1] else 0
+        return max(lead, trail)
+    return [k for k in dict.fromkeys((keys[0], keys[-1]))
+            if len(days[k]) < 0.8 * expected(k) and stretch(k) > 2 * mean_gap]
 
 
-def _series(table, value, time, agg="sum", period="raw"):
-    """Aggregated series; month/year buckets that cover only part of the period are dropped."""
+def _series(table, value, time, agg="sum", period="raw", by=None, fiscal_start=1):
+    """Aggregated series; month/year buckets that cover only part of the period are dropped. Years start
+    in fiscal_start (4: April-March 年度, keyed by their first day).
+
+    With by, "groups" maps each group key to its own {keys, x, y, partial} on the same time axis (one
+    pass): the periods dropped as partial overall are dropped for every group, and each group also loses
+    its own partial first/last bucket (a store opening on the 20th)."""
     vcol = table.column(value)
+    gcol = table.column(by) if by else None
     if not time:
         pairs = _rows(vcol)
         keys = [p[0] for p in pairs]
-        return {"kind": "row", "keys": keys, "x": [float(k) for k in keys],
-                "y": [p[1] for p in pairs], "rows": len(pairs), "partial": [], "uneven": False}
+        out = {"kind": "row", "keys": keys, "x": [float(k) for k in keys],
+               "y": [p[1] for p in pairs], "rows": len(pairs), "partial": [], "uneven": False}
+        if gcol is not None:
+            groups = {}
+            for row, v in pairs:
+                key = gcol.values[row - 1]
+                if key is not None:
+                    group = groups.setdefault(key, {"keys": [], "x": [], "y": []})
+                    group["keys"].append(row)
+                    group["x"].append(float(row))
+                    group["y"].append(v)
+            out["groups"] = groups
+        return out
     tcol = table.column(time)
     if tcol.kind not in ("datetime", "numeric"):
         raise DataError("time には日付列または数値列を指定してください")
     rollup = tcol.kind == "datetime" and period in ("month", "year")
-    buckets, days, rows = {}, {}, 0
-    for t, v in zip(tcol.values, vcol.values):
+    buckets, days, rows, grouped, gdays = {}, {}, 0, {}, {}
+    gvalues = gcol.values if gcol is not None else itertools.repeat(None)
+    for t, v, g in zip(tcol.values, vcol.values, gvalues):
         if t is None or v is None:
             continue
-        key = datetime.date(t.year, t.month if period == "month" else 1, 1) if rollup else t
+        if not rollup:
+            key = t
+        elif period == "month":
+            key = datetime.date(t.year, t.month, 1)
+        else:
+            key = datetime.date(t.year - (t.month < fiscal_start), fiscal_start, 1)
         buckets.setdefault(key, []).append(v)
+        if g is not None:
+            grouped.setdefault(g, {}).setdefault(key, []).append(v)
+            if rollup:
+                gdays.setdefault(g, {}).setdefault(key, set()).add(t)
         if rollup:
             days.setdefault(key, set()).add(t)
         rows += 1
@@ -1197,10 +1382,30 @@ def _series(table, value, time, agg="sum", period="raw"):
     keys = [k for k in keys if k not in partial]
     rows -= sum(len(buckets[k]) for k in partial)
     counts = [len(buckets[k]) for k in keys]
-    y = [_out(_fsum(buckets[k]) / (len(buckets[k]) if agg == "mean" else 1)) for k in keys]
-    x = [float((k - keys[0]).days) for k in keys] if tcol.kind == "datetime" else list(keys)
-    return {"kind": tcol.kind, "keys": keys, "x": x, "y": y, "rows": rows, "partial": partial,
-            "uneven": rollup and agg == "sum" and bool(counts) and max(counts) > 1.2 * min(counts)}
+
+    def reduce(bucket, ks):
+        return [_out(_fsum(bucket[k]) / (len(bucket[k]) if agg == "mean" else 1)) for k in ks]
+
+    def axis(ks):
+        return [float((k - keys[0]).days) for k in ks] if tcol.kind == "datetime" else list(ks)
+
+    out = {"kind": tcol.kind, "keys": keys, "x": axis(keys), "y": reduce(buckets, keys), "rows": rows,
+           "partial": partial,
+           "uneven": rollup and agg == "sum" and bool(counts) and max(counts) > 1.2 * min(counts)}
+    if gcol is not None:
+        dropped = set(partial)
+        out["groups"] = {}
+        for g, bucket in grouped.items():
+            ks = sorted(k for k in bucket if k not in dropped)
+            own = _partial_edges(ks, gdays[g], period) if rollup and len(ks) >= 2 else []
+            ks = [k for k in ks if k not in own]
+            out["groups"][g] = {"keys": ks, "x": axis(ks), "y": reduce(bucket, ks), "partial": own}
+    return out
+
+
+def _direction(slope, p):
+    return ("unknown" if slope is None or p is None else "flat" if p >= 0.05
+            else "increasing" if slope > 0 else "decreasing" if slope < 0 else "flat")
 
 
 def _time_name(table, args):
@@ -1211,25 +1416,36 @@ def _period(key, kind, period="raw"):
     if kind == "datetime":
         if period == "month":
             return f"{key.year:04d}-{key.month:02d}"
-        return f"{key.year:04d}" if period == "year" else key.isoformat()
+        if period == "year":     # a fiscal-year bucket (April start) is named by the year it starts in
+            return f"{key.year:04d}" if key.month == 1 else f"{key.year:04d}年度"
+        return key.isoformat()
     return _key(key)
 
 
 def _pct(new, old):
-    return None if new is None or not old else (new - old) / abs(old) * 100.0
+    """Relative change in %; None from a zero or negative base (a loss turning into a profit has no
+    meaningful percentage change)."""
+    return None if new is None or old is None or old <= 0 else (new - old) / old * 100.0
+
+
+def _months_between(a, b):
+    return (b.year - a.year) * 12 + b.month - a.month
 
 
 @_tool("trend")
 def trend(table, args):
     """時系列の推移：始点・終点・変化率・傾き・有意性・年平均成長率・直近の推移。"""
     agg, period = args.get("agg") or "sum", args.get("period") or "raw"
-    s = _series(table, args["value"], args.get("time"), agg, period)
+    s = _series(table, args["value"], args.get("time"), agg, period, args.get("by"), args.get("fiscal_start") or 1)
     keys, x, y, kind = s["keys"], s["x"], s["y"], s["kind"]
     n = len(y)
     out = {"value": table.column(args["value"]).name, "time": _time_name(table, args),
            "time_kind": kind, "agg": agg, "period": period, "n": n, "rows_used": s["rows"],
            "partial_periods": [_period(k, kind, period) for k in s["partial"]],
            "uneven_periods": s["uneven"]}
+    if args.get("by"):
+        out.update(by=table.column(args["by"]).name, groups=[], n_groups=len(s["groups"]), groups_trended=0,
+                   groups_skipped=len(s["groups"]), rank_by=None, lowest=None, declining=[], truncated=False)
     if n < 2:
         reason = ("期間全体をカバーする" + ("月" if period == "month" else "年") + "が2つ未満のため推移を判定できません"
                   if s["partial"] else "推移を見るには2時点以上が必要です")
@@ -1240,8 +1456,7 @@ def trend(table, args):
 
     reg = linregress(x, y)
     slope, p = reg["slope"], reg["p_value"]
-    direction = ("unknown" if slope is None or p is None else "flat" if p >= 0.05
-                 else "increasing" if slope > 0 else "decreasing" if slope < 0 else "flat")
+    direction = _direction(slope, p)
     step = median([b - a for a, b in zip(x, x[1:])])
     span = x[-1] - x[0]
     cagr, years = None, None
@@ -1257,6 +1472,13 @@ def trend(table, args):
             pass
     peak = max(range(n), key=lambda i: (y[i], -i))
     trough = min(range(n), key=lambda i: (y[i], i))
+    adjacent = [True] * n      # month/year buckets: "前月比" only against the previous period, not across a gap
+    if kind == "datetime" and period in ("month", "year"):
+        gaps = [_months_between(a, b) for a, b in zip(keys, keys[1:])]
+        usual = 12 if period == "year" else Counter(gaps).most_common(1)[0][0]
+        adjacent = [True] + [g == usual for g in gaps]
+    elif kind == "numeric" and table.column(args["time"]).is_year:      # 2015, 2017: no 前年比 across the gap
+        adjacent = [True] + [b - a == 1 for a, b in zip(keys, keys[1:])]
     out.update(first=y[0], last=y[-1], first_period=label(0), last_period=label(n - 1),
                change=_out(y[-1] - y[0]), pct_change=_pct(y[-1], y[0]),
                slope=slope, slope_unit={"datetime": "day", "numeric": "time", "row": "row"}[kind],
@@ -1266,45 +1488,111 @@ def trend(table, args):
                peak={"period": label(peak), "value": y[peak]},
                trough={"period": label(trough), "value": y[trough]},
                last_periods=[{"period": label(i), "value": y[i],
-                              "pct_change": _pct(y[i], y[i - 1]) if i else None}
+                              "pct_change": _pct(y[i], y[i - 1]) if i and adjacent[i] else None}
                              for i in range(max(0, n - 6), n)])
     if direction == "unknown":
         out["reason"] = reg.get("reason") or _SMALL
+    if args.get("by"):
+        out.update(_group_trends(s["groups"], kind, period, step, table.column(args["value"]).unit == "%"))
     return out
+
+
+MIN_TREND_POINTS = 3
+
+
+def _group_trends(groups, kind, period, step, rate):
+    """Per-group trend summaries ranked by growth. Growth is the fitted change per period as a share of
+    the group's mean level (slope_pct), so groups of different size compare fairly; a % column, or any
+    group with a zero or negative value, is ranked by the slope per period instead."""
+    trended, skipped = [], 0
+    for key, g in groups.items():
+        y = g["y"]
+        if len(y) < MIN_TREND_POINTS or any(v is None for v in y):
+            skipped += 1
+            continue
+        reg = linregress(g["x"], y)
+        slope, p = reg["slope"], reg["p_value"]
+        direction = _direction(slope, p)
+        per_period = _out(slope * step) if slope is not None and step is not None else None
+        level = _fsum(y) / len(y)
+        positive = min(y) > 0       # a share of the mean level means nothing for a series crossing zero
+        trended.append({"key": _key(key), "n": len(y), "first": y[0], "last": y[-1],
+                        "partial_periods": [_period(k, kind, period) for k in g.get("partial", [])],
+                        "first_period": _period(g["keys"][0], kind, period),
+                        "last_period": _period(g["keys"][-1], kind, period),
+                        "change": _out(y[-1] - y[0]), "pct_change": _pct(y[-1], y[0]), "slope": slope,
+                        "slope_per_period": per_period,
+                        "slope_pct": _out(per_period / level * 100.0) if per_period is not None and positive
+                        else None,
+                        "p_value": p, "r2": reg["r2"], "direction": direction,
+                        "direction_ja": DIRECTION_LABELS[direction]})
+    metric = "slope_pct" if not rate and all(t["slope_pct"] is not None for t in trended) else "slope_per_period"
+    ranked = [t for t in trended if t[metric] is not None]
+    ranked.sort(key=lambda t: (-t[metric], _label(t["key"])))
+    ranked += [t for t in trended if t[metric] is None]
+    counts = Counter(t["direction"] for t in trended)
+    valid = [t for t in ranked if t[metric] is not None]
+    limit = LIMITS["max_groups"]
+    return {"groups": ranked[:limit], "groups_trended": len(trended), "groups_skipped": skipped,
+            "rank_by": metric if valid else None, "lowest": valid[-1] if valid else None,
+            "declining": [t["key"] for t in reversed(valid) if t["direction"] == "decreasing"][:10],
+            "increasing": counts["increasing"], "decreasing": counts["decreasing"], "flat": counts["flat"],
+            "unknown": counts["unknown"], "truncated": len(ranked) > limit}
+
+
+MIN_GROUP_IQR = 5      # quartiles of fewer values per group are not a usable "normal range"
+
+
+def _bounds(values, method, k):
+    """Normal range of one sample -> {lower, upper, scale, q1/q3/iqr or mean/std} or {reason, ...}."""
+    if method == "iqr":
+        xs = sorted(values)
+        q1, q3 = _quantile_sorted(xs, 0.25), _quantile_sorted(xs, 0.75)
+        if q3 == q1:       # 0/1 flags, zero-inflated amounts: "normal range 0 to 0" would flag every 1
+            return {"q1": q1, "q3": q3, "iqr": 0.0, "reason": "四分位範囲が0のためIQR法では外れ値を判定できません"}
+        return {"q1": q1, "q3": q3, "iqr": q3 - q1, "lower": q1 - k * (q3 - q1), "upper": q3 + k * (q3 - q1),
+                "scale": q3 - q1}
+    m, sd = mean(values), sample_std(values)
+    if not sd:
+        return {"mean": m, "std": sd, "flat": True, "reason": _FLAT}
+    n = len(values)
+    if (n - 1) / math.sqrt(n) <= k:     # with the sample SD, |z| can never exceed (n-1)/sqrt(n)
+        return {"mean": m, "std": sd,
+                "reason": f"データ数（n={n}）が少ないため、|z|>{k:g} の外れ値は原理的に検出できません（IQR法を使ってください）"}
+    return {"mean": m, "std": sd, "lower": m - k * sd, "upper": m + k * sd, "scale": sd}
+
+
+def min_group_size(method, k):
+    """Smallest group that outliers(by=...) checks: 5 for IQR; for z-scores the n with (n-1)/sqrt(n) > k."""
+    if method == "iqr":
+        return MIN_GROUP_IQR
+    n = 3
+    while (n - 1) / math.sqrt(n) <= k:
+        n += 1
+    return n
 
 
 @_tool("outliers")
 def outliers(table, args):
-    """IQR法またはzスコア法による外れ値。"""
+    """IQR法またはzスコア法による外れ値（by 指定時はグループごとの基準で判定）。"""
     col = table.column(args["column"])
     method = args.get("method") or "iqr"
     k = args.get("threshold") or (1.5 if method == "iqr" else 3.0)
+    if args.get("by"):
+        return _outliers_by(col, table.column(args["by"]), method, k)
     rows = _rows(col)
     out = {"column": col.name, "method": method, "threshold": k, "n": len(rows),
            "bounds": None, "count": None, "share": None, "high": None, "low": None, "rows": [],
            "truncated": False}
     if len(rows) < 3:
         return {**out, "reason": _SMALL}
-    values = [v for _, v in rows]
-    if method == "iqr":
-        xs = sorted(values)
-        q1, q3 = _quantile_sorted(xs, 0.25), _quantile_sorted(xs, 0.75)
-        if q3 == q1:       # 0/1 flags, zero-inflated amounts: "normal range 0 to 0" would flag every 1
-            return {**out, "q1": q1, "q3": q3, "iqr": 0.0,
-                    "reason": "四分位範囲が0のためIQR法では外れ値を判定できません"}
-        lower, upper = q1 - k * (q3 - q1), q3 + k * (q3 - q1)
-        out.update(q1=q1, q3=q3, iqr=q3 - q1)
-    else:
-        m, sd = mean(values), sample_std(values)
-        if not sd:
-            return {**out, "mean": m, "std": sd, "count": 0, "share": 0.0, "high": 0, "low": 0,
-                    "reason": _FLAT}
-        n = len(values)
-        if (n - 1) / math.sqrt(n) <= k:     # with the sample SD, |z| can never exceed (n-1)/sqrt(n)
-            return {**out, "mean": m, "std": sd,
-                    "reason": f"データ数（n={n}）が少ないため、|z|>{k:g} の外れ値は原理的に検出できません（IQR法を使ってください）"}
-        lower, upper = m - k * sd, m + k * sd
-        out.update(mean=m, std=sd)
+    b = _bounds([v for _, v in rows], method, k)
+    out.update({key: b[key] for key in ("q1", "q3", "iqr", "mean", "std") if key in b})
+    if "reason" in b:
+        if b.get("flat"):
+            out.update(count=0, share=0.0, high=0, low=0)
+        return {**out, "reason": b["reason"]}
+    lower, upper = b["lower"], b["upper"]
     flagged = [(row, v) for row, v in rows if v < lower or v > upper]
     flagged.sort(key=lambda rv: (-max(lower - rv[1], rv[1] - upper), rv[0]))
     high = sum(v > upper for _, v in flagged)
@@ -1317,6 +1605,51 @@ def outliers(table, args):
     if method == "zscore":
         for item in out["rows"]:
             item["z"] = (item["value"] - out["mean"]) / out["std"]
+    return out
+
+
+def _outliers_by(col, bcol, method, k):
+    """Outliers against each group's own normal range: a value extreme for its region is found even
+    when it is ordinary overall. Groups below min_group_size, or without spread, are skipped and counted."""
+    groups, missing_keys = {}, 0
+    for row, (key, value) in enumerate(zip(bcol.values, col.values), 1):
+        if value is None:
+            continue
+        if key is None:
+            missing_keys += 1
+        else:
+            groups.setdefault(key, []).append((row, value))
+    need = min_group_size(method, k)
+    checked, flagged, skipped, skipped_rows, flat = [], [], 0, 0, 0
+    for key, rows in groups.items():
+        b = _bounds([v for _, v in rows], method, k) if len(rows) >= need else None
+        if b is None or "reason" in b:
+            skipped, skipped_rows, flat = skipped + 1, skipped_rows + len(rows), flat + (b is not None)
+            continue
+        lower, upper = b["lower"], b["upper"]
+        hits = [(row, v) for row, v in rows if v < lower or v > upper]
+        checked.append({"key": _key(key), "n": len(rows), "count": len(hits), "lower": lower, "upper": upper})
+        for row, v in hits:
+            item = {"row": row, "value": v, "side": "high" if v > upper else "low", "group": _key(key),
+                    "lower": lower, "upper": upper}
+            if method == "zscore":
+                item["z"] = (v - b["mean"]) / b["std"]
+            flagged.append((max(lower - v, v - upper) / b["scale"], item))
+    flagged.sort(key=lambda d: (-d[0], d[1]["row"]))     # distance in units of the group's IQR / SD
+    checked.sort(key=lambda g: (-g["count"], -g["n"], _label(g["key"])))
+    n = sum(g["n"] for g in checked)
+    high = sum(item["side"] == "high" for _, item in flagged)
+    limit, glimit = LIMITS["max_outliers"], LIMITS["max_groups"]
+    out = {"column": col.name, "method": method, "threshold": k, "by": bcol.name, "n": n, "bounds": None,
+           "count": len(flagged), "share": len(flagged) / n if n else None, "high": high,
+           "low": len(flagged) - high, "rows": [item for _, item in flagged[:limit]],
+           "truncated": len(flagged) > limit or len(checked) > glimit, "groups": checked[:glimit],
+           "n_groups": len(groups), "groups_checked": len(checked), "groups_skipped": skipped,
+           "groups_without_spread": flat, "skipped_rows": skipped_rows, "min_group_n": need,
+           "missing_keys": missing_keys}
+    if not checked:
+        out.update(count=None, high=None, low=None,
+                   reason=f"グループごとの値が少ない（{need}件未満）か、ばらつきがないため外れ値を判定できません")
     return out
 
 
@@ -1338,9 +1671,30 @@ def _find_group(groups, label):
     raise DataError(f"グループ「{_clip(label, 40)}」が見つかりません")
 
 
+def _group_summary(groups, key):
+    values = groups[key]
+    return {"label": _key(key), "n": len(values), "mean": mean(values), "std": sample_std(values),
+            "median": median(values)}
+
+
+def _pairwise(groups, a, b):
+    """Welch t-test and Cohen's d of group a against group b."""
+    sa, sb = _group_summary(groups, a), _group_summary(groups, b)
+    test, d = welch_ttest(groups[a], groups[b]), cohen_d(groups[a], groups[b])
+    effect = _effect(d) if d is not None else (None, None)
+    p = test["p_value"]
+    out = {"a": sa, "b": sb, "diff": _out(sa["mean"] - sb["mean"]), "pct_diff": _pct(sa["mean"], sb["mean"]),
+           "t": test["t"], "df": test["df"], "p_value": p, "cohen_d": d, "effect": effect[0],
+           "effect_ja": effect[1], "significant": None if p is None else p < 0.05}
+    if test.get("reason"):
+        out["reason"] = test["reason"]
+    return out
+
+
 @_tool("compare")
 def compare(table, args):
-    """2グループの平均の比較（Welchのt検定・Cohenのd）。"""
+    """グループの平均の比較。2グループは Welch の t検定と Cohen の d、a・b を省略して2件以上のグループが
+    3つ以上あれば一元配置分散分析（Welch と通常の F、η²）と最大・最小グループの対比。"""
     vcol, bcol = table.column(args["value"]), table.column(args["by"])
     groups = {}
     for key, value in zip(bcol.values, vcol.values):
@@ -1350,35 +1704,77 @@ def compare(table, args):
     b = _find_group(groups, args["b"]) if args.get("b") is not None else None
     if a is not None and b is not None and a == b:
         raise DataError("a と b には別のグループを指定してください")
+    defaulted = args.get("a") is None and args.get("b") is None
+    out = {"value": vcol.name, "by": bcol.name, "n_groups": len(groups), "defaulted": defaulted,
+           "b_defaulted": args.get("a") is not None and args.get("b") is None}
+    if vcol.unit:
+        out["unit"] = vcol.unit
+    testable = [k for k in groups if len(groups[k]) >= 2]
+    if defaulted and len(testable) >= 3:
+        return {**out, **_anova(groups, testable)}
     ranked = sorted(groups, key=lambda k: (-len(groups[k]), _label(k)))
     rest = [k for k in ranked if not (a is not None and k == a) and not (b is not None and k == b)]
     if a is None and rest:
         a = rest.pop(0)
     if b is None and rest:
         b = rest.pop(0)
-    out = {"value": vcol.name, "by": bcol.name, "n_groups": len(groups),
-           "defaulted": args.get("a") is None and args.get("b") is None}
+    out["mode"] = "pair"
     if a is None or b is None:
         return {**out, "a": None, "b": None, "diff": None, "pct_diff": None, "t": None, "df": None,
                 "p_value": None, "cohen_d": None, "effect": None, "significant": None,
                 "reason": "比較できるグループが2つ未満です"}
+    return {**out, **_pairwise(groups, a, b)}
 
-    def summary(key):
-        values = groups[key]
-        return {"label": _key(key), "n": len(values), "mean": mean(values),
-                "std": sample_std(values), "median": median(values)}
 
-    sa, sb = summary(a), summary(b)
-    test, d = welch_ttest(groups[a], groups[b]), cohen_d(groups[a], groups[b])
-    effect = _effect(d) if d is not None else (None, None)
-    p = test["p_value"]
-    out.update(a=sa, b=sb, diff=_out(sa["mean"] - sb["mean"]), pct_diff=_pct(sa["mean"], sb["mean"]),
-               t=test["t"], df=test["df"], p_value=p, cohen_d=d, effect=effect[0],
-               effect_ja=effect[1], significant=None if p is None else p < 0.05)
-    if vcol.unit:
-        out["unit"] = vcol.unit
-    if test.get("reason"):
-        out["reason"] = test["reason"]
+def welch_primary(sizes):
+    """Welch's F is trusted only when every group has at least max(5, k) values: with many small groups
+    its approximation rejects far too often (simulated type-I error at alpha 0.05: 0.18 for 20 groups of 4,
+    0.24 for 50 groups of 5, 0.62 for 20 groups of 2), where the classic F stays near 0.05."""
+    return bool(sizes) and min(sizes) >= max(WELCH_MIN_N, len(sizes))
+
+
+WELCH_MIN_N = 5
+
+
+def _anova(groups, testable):
+    """One-way ANOVA over every group with 2+ values. Welch's F (no equal-variance assumption) gives
+    the primary p-value when welch_primary allows it; otherwise (many small groups, or a constant group
+    that leaves Welch undefined) the classic F does and Welch stays in the output as secondary.
+    The highest- and lowest-mean groups are then compared with a Welch t-test whose p-value is also
+    Bonferroni-adjusted for the k(k-1)/2 pairs they were picked from."""
+    samples = [groups[k] for k in testable]
+    classic, welch = anova_oneway(samples), welch_anova(samples)
+    if welch["p_value"] is None:
+        welch_note = None if classic["p_value"] is None else (
+            "constant_group" if any(max(g) == min(g) for g in samples) else "undefined")
+    elif not welch_primary([len(g) for g in samples]):
+        welch_note = "small_groups"
+    else:
+        welch_note = None
+    primary = welch if welch["p_value"] is not None and welch_note is None else classic
+    ranked = sorted(((k, _group_summary(groups, k)) for k in testable),
+                    key=lambda ks: (-ks[1]["mean"], _label(ks[0])))      # 2+ finite values: mean is set
+    summaries = [summary for _, summary in ranked]
+    pair = _pairwise(groups, ranked[0][0], ranked[-1][0])
+    k = len(testable)
+    pair["comparisons"] = k * (k - 1) // 2
+    pair["p_adjusted"] = None if pair["p_value"] is None else min(1.0, pair["p_value"] * pair["comparisons"])
+    pair["significant"] = None if pair["p_adjusted"] is None else pair["p_adjusted"] < 0.05
+    limit = LIMITS["max_groups"]
+    out = {"mode": "anova", "test": "welch_anova" if primary is welch else "anova", "welch_note": welch_note,
+           "groups_tested": k, "skipped_groups": len(groups) - k, "n": classic["n"],
+           "groups": summaries[:limit], "truncated": k > limit,
+           "f": primary["f"], "df1": primary["df1"], "df2": primary["df2"], "p_value": primary["p_value"],
+           "significant": None if primary["p_value"] is None else primary["p_value"] < 0.05,
+           "eta_squared": classic["eta_squared"],
+           "welch": {key: welch[key] for key in ("f", "df1", "df2", "p_value")},
+           "classic": {key: classic[key] for key in ("f", "df1", "df2", "p_value")},
+           "pairwise": pair}
+    for name, result in (("welch", welch), ("classic", classic)):
+        if result.get("reason"):
+            out[name]["reason"] = result["reason"]
+    if primary["p_value"] is None:
+        out["reason"] = primary.get("reason") or _SMALL
     return out
 
 
@@ -1431,16 +1827,18 @@ def top_n(table, args):
     col = table.column(args["column"])
     n, order = args.get("n") or 5, args.get("order") or "desc"
     label = args.get("label")
-    if not label:
-        label = next((c.name for c in table.columns
-                      if c.kind in ("categorical", "text") and c is not col), None)
+    if not label:      # a name, else the date (or year) of the row: "which day / quarter" needs it
+        others = [c for c in table.columns if c is not col]
+        label = next((c.name for c in others if c.kind in ("categorical", "text")), None) or next(
+            (c.name for c in others if c.kind == "datetime"), None) or next(
+            (c.name for c in others if c.is_year), None)
     lcol = table.column(label) if label else None
     rows = _rows(col)
     ranked = sorted(rows, key=lambda rv: rv[1], reverse=order == "desc")[:n]
     out = {"column": col.name, "order": order, "n": n, "count": len(rows),
            "label_column": lcol.name if lcol else None,
-           "rows": [{"row": r, "value": v, "label": lcol.values[r - 1] if lcol else None}
-                    for r, v in ranked]}
+           "rows": [{"row": r, "value": v, "label": None if lcol is None or lcol.values[r - 1] is None
+                     else _key(lcol.values[r - 1])} for r, v in ranked]}
     if col.kind == "numeric":
         values = [v for _, v in rows]
         total = _fsum(values)
@@ -1468,11 +1866,13 @@ def _future(s, periods, period):
     keys, x, kind = s["keys"], s["x"], s["kind"]
     if kind == "datetime":
         first = all(k.day == 1 for k in keys)
-        if first or median([b - a for a, b in zip(x, x[1:])]) >= 28:   # monthly or coarser: calendar steps
-            gaps = Counter((b.year - a.year) * 12 + b.month - a.month for a, b in zip(keys, keys[1:]))
+        gaps = Counter(_months_between(a, b) for a, b in zip(keys, keys[1:]))
+        # monthly or coarser: calendar steps, unless two dates share a month (4-weekly / irregular data)
+        if first or (median([b - a for a, b in zip(x, x[1:])]) >= 28 and 0 not in gaps):
             top = max(gaps.values())
             step = max(1, min(g for g, c in gaps.items() if c == top))
-            dom = 1 if first else "end" if all(_month_end(k) for k in keys) else keys[-1].day
+            dom = 1 if first else "end" if all(_month_end(k) for k in keys) else \
+                Counter(k.day for k in keys).most_common(1)[0][0]
             dates = [_add_months(keys[-1], step * i, dom) for i in range(1, periods + 1)]
         else:
             step = max(1, round(median([b - a for a, b in zip(x, x[1:])])))
@@ -1487,7 +1887,7 @@ def forecast(table, args):
     """線形トレンドによる将来値と95%予測区間。"""
     periods, period = args.get("periods") or 3, args.get("period") or "raw"
     agg = args.get("agg") or ("mean" if table.column(args["value"]).unit == "%" else "sum")
-    s = _series(table, args["value"], args.get("time"), agg, period)
+    s = _series(table, args["value"], args.get("time"), agg, period, fiscal_start=args.get("fiscal_start") or 1)
     x, y = s["x"], s["y"]
     n = len(y)
     out = {"method": "linear_trend", "value": table.column(args["value"]).name,
@@ -1529,7 +1929,10 @@ def calculator(table, args):
 
 
 _ALL = ["numeric", "datetime", "boolean", "categorical", "text"]
+_GROUP_KINDS = ["categorical", "boolean"]
 _PERIOD = {"type": "enum", "required": False, "enum": ["raw", "month", "year"], "default": "raw"}
+# First month of a period=year bucket (4: 年度). Set by the rule planner, not listed in planner prompts.
+_FISCAL = {"type": "int", "required": False, "min": 1, "max": 12, "internal": True}
 TOOL_SPECS = {
     "profile": {"description": "行数・列の型・欠損・変換できなかったセルを確認", "label": "データ概要を作成中",
                 "args": {}},
@@ -1547,16 +1950,21 @@ TOOL_SPECS = {
                      "value": {"type": "column", "required": False, "kinds": ["numeric"]},
                      "agg": {"type": "enum", "required": False,
                              "enum": ["sum", "mean", "median", "count", "min", "max"]}}},
-    "trend": {"description": "時系列の推移・傾き・変化率・年平均成長率", "label": "推移を分析中", "args": {
-        "value": {"type": "column", "required": True, "kinds": ["numeric"]},
-        "time": {"type": "column", "required": False, "kinds": ["datetime", "numeric"]},
-        "agg": {"type": "enum", "required": False, "enum": ["sum", "mean"]},
-        "period": _PERIOD}},
-    "outliers": {"description": "IQR法またはzスコア法で外れ値を検出", "label": "外れ値を検出中", "args": {
-        "column": {"type": "column", "required": True, "kinds": ["numeric"]},
-        "method": {"type": "enum", "required": False, "enum": ["iqr", "zscore"], "default": "iqr"},
-        "threshold": {"type": "number", "required": False, "min": 0.5, "max": 6.0}}},
-    "compare": {"description": "2グループの平均を比較（Welchのt検定・効果量）", "label": "グループを比較中",
+    "trend": {"description": "時系列の推移・傾き・変化率・年平均成長率（by でグループ別の推移も）",
+              "label": "推移を分析中", "args": {
+                  "value": {"type": "column", "required": True, "kinds": ["numeric"]},
+                  "time": {"type": "column", "required": False, "kinds": ["datetime", "numeric"]},
+                  "agg": {"type": "enum", "required": False, "enum": ["sum", "mean"]},
+                  "period": _PERIOD, "fiscal_start": _FISCAL,
+                  "by": {"type": "column", "required": False, "kinds": _GROUP_KINDS}}},
+    "outliers": {"description": "IQR法またはzスコア法で外れ値を検出（by でグループごとの基準で判定）",
+                 "label": "外れ値を検出中", "args": {
+                     "column": {"type": "column", "required": True, "kinds": ["numeric"]},
+                     "method": {"type": "enum", "required": False, "enum": ["iqr", "zscore"], "default": "iqr"},
+                     "threshold": {"type": "number", "required": False, "min": 0.5, "max": 6.0},
+                     "by": {"type": "column", "required": False, "kinds": _GROUP_KINDS}}},
+    "compare": {"description": "グループの平均を比較（2グループはWelchのt検定・効果量、3グループ以上は分散分析）",
+                "label": "グループを比較中",
                 "args": {"value": {"type": "column", "required": True, "kinds": ["numeric"]},
                          "by": {"type": "column", "required": True, "kinds": _ALL},
                          "a": {"type": "string", "required": False, "max_length": 500},
@@ -1575,7 +1983,7 @@ TOOL_SPECS = {
         "periods": {"type": "int", "required": False, "min": 1,
                     "max": LIMITS["max_forecast_periods"], "default": 3},
         "agg": {"type": "enum", "required": False, "enum": ["sum", "mean"]},
-        "period": _PERIOD}},
+        "period": _PERIOD, "fiscal_start": _FISCAL}},
     "calculator": {"description": "数値と + - * / % による計算", "label": "計算中", "args": {
         "expression": {"type": "string", "required": True, "max_length": 200}}},
 }
@@ -1648,11 +2056,17 @@ def validate_args(table, tool, args):
             raise DataError("count 以外の集計には value（数値列）が必要です")
     elif tool in ("trend", "forecast"):
         _distinct(result, "value", "time")
+        _distinct(result, "value", "by")
         result.setdefault("agg", "mean" if table.column(result["value"]).unit == "%" else "sum")
         if result["period"] != "raw" and (not result.get("time")
                                           or table.column(result["time"]).kind != "datetime"):
             raise DataError("period（month / year）は日付列の time と組み合わせて指定してください")
+        if result.get("fiscal_start") == 1:
+            del result["fiscal_start"]           # calendar years are the default
+        elif "fiscal_start" in result and result["period"] != "year":
+            raise DataError("fiscal_start は period=year と組み合わせて指定してください")
     elif tool == "outliers":
+        _distinct(result, "column", "by")
         lo, hi, default = (0.5, 5.0, 1.5) if result["method"] == "iqr" else (1.5, 6.0, 3.0)
         result.setdefault("threshold", default)
         if not lo <= result["threshold"] <= hi:

@@ -47,6 +47,10 @@ def test_bootstrap_is_deterministic_and_covers_both_stages_and_languages():
     assert statuses.count("continue") >= 50 and statuses.count("complete") >= 50
     columns = {name for row in RECORDS for name in row["data"]}
     assert {"月", "日付", "地域", "店舗", "商品", "売上", "販売数", "広告費", "客数", "単価"} <= columns
+    # per-group trends / outliers appear in both stages (as done steps the planner must not repeat)
+    grouped = [r for r in RECORDS if any(s["tool"] in ("trend", "outliers") and "by" in s["arguments"]
+                                         for s in r["steps"])]
+    assert {r["stage"] for r in grouped} == {"plan", "narrate"} and {r["language"] for r in grouped} == {"ja", "en"}
 
 
 def test_every_record_compiles_within_the_prompt_bounds():

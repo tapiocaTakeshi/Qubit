@@ -648,7 +648,7 @@ def test_rule_plan_column_mentions_are_bounded_and_longest_first():
 @pytest.mark.parametrize("question,tools,group_key", [
     ("店舗番号ごとの売上", ["profile", "group_by"], "店舗番号"),
     ("月別の売上", ["profile", "trend"], None),
-    ("地域別・月別の売上", ["profile", "trend", "group_by"], "地域"),
+    ("地域別・月別の売上", ["profile", "trend"], None),      # the trend by 地域 answers it; no extra totals
     ("売上 by 地域", ["profile", "group_by"], "地域"),
     ("年度ごとの売上の合計", ["profile", "trend"], None),
     ("売上が最も高い地域は？", ["profile", "group_by"], "地域"),
@@ -818,7 +818,10 @@ def test_relationship_between_categories_is_a_crosstab():
     data = {"部署": ["営業", "開発", "人事"] * 8, "性別": ["男", "女"] * 12, "満足度": list(range(24)),
             "残業": [(i * 7) % 11 for i in range(24)]}
     assert plan_of("部署と性別の関係は？", data)[1] == ("crosstab", {"row": "部署", "col": "性別"})
-    assert tools_of("部署と満足度の関係は？", data) == ["profile", "group_by", "compare"]
+    # 3 departments of 8: the ANOVA in compare lists every group mean, so no separate group_by
+    assert tools_of("部署と満足度の関係は？", data) == ["profile", "compare"]
+    lopsided = {**data, "部署": ["営業"] * 22 + ["開発", "人事"]}     # 1 group of 2+ values: pairwise mode
+    assert tools_of("部署と満足度の関係は？", lopsided) == ["profile", "group_by", "compare"]
     assert dict(plan_of("満足度と残業の関係は？", data))["correlate"]["x"] == "満足度"
 
 
@@ -848,12 +851,32 @@ def test_non_significant_correlation_is_not_stated_as_existing():
     assert "相関があります" not in corr["statement"]
 
 
-def test_comparing_many_groups_shows_all_and_says_which_two_were_tested():
+def test_comparing_many_groups_runs_an_anova_without_overclaiming():
     data = {"地域": ["九州", "北海道", "関東", "関西"] * 6, "売上": [i * 10 + (i % 4) * 100 for i in range(24)]}
     result = text_of("地域間で売上を比較して", data)
-    assert tools_of("地域間で売上を比較して", data) == ["profile", "group_by", "compare"]
-    assert "4グループのうち件数の多い2グループを比較しています。" in result["generated_text"]
-    assert "関東" in result["generated_text"] and "関西" in result["generated_text"]
+    assert tools_of("地域間で売上を比較して", data) == ["profile", "compare"]
+    step = next(s for s in result["analyst"]["steps"] if s["tool"] == "compare")
+    assert step["output"]["mode"] == "anova" and step["output"]["test"] == "welch_anova"
+    assert [g["label"] for g in step["output"]["groups"]] == ["関西", "関東", "北海道", "九州"]   # by mean
+    comparison = next(f for f in result["analyst"]["findings"] if f["kind"] == "comparison")
+    assert "少なくとも1つの地域の平均が他と統計的に有意に異なります" in comparison["statement"]
+    assert "Welchの分散分析" in comparison["statement"] and "η²=" in comparison["statement"]
+    assert "平均が最も高いのは「関西」" in comparison["statement"] and "最も低いのは「九州」" in comparison["statement"]
+    pairwise = next(f for f in result["analyst"]["findings"] if f["kind"] == "pairwise")
+    assert "6組の比較でBonferroni補正後" in pairwise["statement"]
+    assert pairwise["evidence"]["comparisons"] == 6
+    assert "件数の多い2グループ" not in result["generated_text"]
+    assert verify_numbers(result["generated_text"], result["analyst"]["findings"]) == []
+    flat = {"地域": ["九州", "北海道", "関東"] * 6, "売上": [100 + (i * 7) % 5 for i in range(18)]}
+    null = next(f for f in text_of("地域間で売上を比較して", flat)["analyst"]["findings"] if f["kind"] == "comparison")
+    assert "統計的に有意な差は見られません" in null["statement"] and "異なります" not in null["statement"]
+    assert null["confidence"]["label"] != "high"
+    english = next(f for f in text_of("Compare 売上 across 地域", data, "en")["analyst"]["findings"]
+                   if f["kind"] == "comparison")
+    assert "at least one 地域 differs significantly" in english["statement"]
+    # with explicit groups (or only two groups of 2+ values) the 2-group comparison is unchanged
+    named = text_of("関東と九州の売上を比較して", data)["analyst"]["steps"]
+    assert next(s for s in named if s["tool"] == "compare")["output"]["mode"] == "pair"
 
 
 def test_binary_outcomes_are_rates_not_outliers():
@@ -888,9 +911,31 @@ def test_recent_change_names_the_actual_period(dates, label):
     assert "前年比" in text_of("売上の推移は？", years)["generated_text"]
 
 
-def test_per_group_trend_question_says_the_trend_is_overall():
-    caveats = text_of("地域別の売上の推移は？", None)["analyst"]["caveats"]
-    assert "推移は地域をまとめた全体について計算しています。地域ごとの推移は計算していません。" in caveats
+def test_per_group_trend_question_runs_trends_per_group():
+    result = text_of("地域別の売上の推移は？", None)
+    report = result["analyst"]
+    step = next(s for s in report["steps"] if s["tool"] == "trend")
+    assert step["arguments"]["by"] == "地域" and step["output"]["groups_trended"] == 4
+    assert not any("計算していません" in c for c in report["caveats"])
+    finding = next(f for f in report["findings"] if f["kind"] == "trend_groups")
+    assert finding["statement"].startswith("地域別（4グループ）に売上の推移を見ると、")
+    assert "伸びが最も大きいのは「" in finding["statement"] and finding["statement"] in result["generated_text"]
+    assert verify_numbers(result["generated_text"], narrative_prompt(
+        report["question"], report["findings"], report["caveats"])) == []
+    assert "複数の検定を行っているため、偶然に有意となる結果が含まれる可能性があります。" in report["caveats"]
+    # English phrasing and a breakdown question that is not a per-group trend
+    assert dict(plan_of("Show the sales trend by region", {
+        "month": [f"2024-{m:02d}" for m in range(1, 13)] * 2, "region": ["N"] * 12 + ["S"] * 12,
+        "sales": list(range(24))}))["trend"]["by"] == "region"
+    assert "by" not in dict(plan_of("売上の推移と地域別の内訳", sales_csv()))["trend"]
+    assert dict(plan_of("売上の推移を地域ごとに見せて", sales_csv()))["trend"]["by"] == "地域"
+
+
+def test_per_group_trend_on_a_numeric_key_says_the_trend_is_overall():
+    data = {"月": [f"2024-{m:02d}" for m in range(1, 13)] * 2, "支店番号": [1] * 12 + [2] * 12,
+            "売上": [100 + i for i in range(24)]}
+    caveats = text_of("支店番号別の売上の推移は？", data)["analyst"]["caveats"]
+    assert "推移は支店番号をまとめた全体について計算しています。支店番号ごとの推移は計算していません。" in caveats
 
 
 def test_time_keywords_survive_a_column_named_month_or_year():
@@ -912,6 +957,13 @@ def test_crafted_questions_stay_fast():
     years = T.load_table({"年": [2000 + i % 20 for i in range(20000)], "v": list(range(20000))})
     rule_plan("年" * 2000, years)
     assert clock.perf_counter() - start < 3
+    # hundreds of group-key mentions: per-group trend / outlier keys are found without rescanning clauses
+    keyed = T.load_table({"x": ["a", "b"] * 10, "月": [f"2024-{m:02d}" for m in range(1, 11)] * 2, "v": list(range(20))})
+    start = clock.perf_counter()
+    for question in ("x別" * 1000, "x別 " * 666, "推移" + "x別の" * 666, "x " * 1000):
+        rule_plan(question[:2000], keyed)
+        A._question_caveats(question[:2000], keyed, [], True)
+    assert clock.perf_counter() - start < 1.5      # was ~0.7 s per question when each mention rescanned
 
 
 def test_request_and_caller_plan_numbers_never_overflow():
@@ -1000,3 +1052,404 @@ def test_failed_reports_have_null_dataset_and_empty_lists():
     report = run_analyst(request("概要", "a,b\n", use_model=False))["analyst"]
     assert report["status"] == "failed" and report["dataset"] is None
     assert report["findings"] == report["caveats"] == report["next_questions"] == []
+
+
+# ---------------------------------------------------------------- per-group outliers, ANOVA, per-group trends
+
+def regional_sales(double=("大阪", 7)):
+    """Three regions on different scales; 大阪's 2024-08 is doubled, which is still ordinary overall."""
+    lines = ["月,地域,売上(万円),広告費"]
+    for m in range(18):
+        for region, base in (("東京", 700), ("大阪", 500), ("福岡", 350)):
+            value = base + 8 * m + (m * 37 + len(region) * 11) % 60
+            if (region, m) == double:
+                value *= 2
+            lines.append(f"{2024 + m // 12}-{m % 12 + 1:02d},{region},{value},{30 + (m * 13) % 40}")
+    return "\n".join(lines) + "\n"
+
+
+OSAKA_ROW = 7 * 3 + 2      # 1-based data row of 大阪 2024-08
+
+
+def test_regional_question_finds_the_anomaly_inside_its_own_region():
+    question = "地域別の売上を比較して、異常値があれば教えて"
+    pooled = T.run_tool(T.load_table(regional_sales()), "outliers", {"column": "売上(万円)"})
+    assert OSAKA_ROW not in [r["row"] for r in pooled["rows"]]          # what the pooled detector misses
+    result = text_of(question, regional_sales())
+    report = result["analyst"]
+    step = next(s for s in report["steps"] if s["tool"] == "outliers")
+    assert step["arguments"]["by"] == "地域" and step["output"]["rows"][0]["row"] == OSAKA_ROW
+    finding = next(f for f in report["findings"] if f["kind"] == "outlier")
+    value = fmt(T.load_table(regional_sales()).column("売上(万円)").values[OSAKA_ROW - 1])
+    assert finding["statement"].startswith("地域ごとに見ると、売上(万円)に外れ値が")
+    assert f"最も外れているのは「大阪」の{OSAKA_ROW}行目の{value}で、「大阪」の基準範囲は" in finding["statement"]
+    assert finding["statement"] in result["generated_text"] and "見つかりませんでした" not in result["generated_text"]
+    assert next(s for s in report["steps"] if s["tool"] == "compare")["output"]["mode"] == "anova"
+    assert any(q.startswith(f"「大阪」の売上(万円)の外れ値（{OSAKA_ROW}行目など）") for q in report["next_questions"])
+    assert verify_numbers(result["generated_text"], narrative_prompt(
+        report["question"], report["findings"], report["caveats"])) == []
+    english = text_of("Compare sales by 地域 and flag anomalies", regional_sales(), "en")["analyst"]["findings"]
+    outlier = next(f for f in english if f["kind"] == "outlier")
+    assert outlier["statement"].startswith("Within each 地域, 売上(万円) has") and "(\"大阪\"" in outlier["statement"]
+
+
+@pytest.mark.parametrize("question,by", [
+    ("地域別の売上の外れ値は？", "地域"), ("地域ごとに異常値を調べて", "地域"), ("地域の売上に異常値はある？", "地域"),
+    ("売上の外れ値を検出して", None), ("売上の外れ値と、地域の構成比", None)])
+def test_outlier_detection_splits_by_a_group_named_with_it(question, by):
+    assert dict(plan_of(question, regional_sales()))["outliers"].get("by") == by
+
+
+def test_overview_detects_outliers_per_group_only_when_scales_differ():
+    assert "by" not in dict(plan_of("このデータを見てください", regional_sales()))["outliers"]   # medians 1.9x apart
+    lines = ["地域,売上"] + [f"{r},{base + (i * 7) % 13}" for i in range(12)
+                            for r, base in (("本店", 1000), ("支店", 100))]
+    assert dict(plan_of("このデータを見てください", "\n".join(lines)))["outliers"]["by"] == "地域"   # 10x apart
+    assert A.SCALE_RATIO == 2.0
+
+
+def test_zscore_outliers_by_small_groups_also_run_iqr_per_group():
+    question = "地域ごとの売上をzスコアで異常値チェック"
+    zscore = {"column": "売上(万円)", "method": "zscore", "threshold": 3.0, "by": "地域"}
+    assert [args for tool, args in plan_of(question, regional_sales()) if tool == "outliers"] == [zscore]
+    short = "\n".join(regional_sales().splitlines()[:1 + 3 * 10])     # 10 per region: |z|>3 is impossible
+    assert [args for tool, args in plan_of(question, short) if tool == "outliers"] == [
+        zscore, {"column": "売上(万円)", "method": "iqr", "threshold": 1.5, "by": "地域"}]
+
+
+def test_per_group_trend_names_the_fastest_and_declining_groups():
+    lines = ["月,地域,売上"]
+    for m in range(12):
+        for region, base, growth in (("東", 1000, 30), ("西", 100, 8), ("南", 500, -20)):
+            lines.append(f"2024-{m + 1:02d},{region},{base + growth * m + (m * 7) % 5}")
+    data = "\n".join(lines)
+    result = text_of("地域別の売上の推移を教えて", data)
+    finding = next(f for f in result["analyst"]["findings"] if f["kind"] == "trend_groups")
+    assert "伸びが最も大きいのは「西」（1か月あたり平均水準の+" in finding["statement"]
+    assert "落ち込みが最も大きいのは「南」（1か月あたり平均水準の-" in finding["statement"]
+    assert "有意な減少傾向は「南」です。" in finding["statement"]
+    assert finding["evidence"]["declining"] == ["南"] and finding["evidence"]["rank_by"] == "slope_pct"
+    assert any("「南」の売上が減少している要因" in q for q in result["analyst"]["next_questions"])
+    english = next(f for f in text_of("trend of 売上 by 地域", data, "en")["analyst"]["findings"]
+                   if f["kind"] == "trend_groups")
+    assert "The fastest growth is in \"西\"" in english["statement"] and "Significant declines: \"南\"." in english["statement"]
+    for language in ("ja", "en"):
+        report = text_of("地域別の売上の推移を教えて", data, language)
+        assert verify_numbers(report["generated_text"], report["analyst"]["findings"], report["analyst"]["dataset"],
+                              report["analyst"]["caveats"]) == []
+    report = result["analyst"]       # the Japanese report fits the narration prompt whole
+    assert verify_numbers(result["generated_text"], narrative_prompt(report["question"], report["findings"],
+                                                                     report["caveats"])) == []
+
+
+def test_planner_prompt_lists_the_new_by_arguments_within_the_limit():
+    prompt = planner_prompt("地域別の売上の推移と異常値", T.load_table(regional_sales()), [], 3)
+    assert '"trend":["value*","time","agg","period","by"]' in prompt
+    assert '"outliers":["column*","method","threshold","by"]' in prompt and len(prompt) <= A.PLANNER_LIMIT
+    decision = '{"status":"continue","action":"outliers","arguments":{"column":"売上(万円)","by":"地域"}}'
+    assert parse_plan_decision(decision, regional_sales())[2]["by"] == "地域"
+    with pytest.raises(T.DataError):
+        parse_plan_decision('{"status":"continue","action":"trend","arguments":{"value":"売上(万円)","by":"広告費"}}',
+                            regional_sales())
+
+
+def test_many_groups_name_the_true_extremes_beyond_the_listing():
+    lines = ["月,店舗,売上"]
+    for m in range(20):              # 1,200 rows: 60 stores is still a categorical column (<= 5% of rows)
+        for g in range(60):          # growth falls with the store number; s59 declines fastest
+            lines.append(f"{2023 + m // 12}-{m % 12 + 1:02d},s{g:02d},{3000 + (30 - g) * 5 * m + (m * g) % 3}")
+    data = "\n".join(lines)
+    assert T.load_table(data).column("店舗").kind == "categorical"
+    trend = next(s for s in text_of("店舗別の売上の推移", data)["analyst"]["steps"] if s["tool"] == "trend")["output"]
+    assert len(trend["groups"]) == T.LIMITS["max_groups"] and trend["truncated"]
+    assert trend["lowest"]["key"] == "s59" and trend["declining"][0] == "s59"
+    finding = next(f for f in text_of("店舗別の売上の推移", data)["analyst"]["findings"] if f["kind"] == "trend_groups")
+    assert "落ち込みが最も大きいのは「s59」" in finding["statement"] and "一部のグループは省略しています。" in finding["statement"]
+    report = text_of("店舗間で売上を比較して", data)["analyst"]
+    comparison = next(f for f in report["findings"] if f["kind"] == "comparison")
+    assert "最も低いのは「s59」" in comparison["statement"] and comparison["evidence"]["bottom"]["label"] == "s59"
+
+
+def test_documented_per_group_example_matches_the_real_output():
+    from pathlib import Path
+    doc = (Path(__file__).parents[1] / "docs" / "QUBIT_ANALYST.md").read_text(encoding="utf-8")
+    block = doc.split('"地域別の売上を比較して、異常値があれば教えて"` を実行すると', 1)[1].split("```text\n", 1)[1]
+    lines = block.split("```", 1)[0].strip().splitlines()
+    text = text_of("地域別の売上を比較して、異常値があれば教えて", regional_sales())["generated_text"]
+    assert len(lines) == 3 and all(line in text.splitlines() for line in lines)
+
+
+# ---------------------------------------------------------------- third review round
+
+def finding(result, kind):
+    return next(f for f in result["analyst"]["findings"] if f["kind"] == kind)
+
+
+def statements(result):
+    return [f["statement"] for f in result["analyst"]["findings"]]
+
+
+def jp_sales():
+    """月 x 地域 x 店舗 monthly sales on different scales; 大阪店 2024-07 (row 168) is planted at about twice
+    its level; 九州 declines."""
+    stores = [("北海道", "札幌店", 360, 0.0), ("関東", "新宿店", 1700, 12.0), ("関東", "渋谷店", 1500, 10.0),
+              ("関東", "池袋店", 1400, 9.0), ("関西", "大阪店", 1040, 8.0), ("関西", "京都店", 760, 6.0),
+              ("九州", "福岡店", 700, -6.0), ("九州", "熊本店", 400, -3.0), ("北海道", "旭川店", 330, 0.5)]
+    lines = ["月,地域,店舗,売上(万円),広告費(万円)"]
+    for m in range(24):
+        for k, (region, store, base, growth) in enumerate(stores):
+            value = round(base + growth * m + ((m * 7 + k * 5) % 11 - 5) * base / 400)
+            if (store, m) == ("大阪店", 18):
+                value *= 2
+            lines.append(f"{2023 + m // 12}-{m % 12 + 1:02d},{region},{store},{value},{round(value / 10)}")
+    return "\n".join(lines) + "\n"
+
+
+OSAKA_STORE_ROW = 18 * 9 + 4 + 1
+
+
+def test_fiscal_year_question_buckets_monthly_data_by_fiscal_year():
+    data = "月,売上\n" + "\n".join(f"{2020 + (3 + i) // 12}-{(3 + i) % 12 + 1:02d},{1000 + 10 * i}" for i in range(48))
+    trend = next(s for s in text_of("年度別の売上の推移を教えて", data)["analyst"]["steps"] if s["tool"] == "trend")
+    o = trend["output"]
+    assert trend["arguments"]["fiscal_start"] == 4 and o["n"] == 4 and o["rows_used"] == 48
+    assert o["partial_periods"] == [] and o["first_period"] == "2020年度"
+    assert "fiscal_start" not in dict(plan_of("年別の売上の推移を教えて", data))["trend"]
+
+
+def test_missing_group_labels_do_not_hide_the_iqr_fallback():
+    lines = ["店舗,売上"]
+    for store in "ABC":
+        lines += [f"{store},{v}" for v in (98, 101, 99, 102, 100, 97, 103, 100, 101, 300)]
+    lines += [f",{100 + i % 3}" for i in range(15)]
+    data = "\n".join(lines)
+    question = "店舗ごとの売上の外れ値をzスコアで調べて"
+    assert ("outliers", {"column": "売上", "method": "iqr", "threshold": 1.5, "by": "店舗"}) in plan_of(question, data)
+    assert any("300" in s for s in statements(text_of(question, data)))
+
+
+def test_step_words_follow_the_real_gap_between_periods():
+    rows = ["日付,地域,売上"]
+    for i in range(8):        # quarterly data asked monthly; 東 rises 30 a quarter
+        day = f"{2022 + i // 4}-{3 * (i % 4) + 1:02d}-01"
+        rows += [f"{day},東,{1000 + 30 * i}", f"{day},西,{1000 - 30 * i}"]
+    result = text_of("地域別の売上の月別推移", "\n".join(rows))
+    groups = finding(result, "trend_groups")["statement"]
+    assert "1四半期あたり" in groups and "1か月あたり" not in groups
+    assert "前四半期比" in finding(result, "recent")["statement"]
+    gap = "月,売上\n" + "\n".join(f"2024-{m:02d},{v}" for m, v in zip((1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12),
+                                                                     (100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 300)))
+    assert not any("前月比" in s for s in statements(text_of("売上の推移", gap)))
+
+
+def test_a_sum_word_for_one_column_never_sums_a_rate():
+    rows = ["日付,売上,CVR"] + [f"2024-{1 + i // 28:02d}-{1 + i % 28:02d},{1000 + i},{2 + (i % 9) / 10:.2f}%"
+                                 for i in range(28 * 12)]
+    plan = dict((args["value"], args["agg"]) for tool, args in plan_of("月別の売上合計とCVRの推移を見せて", "\n".join(rows))
+                if tool == "trend")
+    assert plan == {"売上": "sum", "CVR": "mean"}
+    assert dict(plan_of("部署別の満足度の合計は？", "部署,満足度\nA,3\nB,4\nA,5\nB,2"))["group_by"]["agg"] == "sum"
+    assert dict(plan_of("CVRの合計の推移", "\n".join(rows)))["trend"]["agg"] == "sum"
+
+
+def test_growth_rate_questions_do_not_switch_to_averages():
+    data = "年度,部門,売上高\n" + "\n".join(f"{2015 + y},{d},{1000 + 100 * y + 50 * k}" for y in range(10)
+                                         for k, d in enumerate(("国内", "海外", "新規")))
+    assert dict(plan_of("売上高の年平均成長率は？", data))["trend"]["agg"] == "sum"
+    assert dict(plan_of("売上高の平均の推移は？", data))["trend"]["agg"] == "mean"
+
+
+def test_blocked_columns_are_counted_without_a_per_cell_list_scan():
+    import time
+    column = [i if i % 2 == 0 else chr(0x4E00 + i // 2) for i in range(20000)]
+    data = {f"c{k}": column for k in range(5)}
+    started = time.monotonic()
+    result = run_analyst({"inputs": "、".join(data) + "の平均は？", "parameters": {"data": data, "use_model": False}})
+    assert time.monotonic() - started < 3
+    assert sum("数値として解釈できないセルが10,000件" in c for c in result["analyst"]["caveats"]) == 5
+
+
+def test_value_scan_is_linear_on_crafted_labels():
+    import time
+    data = {f"g{k}": ["a" * (480 + i % 20) for i in range(40)] for k in range(59)}
+    data["v"] = list(range(40))
+    table = T.load_table(data)
+    started = time.monotonic()
+    plan = rule_plan("比較 " + "a" * 1990, table)
+    assert time.monotonic() - started < 1.5 and [p["tool"] for p in plan] == ["profile", "compare"]
+    assert A._scan("a data i b", [("a", 1), ("i", 2), ("data", 3)]) == [(2, 6, 3)]    # semantics kept
+
+
+def test_a_lone_surrogate_in_the_model_narrative_uses_the_template():
+    data = "月,売上\n" + "\n".join(f"2024-{m:02d},{100 + 5 * m}" for m in range(1, 13))
+    result = run_analyst({"inputs": "売上の推移", "parameters": {"data": data, "max_steps": 0}},
+                         lambda prompt: "売上は増加傾向です\ud800。詳しくは所見を参照。")
+    assert result["analyst"]["narrative_source"] == "template" and "\ud800" not in result["generated_text"]
+    json.dumps(result, ensure_ascii=False).encode("utf-8")
+
+
+def test_row_order_trends_are_low_confidence_and_wide_sheets_are_not_trended():
+    rows = ["部署,勤続年数,残業時間"] + [f"{['営業', '開発', '人事'][i // 40]},{i % 17},{40 - i * 0.15:.1f}" for i in range(120)]
+    data = "\n".join(rows)
+    trend = finding(text_of("残業時間は増加している？", data), "trend")
+    assert trend["statement"].startswith("行の並び順で見ると") and trend["confidence"]["label"] == "low"
+    axis = text_of("勤続年数ごとの残業時間の推移", data)["analyst"]
+    step = next(s for s in axis["steps"] if s["tool"] == "trend")
+    assert step["arguments"]["time"] == "勤続年数" and step["arguments"]["agg"] == "mean"
+    assert not any("全体について計算" in c for c in axis["caveats"])
+    wide = "店舗,1月,2月,3月,4月,5月,6月\n新宿,1200,1250,1310,1380,1420,1500\n渋谷,980,1010,990,1050,1080,1120\n" \
+           "池袋,1100,1120,1150,1170,1160,1210\n大宮,640,630,610,600,590,560\n"
+    result = text_of("売上の推移を教えて", wide)
+    assert [s["tool"] for s in result["analyst"]["steps"]] == ["profile"]
+    assert any("横持ちの表" in c and "1月…6月" in c for c in result["analyst"]["caveats"])
+
+
+def test_unnamed_anomaly_questions_split_by_group_like_the_overview():
+    for question, language in (("売上に異常値はある？", "ja"), ("Are there any anomalies by region?", "en"),
+                               ("エリアごとの異常値を教えて", "ja")):
+        result = text_of(question, jp_sales(), language)
+        out = next(s for s in result["analyst"]["steps"] if s["tool"] == "outliers")["output"]
+        assert out["by"] == "地域" and out["rows"][0]["row"] == OSAKA_STORE_ROW
+        assert [s["tool"] for s in result["analyst"]["steps"]] == ["profile", "outliers"]   # no totals first
+
+
+def test_a_named_group_value_splits_by_its_column_with_a_caveat():
+    result = text_of("大阪店の売上に異常はある？", jp_sales())["analyst"]
+    out = next(s for s in result["steps"] if s["tool"] == "outliers")["output"]
+    assert out["by"] == "店舗" and out["rows"][0]["row"] == OSAKA_STORE_ROW
+    assert "「大阪店」だけに絞った分析には対応していないため、全体（店舗ごと）を分析しました。" in result["caveats"]
+    assert any(c.startswith("「大阪店」の売上(万円)の外れ値は") for c in result["caveats"])
+    trend = text_of("関西の売上の推移を教えて", jp_sales())["analyst"]
+    assert next(s for s in trend["steps"] if s["tool"] == "trend")["arguments"]["by"] == "地域"
+    assert any(c.startswith("「関西」の売上(万円)は2023-01の") for c in trend["caveats"])
+    assert dict(plan_of("Does 関東 sell more than 九州?", jp_sales()))["compare"]["a"] == "関東"   # 2 values: compare
+
+
+def test_three_named_groups_compare_every_group():
+    result = text_of("関東・関西・九州の売上を比較して", jp_sales())["analyst"]
+    compare = next(s for s in result["steps"] if s["tool"] == "compare")
+    assert "a" not in compare["arguments"] and compare["output"]["mode"] == "anova"
+    assert "「関東」「関西」「九州」を含む全4グループで比較しています。" in result["caveats"]
+
+
+def test_single_letter_variants_are_read_in_english():
+    data = "variant,converted\n" + "\n".join(f"{'ABC'[i % 3]},{int(i % (7 + i % 3) == 0)}" for i in range(300))
+    assert dict(plan_of("Compare converted between A and C", data))["compare"] | {} == {
+        "value": "converted", "by": "variant", "a": "A", "b": "C"}
+    assert {k: v for k, v in dict(plan_of("Is there a difference in converted between B and C", data))["compare"].items()
+            if k in "ab"} == {"a": "B", "b": "C"}
+    note = finding(text_of("Compare converted for C", data, "en"), "comparison")["statement"]
+    assert "the largest other group" in note
+
+
+@pytest.mark.parametrize("question,tool,args", [
+    ("売上が減っている地域は？", "trend", {"by": "地域"}),
+    ("どの地域が成長している？", "trend", {"by": "地域"}),
+    ("地域によって伸び方は違う？", "trend", {"by": "地域"}),
+    ("店舗によって売上は異なる？", "compare", {"by": "店舗"}),
+    ("広告費(万円)を増やすと売上は伸びる？", "correlate", {"x": "広告費(万円)"}),
+    ("売上(万円)の前年比は？", "trend", {"value": "売上(万円)"}),
+    ("Which 地域 grew fastest?", "trend", {"by": "地域"}),
+    ("店舗ごとに売上がおかしな月はある？", "outliers", {"by": "店舗"}),
+])
+def test_common_phrasings_reach_the_right_tool(question, tool, args):
+    plan = plan_of(question, jp_sales())
+    found = [a for t, a in plan if t == tool]
+    assert found and all(found[0].get(k) == v for k, v in args.items())
+    if tool == "correlate":
+        assert "trend" not in [t for t, _ in plan]
+
+
+def test_when_questions_get_the_period_and_full_rankings():
+    quarters = "決算期,営業利益\n" + "\n".join(f"{2023 + i // 4}-{3 * (i % 4) + 3:02d}-{30 if i % 4 in (1, 2) else 31},"
+                                              f"{100 + 20 * i - (i % 3) * 15}" for i in range(8))
+    text = finding(text_of("営業利益が最も高かった四半期は？", quarters), "ranking")["statement"]
+    assert text.startswith("営業利益の上位5件は、大きい順に2024-12-31（") and "行目" not in text
+    yearly = "年度,部門,営業利益\n" + "\n".join(f"{2015 + y},{d},{100 + 10 * y + k}" for y in range(5)
+                                            for k, d in enumerate(("国内", "海外")))
+    assert ("group_by", {"by": "年度", "value": "営業利益", "agg": "sum"}) in plan_of("営業利益が最も高かった年度は？", yearly)
+    start = __import__("datetime").date(2024, 1, 1)
+    daily = "日付,売上\n" + "\n".join(f"{start + __import__('datetime').timedelta(days=i)},{100 + i % 50}" for i in range(366))
+    assert dict(plan_of("売上が最も高かった月は？", daily))["trend"]["period"] == "month"
+    assert dict(plan_of("売上が最も高かった日は？", daily))["top_n"]["label"] == "日付"
+    bottom = finding(text_of("売上の下位3件", "商品,売上\nA,5\nB,3\nC,9\nD,1\n"), "ranking")["statement"]
+    assert bottom == "売上の下位3件は、小さい順にD（1）、B（3）、A（5）です。下位3件で全体の50%を占めます。"
+
+
+def test_changes_from_a_loss_are_not_percentages():
+    data = "決算期,営業利益(百万円)\n" + "\n".join(f"{2020 + i // 4}-{3 * (i % 4) + 3:02d}-01,{v}"
+                                                 for i, v in enumerate(["▲125", "▲80", "▲20", "15", "60", "120", "180", "229"]))
+    text = finding(text_of("営業利益の推移を教えて", data), "trend")["statement"]
+    assert "-125から" in text and "+354（赤字から黒字に転換）変化しました" in text and "%変化" not in text
+    neg = "事業部,営業利益\n" + "\n".join(f"黒字部門,{100 + i}\n赤字部門,▲{50 + i}" for i in range(6))
+    assert "%" not in finding(text_of("黒字部門と赤字部門の営業利益を比較して", neg), "comparison")["statement"]
+
+
+def test_numbers_written_with_the_header_unit_are_grounded():
+    prompt = "質問: 比較\n結果:\n- 「関東」の売上(万円)平均は1,645、差は1,277です。"
+    assert verify_numbers("関東の売上は北海道を1,277万円上回ります。", prompt) == []
+    assert verify_numbers("関東の売上は北海道を1,277万円上回ります。", prompt.replace("(万円)", "")) == ["1,277万"]
+    assert verify_numbers("来場者数は995千人から1,388千人へ増えました。", "来場者数(千人)は995から1,388へ") == []
+
+
+@pytest.mark.parametrize("text,sources,expected", [
+    ("売上は100%増加", ["日付1列・カテゴリ1列・数値3列"], ["100%"]),
+    ("2,400%増加", ["n=24"], ["2,400%"]),
+    ("0%", ["欠損セルは0件"], []),
+    ("構成比は26.29%、全体の26%", [0.262925], []),
+    ("利益率は5.7%上昇", ["+5.7ポイント（相対+47.5%）"], ["5.7%"]),
+    ("5.7ポイント、5.7%ポイント、+5.7 percentage points、相対47.5%", ["+5.7ポイント（相対+47.5%）"], []),
+    ("0.5ポイント差", ["平均の差は0.5"], []),
+    ("2x、3×、2-fold", [2, 3], ["2x", "3×", "2-fold"]),
+    ("96行×5列、96×5、3x3 の表", [96, 5, 3], []),
+])
+def test_guard_units_percent_points_and_multipliers(text, sources, expected):
+    assert verify_numbers(text, *sources) == expected
+
+
+@pytest.mark.parametrize("text,ok", [
+    ("Sales fell 87.23% over the period.", False), ("Sales dropped by 87.23%.", False),
+    ("Sales decreased by 87.23%.", False), ("Sales were down 87.23%.", False),
+    ("売上は期間全体でマイナス87.23%となりました。", False), ("売上は87.23%下がりました。", False),
+    ("87.23%の落ち込み", False), ("▼87.23%", False),
+    ("Sales rose 87.23%.", True), ("Sales grew by 87.23%.", True), ("an 87.23% increase", True),
+    ("前年比プラス87.23%", True), ("Sales fell from 14,982 to 8,002.", True),
+])
+def test_guard_reads_direction_words_around_a_number(text, ok):
+    assert (verify_numbers(text, "売上は14,982から8,002へ+87.23%変化") == []) is ok
+
+
+def test_boolean_groups_show_the_data_words():
+    rows = ["部署,離職意向,残業時間"] + [f"{['営業', '開発'][i % 2]},{'はい' if i % 5 == 0 else 'いいえ'},{20 + i % 7}"
+                                       for i in range(60)]
+    data = "\n".join(rows)
+    text = " ".join(statements(text_of("離職意向と部署のクロス集計", data)) + statements(text_of("離職意向の分布", data))
+                    + statements(text_of("離職意向別の残業時間の平均", data)))
+    assert "「いいえ」" in text and "True" not in text and "False" not in text and "false" not in text
+
+
+def test_rates_of_zero_one_flags_are_percentages_in_breakdowns():
+    data = "variant,converted\n" + "\n".join(f"{'AB'[i % 2]},{int(i % 10 == 0 or (i % 2 and i % 9 == 0))}" for i in range(400))
+    text = finding(text_of("variant別のconvertedの平均は？", data), "breakdown")["statement"]
+    assert text.startswith("variant別のconvertedの割合は") and "%" in text
+
+
+def test_non_significant_group_slopes_are_not_called_growth_or_decline():
+    rows = ["月,店舗,売上"] + [f"{2024 + m // 12}-{m % 12 + 1:02d},{s},{1000 + ((m * 7 + k * 3) % 11) * 5}"
+                               for m in range(12) for k, s in enumerate(("渋谷", "新宿", "立川"))]
+    text = finding(text_of("店舗ごとの売上の推移", "\n".join(rows)), "trend_groups")["statement"]
+    assert "有意な傾向なし" in text and "伸びが最も大きい" not in text and "落ち込みが最も大きい" not in text
+
+
+def test_next_period_forecasts_one_step_for_quarterly_data():
+    quarters = "決算期,営業利益\n" + "\n".join(f"{2021 + i // 4}-{3 * (i % 4) + 3:02d}-01,{100 + 9 * i}" for i in range(12))
+    assert dict(plan_of("来期の営業利益を予測して", quarters))["forecast"]["periods"] == 1
+    monthly = "月,売上\n" + "\n".join(f"{2023 + m // 12}-{m % 12 + 1:02d},{100 + m}" for m in range(24))
+    assert dict(plan_of("来期の売上を予測して", monthly))["forecast"].get("periods", 3) == 3
+
+
+def test_cli_prints_scores_with_three_decimals(tmp_path, capsys):
+    path = tmp_path / "s.csv"
+    path.write_text(sales_csv(), encoding="utf-8")
+    assert A.main([str(path), "売上の概要", "--no-model"]) == 0
+    assert "[F1] high 0.950 " in capsys.readouterr().out
