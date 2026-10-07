@@ -421,6 +421,10 @@ CSV文字列を渡す例:
 （`narrative_source: "template"`、`warnings` に理由）。
 
 - 空、3,000文字超、制御文字・置換文字（�）・対になっていないサロゲートを含む、`{` `[` ```` ``` ```` で始まる、使われている文字が5種類未満
+- **同じ表現の繰り返し**（未学習・学習不足のモデルに多い「いくつかのいくつかの…」のような生成ループ）。
+  zlib圧縮率が20%未満（120バイト以上の文）、同じ行が3回以上、または文字を含む2〜12文字の同じ並びが4回以上連続した場合です
+  （「1200000…」のような数字の連続は値として扱い、繰り返しとはみなしません）。
+- **プロンプトの数値を1つも引用していない**（プロンプトに数値があるのに、結果を述べない文章は数値ガードを素通りしてしまうため）
 - **そのプロンプトの文面にない数値**を含む（最大20件を `unverified_numbers` に記録）。モデルが見ていない数値
   （信頼度スコア、ステップの生の出力、データ概要、省略された所見）とたまたま一致しても採用しません。
 
@@ -529,6 +533,7 @@ CSV文字列を渡す例:
     "next_questions": ["売上の推移を確認しますか？", "地域別の売上の内訳を見ますか？",
                        "売上と広告費の関係を調べますか？", "売上に外れ値がないか確認しますか？"],
     "narrative_source": "template",
+    "narrative_rejected": null,
     "unverified_numbers": [],
     "planner_stop": "disabled",
     "decision_count": 0,
@@ -576,6 +581,7 @@ p<0.001 でも n=16 のため信頼度は `medium`（0.883）にとどまり、A
 | `analyst.caveats` | 注意点（数値として読めなかった名指しの列、質問から特定できず既定にした数値列、列同士の比較の代わりに示した各列の要約、予測期間の上限、日付ごとに集計した日時の列、除外した合計行、絞り込みの代わりにグループ別に分析した値、名前の挙がっていないグループも含めた比較、横持ちの表、除外した不完全な期間、グループ別の推移を求められたが計算できなかった（キーが数値列など）、期間ごとの件数の違い、データ数の少ないグループ、少ないn、欠損の多い列、変換できなかったセル、%単位、相関≠因果、多重検定、外れ値の影響、行順を時系列とみなした、予測の外挿、期待度数の小さいセル、省略・集約、失敗した手順）。`failed` のときは空配列 |
 | `analyst.next_questions` | 次の質問候補（2〜4件。`status: "failed"` のときは空配列） |
 | `analyst.narrative_source` | `template` / `model` |
+| `analyst.narrative_rejected` | モデルの文章を使わなかった理由: `null`（採用した、またはモデルを使っていない）/ `empty` / `too_long` / `garbage` / `repetitive` / `ungrounded` / `unverified` / `context`（文脈長超過）/ `error`（推論失敗）/ `stopped`（停止・時間切れ） |
 | `analyst.unverified_numbers` | ガードで確認できなかったモデル文章中の数値（表記のまま、最大20件） |
 | `analyst.planner_stop` | モデルによる追加分析が終わった理由（上表） |
 | `analyst.decision_count` / `inference_count` | モデルへの判断要求の回数／実際に実行した推論の回数（文章化を含む。文脈長超過で推論前に拒否された呼び出しは数えない） |
@@ -718,10 +724,31 @@ python train_analyst.py --train --model-dir /runpod-volume \
 トークン損失は分析能力のベンチマークではありません。候補を使う前に、実際の表と質問で、計画JSONの妥当性・
 引数の正確さ・ガードの通過率・文章の正しさを評価してください。
 
+## モデル評価（eval_analyst.py）
+
+`eval_analyst.py` は、指定したモデルで計画と文章化がどこまで使えるかを、配信と同じ経路で測ります。
+`handler.EndpointHandler` を `--model-dir` だけから読み込み（配信用ボリュームは見ません）、`action: "analyst"` と同じ
+`EndpointHandler._analyst_generate` で生成します。学習やチェックポイントの書き換えはせず、新しいレポートファイルだけを書きます。
+
+```bash
+python eval_analyst.py --model-dir /runpod-volume/analyst-candidate-001 \
+  --records /runpod-volume/analyst-candidate-001/validation.jsonl --output /tmp/analyst-eval.json
+```
+
+| スイート | 内容 | 主な指標 |
+| :--- | :--- | :--- |
+| `plan` | 検証用カリキュラムの計画プロンプト（既定40件） | `valid_json_rate`（`parse_plan_decision` で解釈できた割合）、`exact_rate`（正解と同じ判断） |
+| `narrate` | 検証用カリキュラムの文章化プロンプト（既定30件） | `accepted_rate`（実行時のガードを通り、配信で採用される割合）、不採用の理由別件数、テンプレートとの文字バイグラムF1 |
+| `scenario` | カリキュラムにない12個の表と質問を `_handle_analyst` で最後まで実行 | `model_narrative_rate`、`narrative_rejected`・`planner_stop` の内訳、モデルが追加した手順数 |
+
+各スイートで生の出力を最大5件（300文字まで）保存するので、指標と合わせて実際の文章を読んで確認してください。
+「採用された」はガード（形式・繰り返し・数値の引用と照合）を通ったという意味で、文章の内容が正しく自然であることまでは保証しません。
+`--records` を省略すると、組み込みカリキュラムの検証用分割を使います。比較するモデル同士では同じ `--records` を使ってください。
+
 ## テスト
 
 ```bash
-python -m pytest -q tests/test_analyst_tools.py tests/test_analyst.py tests/test_analyst_integration.py tests/test_train_analyst.py
+python -m pytest -q tests/test_analyst_tools.py tests/test_analyst.py tests/test_analyst_integration.py tests/test_train_analyst.py tests/test_eval_analyst.py
 ```
 
 統計関数は、テストに埋め込んだ scipy/numpy の参照値と照合します（scipy がある環境では乱数データでの比較も追加で実行）。

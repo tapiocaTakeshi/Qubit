@@ -75,6 +75,14 @@ def first_result_line(prompt):
     return prompt.split("結果:\n", 1)[1].splitlines()[0][2:]
 
 
+GROUNDED = object()     # scripted reply placeholder: a narrative quoting the prompt's first result
+
+
+def script(*outputs):
+    replies = iter(outputs)
+    return Mock(side_effect=lambda prompt: first_result_line(prompt) if (r := next(replies)) is GROUNDED else r)
+
+
 @pytest.fixture(scope="module")
 def sales():
     return T.load_table(sales_csv())
@@ -231,7 +239,7 @@ def test_model_proposed_valid_step_is_executed_after_rule_plan():
 
 
 def test_invalid_json_gets_one_retry_then_planning_stops():
-    model = Mock(side_effect=["private-garbage-output", "still {not json", "分析結果をまとめました。"])
+    model = script("private-garbage-output", "still {not json", GROUNDED)
     result = run_analyst(request("売上の推移"), model)
     report = result["analyst"]
     assert model.call_count == 3 and report["decision_count"] == 2
@@ -400,7 +408,7 @@ def test_prompt_injection_in_cells_does_not_change_the_tool_allowlist():
 
     def generate(prompt):
         seen.append(prompt)
-        return action("shell", cmd="rm -rf /") if is_planner(prompt) else "まとめです。"
+        return action("shell", cmd="rm -rf /") if is_planner(prompt) else first_result_line(prompt)
 
     allowlist = set(T.TOOL_SPECS)
     result = run_analyst(request("地域別の売上の内訳", data), Mock(side_effect=generate))
@@ -515,7 +523,7 @@ def test_generate_is_never_called_when_the_model_is_disabled():
         report = run_analyst(request("売上の推移", **params), model)["analyst"]
         assert report["use_model"] is False and report["planner_stop"] == "disabled"
     model.assert_not_called()
-    report = run_analyst(request("売上の推移", max_steps=0), Mock(return_value="まとめです。"))["analyst"]
+    report = run_analyst(request("売上の推移", max_steps=0), script(GROUNDED))["analyst"]
     assert report["decision_count"] == 0 and report["inference_count"] == 1
     assert report["narrative_source"] == "model" and report["planner_stop"] == "disabled"
 
@@ -1015,7 +1023,7 @@ def test_guard_survives_runs_of_zeros_in_text_and_cells():
     report = result["analyst"]
     assert report["status"] == "completed" and report["narrative_source"] == "template" and report["findings"]
     labels = {"品目": ["code12" + "0" * 400, "みかん"] * 3, "売上": [1, 2, 3, 4, 5, 6]}
-    report = run_analyst(request("品目別の売上", labels), Mock(side_effect=[COMPLETE, "売上はみかんが最大です。"]))["analyst"]
+    report = run_analyst(request("品目別の売上", labels), script(COMPLETE, GROUNDED))["analyst"]
     assert report["status"] == "completed" and report["narrative_source"] == "model"
 
 
@@ -1851,3 +1859,49 @@ def test_spaced_id_columns_are_never_the_default_measure():
     assert dict(plan_of("Show me the monthly trend", data))["trend"]["value"] == "Amount"
     assert not any(s["arguments"].get("column") == "Order ID" or s["arguments"].get("x") == "Order ID"
                    for s in text_of("Give me an overview", data, "en")["analyst"]["steps"])
+
+
+# ---------------------------------------------------------------- degenerate / ungrounded narratives
+
+# Verbatim shapes of what an under-trained checkpoint produced for the planner and narrator prompts.
+LOOP_OUTPUTS = [
+    "もちろん!ここに、ここに、ここに" + "いくつかの" * 40,
+    "JSON形式のツール" + "・ライブラリ" * 30,
+    "もちろん!ここに、ここに例があります: " + "- 市場のトレンドと広告費の関係を教えていただきます。 " * 12,
+    "\n".join(["- 売上は増えています。"] * 4),
+]
+
+
+@pytest.mark.parametrize("text", LOOP_OUTPUTS)
+def test_repetitive_model_text_never_replaces_the_template(text):
+    result = run_analyst(request("売上の推移"), script(COMPLETE, text))
+    report = result["analyst"]
+    assert report["narrative_source"] == "template" and report["narrative_rejected"] == "repetitive"
+    assert result["generated_text"] != text and any("繰り返し" in w for w in report["warnings"])
+
+
+def test_narrative_that_cites_no_result_is_ungrounded():
+    result = run_analyst(request("売上の推移"), script(COMPLETE, "売上は順調に伸びており、今後も期待できます。"))
+    report = result["analyst"]
+    assert report["narrative_source"] == "template" and report["narrative_rejected"] == "ungrounded"
+    assert A._narrative_problem("売上は順調です。", "結果: なし") is None      # no numbers to cite: not required
+
+
+def test_digit_runs_and_repeated_confidence_tags_are_not_loops():
+    assert not A._repetitive("「code12" + "0" * 60 + "」が最小です。")
+    text = "\n".join(f"- 所見{i}: 値は{i * 37}です。（信頼度: 高）" for i in range(1, 7))
+    assert not A._repetitive(text)
+
+
+def test_narrative_rejected_reports_each_fallback_reason():
+    ok = run_analyst(request("売上の推移"), script(COMPLETE, GROUNDED))["analyst"]
+    assert ok["narrative_source"] == "model" and ok["narrative_rejected"] is None
+    off = run_analyst(request("売上の推移", use_model=False))["analyst"]
+    assert off["narrative_rejected"] is None
+    fabricated = run_analyst(request("売上の推移"), script(COMPLETE, "売上は987,654万円でした。"))["analyst"]
+    assert fabricated["narrative_rejected"] == "unverified"
+    empty = run_analyst(request("売上の推移"), script(COMPLETE, ""))["analyst"]
+    assert empty["narrative_rejected"] == "empty"
+    def overflow(prompt):
+        raise ValueError("Analyst prompt exceeds model context window")
+    assert run_analyst(request("売上の推移", max_steps=0), overflow)["analyst"]["narrative_rejected"] == "context"

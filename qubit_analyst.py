@@ -15,6 +15,7 @@ import sys
 import time
 import types
 import unicodedata
+import zlib
 from collections import Counter
 
 import qubit_analyst_tools as T
@@ -2513,15 +2514,42 @@ def verify_numbers(text, *sources):
     return list(dict.fromkeys(bad))[:20]
 
 
-def _narrative_problem(text):
+_LOOP = re.compile(r"(.{2,12}?)\1{3,}", re.S)     # the same 2-12 char unit four or more times in a row
+
+
+def _repetitive(text):
+    """Degenerate decoding loops ("いくつかのいくつかの…", one bullet over and over) carry no analysis."""
+    raw = text.encode("utf-8")
+    if len(raw) >= 120 and len(zlib.compress(raw, 9)) < 0.2 * len(raw):
+        return True
+    lines = Counter(line.strip(" -・*\t") for line in text.splitlines())
+    lines.pop("", None)
+    if sum(lines.values()) >= 3 and max(lines.values()) >= 3:
+        return True     # digit runs ("1200000…" in a clipped label) are values, not loops
+    return any(any(ch.isalpha() for ch in m.group(1)) for m in _LOOP.finditer(text))
+
+
+def _narrative_problem(text, prompt=None):
+    """Why a model narrative cannot replace the template, or None.
+
+    With the narration prompt, text that cites none of its numbers is "ungrounded": a summary that
+    states no result (or a fluent loop without digits) would pass the numeric guard vacuously.
+    """
     if not text:
         return "empty"
     if len(text) > MAX_NARRATIVE:
         return "too_long"
-    if "�" in text or any(unicodedata.category(ch) in ("Cc", "Cs") and ch not in "\n\t" for ch in text):
+    if "\ufffd" in text or any(unicodedata.category(ch) in ("Cc", "Cs") and ch not in "\n\t" for ch in text):
         return "garbage"
     if text[0] in "{[" or text.startswith("```") or len(set(text)) < 5:
         return "garbage"
+    if _repetitive(text):
+        return "repetitive"
+    if prompt is not None:
+        cited = [t for line in text.splitlines()
+                 for t in _tokens(_ORDINAL.sub(r"\1", unicodedata.normalize("NFKC", line)))]
+        if not cited and any(True for _ in _tokens(unicodedata.normalize("NFKC", prompt))):
+            return "ungrounded"
     return None
 
 
@@ -2728,7 +2756,7 @@ class AnalystController:
             self.emit("failed", label=self.t("レポートを作成できませんでした", "Could not build the report"))
             return self.report(self.t("分析結果をまとめられませんでした。データや質問を変えて再試行してください。",
                                       "The results could not be summarised; try different data or a different "
-                                      "question."), [], [], None, "template", [], [])
+                                      "question."), [], [], None, "template", [], [], None)
 
     def finish(self):
         lang = self.language
@@ -2736,7 +2764,7 @@ class AnalystController:
         caveats = build_caveats(self.steps, self.table, language=lang, question=self.question)
         dataset = dataset_summary(self.table)
         narrative = template_narrative(self.question, findings, caveats, dataset, lang)
-        source, unverified = "template", []
+        source, unverified, rejected = "template", [], None
         if self.status == "limited":
             narrative = self.stop_note() + "\n" + narrative
         self.emit("narrative", label=self.t("レポートを作成中", "Writing the report"))
@@ -2745,40 +2773,50 @@ class AnalystController:
             try:
                 text = self.infer(prompt).strip()
             except AnalystStopped:
-                self.status = "limited"
+                self.status, rejected = "limited", "stopped"
                 self.warnings.append(self.stop_note())
                 narrative = self.stop_note() + "\n" + narrative
             except ModelUnavailable as exc:
+                rejected = "context" if exc.args[0] == "context" else "error"
                 self.warnings.append(self.t(
                     "モデルの入力上限を超えたため、テンプレートの要約を使用しました。" if exc.args[0] == "context"
                     else "モデルの文章生成に失敗したため、テンプレートの要約を使用しました。",
                     "The narrative prompt exceeded the model context; the template was used."
                     if exc.args[0] == "context" else "The model could not write the summary; the template was used."))
             else:
-                problem = _narrative_problem(text)
+                problem = _narrative_problem(text, prompt)
                 try:    # only numbers the model was shown can ground its text; a guard failure is "unverified"
                     unverified = [] if problem else verify_numbers(text, prompt)
                 except Exception:
                     unverified = [self.t("（照合できませんでした）", "(could not verify)")]
-                if problem:
+                if problem in ("repetitive", "ungrounded"):
+                    rejected = problem
+                    self.warnings.append(self.t(
+                        "モデルの文章が同じ表現の繰り返しだったため、テンプレートの要約を使用しました。" if problem == "repetitive"
+                        else "モデルの文章が分析結果の数値を引用していなかったため、テンプレートの要約を使用しました。",
+                        "The model summary repeated itself; the template was used." if problem == "repetitive"
+                        else "The model summary cited none of the results; the template was used."))
+                elif problem:
+                    rejected = problem
                     self.warnings.append(self.t("モデルの文章が空・長すぎる・不正な形式のため、テンプレートの要約を使用しました。",
                                                 "The model summary was empty, too long or malformed; the template was used."))
                 elif unverified:
+                    rejected = "unverified"
                     self.warnings.append(self.t("モデルの文章に分析結果で確認できない数値があったため、テンプレートの要約を使用しました。",
                                                 "The model summary contained numbers not found in the results; "
                                                 "the template was used."))
                 else:
                     narrative, source = text, "model"
         return self.report(narrative, findings, caveats, dataset, source, unverified,
-                           next_questions(self.steps, self.table, language=lang))
+                           next_questions(self.steps, self.table, language=lang), rejected)
 
     def fail(self, message):
         self.status, self.stop_reason = "failed", "data_error"
         self.emit("failed", label=self.t("データを読み込めませんでした", "Could not load the data"))
         text = message if self.ja else f"Could not load the data: {message}"
-        return self.report(text, [], [], None, "template", [], [])
+        return self.report(text, [], [], None, "template", [], [], None)
 
-    def report(self, narrative, findings, caveats, dataset, source, unverified, questions):
+    def report(self, narrative, findings, caveats, dataset, source, unverified, questions, rejected):
         labels = {"completed": self.t("分析完了", "Completed"),
                   "limited": self.t("上限または停止で終了", "Stopped early"),
                   "failed": self.t("分析失敗", "Failed")}
@@ -2788,7 +2826,7 @@ class AnalystController:
             "question": self.question, "language": self.language, "use_model": self.use_model,
             "dataset": dataset, "plan": self.plan, "steps": self.steps, "findings": findings,
             "caveats": caveats, "next_questions": questions,
-            "narrative_source": source, "unverified_numbers": unverified,
+            "narrative_source": source, "narrative_rejected": rejected, "unverified_numbers": unverified,
             "planner_stop": self.planner_stop, "decision_count": self.decisions,
             "inference_count": self.inferences, "events": self.events,
             "warnings": list(dict.fromkeys(self.warnings)),

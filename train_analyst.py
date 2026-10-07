@@ -324,11 +324,13 @@ def compile_record(row):
             raise ValueError("Plan target repeats a done step")
         return A.planner_prompt(question, table, steps, remaining, language), target
     target = row["target"]
-    if not isinstance(target, str) or target != target.strip() or A._narrative_problem(target):
+    if not isinstance(target, str) or target != target.strip():
         raise ValueError("Invalid narration target")
     findings = A.build_findings(steps, table, language=language)
     caveats = A.build_caveats(steps, table, language=language, question=question)
     prompt = A.narrative_prompt(question, findings, caveats, language)
+    if A._narrative_problem(target, prompt):
+        raise ValueError("Invalid narration target")
     if A.verify_numbers(target, prompt):
         raise ValueError("Narration target contains numbers not found in the narration prompt")
     return prompt, target

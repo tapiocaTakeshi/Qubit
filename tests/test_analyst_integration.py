@@ -20,7 +20,7 @@ HANDLER_TREE = ast.parse((ROOT / "handler.py").read_text(encoding="utf-8"))
 ENDPOINT = next(n for n in HANDLER_TREE.body if isinstance(n, ast.ClassDef) and n.name == "EndpointHandler")
 CSV = "month,region,sales,cost\n" + "\n".join(
     f"2024-{m:02d}-01,{'東' if m % 2 else '西'},{100 + m * 10 + (m % 3) * 4},{60 + m * 3}" for m in range(1, 13))
-NARRATIVE = "売上は増加傾向です。詳細は所見を参照してください。"
+NARRATIVE = "売上は2024-01の114から2024-12の220へ増加しました。詳細は所見を参照してください。"
 SAFE_DECODING = {"temperature": 0.2, "repetition_penalty": 1.0,
                  "no_repeat_ngram_size": 0, "presence_penalty": 0, "frequency_penalty": 0,
                  "repeat_span_blocking": False, "deduplicate_output": False, "min_new_tokens": 0}
@@ -34,6 +34,7 @@ def method(name):
 
 
 HANDLE_ANALYST = method("_handle_analyst")
+ANALYST_GENERATE = method("_analyst_generate")
 
 
 class FakeEndpoint(SimpleNamespace):
@@ -53,6 +54,7 @@ def endpoint(reply=model_reply, *, max_seq_len=1024, tokens=lambda text: len(tex
     ep = FakeEndpoint(routed=[], config={"max_seq_len": max_seq_len})
     ep.tokenizer = SimpleNamespace(encode=Mock(side_effect=lambda text, add_special=True: [7] * tokens(text)))
     ep._handle_inference = Mock(side_effect=lambda data: [{"generated_text": reply(data["inputs"])}])
+    ep._analyst_generate = MethodType(ANALYST_GENERATE, ep)
     ep._handle_analyst = MethodType(HANDLE_ANALYST, ep)
     return ep
 

@@ -614,30 +614,31 @@ class EndpointHandler:
         except ValueError as exc:
             return [{"error": str(exc)}]
 
+    def _analyst_generate(self, prompt: str) -> str:
+        """Serving-path generation for qubit_analyst (also used by eval_analyst.py)."""
+        from qubit_analyst import generation_tokens
+        # Same safety as _handle_agent: model text never reaches __call__.
+        # Reserve room for the reply (96 tokens for a plan decision, 320 for the
+        # narrative); _handle_inference would otherwise drop the start of the
+        # prompt (the instruction) once the window is full.
+        max_new_tokens = generation_tokens(prompt)
+        formatted = f"質問: {prompt}\n回答:"
+        token_count = len(self.tokenizer.encode(formatted, add_special=False))
+        if token_count + 2 + max_new_tokens > self.config["max_seq_len"]:
+            raise ValueError("Analyst prompt exceeds model context window")
+        return self._handle_inference({"inputs": prompt, "parameters": {
+            "temperature": 0.2, "max_new_tokens": max_new_tokens,
+            "repetition_penalty": 1.0, "no_repeat_ngram_size": 0,
+            "presence_penalty": 0, "frequency_penalty": 0,
+            "repeat_span_blocking": False, "deduplicate_output": False,
+            "min_new_tokens": 0,
+        }})[0].get("generated_text", "")
+
     def _handle_analyst(self, data: Dict[str, Any], on_event=None) -> List[Dict[str, Any]]:
         """Grounded table analysis; the model may only propose checked steps and draft text."""
-
-        def generate(prompt):
-            # Same safety as _handle_agent: model text never reaches __call__.
-            # Reserve room for the reply (96 tokens for a plan decision, 320 for the
-            # narrative); _handle_inference would otherwise drop the start of the
-            # prompt (the instruction) once the window is full.
-            max_new_tokens = generation_tokens(prompt)
-            formatted = f"質問: {prompt}\n回答:"
-            token_count = len(self.tokenizer.encode(formatted, add_special=False))
-            if token_count + 2 + max_new_tokens > self.config["max_seq_len"]:
-                raise ValueError("Analyst prompt exceeds model context window")
-            return self._handle_inference({"inputs": prompt, "parameters": {
-                "temperature": 0.2, "max_new_tokens": max_new_tokens,
-                "repetition_penalty": 1.0, "no_repeat_ngram_size": 0,
-                "presence_penalty": 0, "frequency_penalty": 0,
-                "repeat_span_blocking": False, "deduplicate_output": False,
-                "min_new_tokens": 0,
-            }})[0].get("generated_text", "")
-
         try:
-            from qubit_analyst import generation_tokens, run_analyst
-            return [run_analyst(data, generate, on_event=on_event)]
+            from qubit_analyst import run_analyst
+            return [run_analyst(data, self._analyst_generate, on_event=on_event)]
         except ValueError as exc:
             return [{"error": str(exc)}]
         except Exception:
