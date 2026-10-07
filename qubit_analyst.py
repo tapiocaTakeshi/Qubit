@@ -2517,6 +2517,8 @@ def verify_numbers(text, *sources):
 _LOOP = re.compile(r"(.{2,12}?)\1{3,}", re.S)     # the same 2-12 char unit four or more times in a row
 _SENTENCE = re.compile(r"[。！？\n]+|[.!?](?=\s|$)|\s-\s")     # "1.5" is a number, not a sentence end
 _CONFIDENCE_TAG = re.compile(r"[（(](?:信頼度|confidence): ?[^）)]{1,8}[）)]")
+_ADJACENT = re.compile(r"(.{12,80}?)[、,\s]*\1", re.S)    # a clause written twice in a row
+_QUOTED = re.compile(r'[「"]([^」"\n]{1,80})[」"]')
 _ENDINGS = tuple("。.!?！？）)」")
 
 
@@ -2534,7 +2536,38 @@ def _repetitive(text):
     if any(count >= 2 and len(sentence) >= 10 for sentence, count in sentences.items()):
         return True     # findings never repeat a sentence verbatim; a loop of whole sentences does
     # digit runs ("1200000…" in a clipped label) are values, not loops
-    return any(any(ch.isalpha() for ch in m.group(1)) for m in _LOOP.finditer(text))
+    return any(any(ch.isalpha() for ch in m.group(1))
+               for pattern in (_LOOP, _ADJACENT) for m in pattern.finditer(text))
+
+
+def _label_pairs(text):
+    """(quoted label, first number right after it or None): 「東京」が最大（13,857、… -> ("東京", "13,857")."""
+    norm = unicodedata.normalize("NFKC", text)
+    pairs = []
+    for m in _QUOTED.finditer(norm):
+        tail = re.split(r'[「"。\n]', norm[m.end():m.end() + 20], maxsplit=1)[0]
+        token = next(_tokens(tail), None)
+        pairs.append((m.group(1).strip(), token[0] if token else None))
+    return pairs
+
+
+def _label_problem(text, prompt):
+    """A quoted group/column the prompt never mentions ("unknown_label"), or a real one given another
+    group's number ("misattributed"): 「Aga」が最小（2.395） passes the numeric guard because 2.395 is
+    Sagawa's mean."""
+    known = {}
+    for label, number in _label_pairs(prompt):
+        known.setdefault(label, []).append(number)
+    plain = unicodedata.normalize("NFKC", prompt)
+    for label, number in _label_pairs(text):
+        if label not in known:
+            if label and label in plain:
+                continue        # e.g. a column named without quotes in the prompt
+            return "unknown_label"
+        numbers = [n for n in known[label] if n]
+        if number and numbers and verify_numbers(number, " ".join(numbers)):
+            return "misattributed"
+    return None
 
 
 _REJECTION_NOTES = {
@@ -2546,6 +2579,10 @@ _REJECTION_NOTES = {
                   "The model summary did not state the main result; the template was used."),
     "truncated": ("モデルの文章が途中で切れていたため、テンプレートの要約を使用しました。",
                   "The model summary was cut off; the template was used."),
+    "unknown_label": ("モデルの文章に分析結果にないグループ名・列名があったため、テンプレートの要約を使用しました。",
+                      "The model summary named a group or column not in the results; the template was used."),
+    "misattributed": ("モデルの文章で数値と対応するグループが入れ替わっていたため、テンプレートの要約を使用しました。",
+                      "The model summary attached a number to the wrong group; the template was used."),
 }
 
 
@@ -2620,7 +2657,7 @@ def narrative_verdict(text, prompt):
         return "unverified", None
     if unverified:
         return "unverified", unverified
-    return _narrative_problem(text, prompt), []
+    return _label_problem(text, prompt) or _narrative_problem(text, prompt), []
 
 
 # ---------------------------------------------------------------- controller

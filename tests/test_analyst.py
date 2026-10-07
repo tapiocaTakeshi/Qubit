@@ -1933,3 +1933,23 @@ def test_fabricated_numbers_are_reported_as_unverified_before_content_checks():
     prompt, _ = _prompt_for("売上の推移")
     reason, unverified = A.narrative_verdict("売上は987,654万円でした。", prompt)
     assert reason == "unverified" and unverified == ["987,654万"]
+
+
+def test_invented_or_swapped_group_labels_are_rejected():
+    data = {"carrier": ["JP"] * 5 + ["Sagawa"] * 5 + ["Yamato"] * 5,
+            "delivery_days": [3.4, 3.5, 3.6, 3.5, 3.45, 2.4, 2.3, 2.5, 2.4, 2.38, 2.1, 2.2, 2.15, 2.1, 2.15]}
+    prompt, _ = _prompt_for("carrier別のdelivery_daysの平均は？", data)
+    answer = first_result_line(prompt)
+    assert A.narrative_verdict(answer, prompt) == (None, [])
+    sagawa = A._label_pairs(answer)[1]
+    invented = answer.replace("「Yamato」", "「Aga」")
+    assert A.narrative_verdict(invented, prompt)[0] == "unknown_label"
+    jp, yamato = A._label_pairs(answer)[0][1], A._label_pairs(answer)[2][1]
+    swapped = answer.replace(f"「JP」が最大（{jp}", f"「JP」が最大（{yamato}", 1)
+    assert swapped != answer and A.narrative_verdict(swapped, prompt)[0] == "misattributed"
+    assert sagawa[0] == "Sagawa" and sagawa[1]
+
+
+def test_a_clause_written_twice_in_a_row_is_repetitive():
+    assert A._repetitive("次いで「Sagawa」(2.395、n=20)、次いで「Sagawa」(2.395、n=20)、「JP」が最大です。")
+    assert not A._repetitive("「東京」が最大（13,857、構成比43.16%）、次いで「大阪」（10,751、構成比33.48%）です。")
