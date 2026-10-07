@@ -895,8 +895,11 @@ def test_forecast_horizon_follows_the_question():
     assert dict(plan_of("来年の売上を予測して", monthly))["forecast"]["periods"] == 12
     import datetime
     days = [(datetime.date(2024, 1, 1) + datetime.timedelta(days=i)).isoformat() for i in range(200)]
-    forecast = dict(plan_of("売上の今後4週間の予測は？", {"日付": days, "売上": list(range(200))}))["forecast"]
-    assert forecast["periods"] == 4 and forecast["period"] == "raw"
+    daily = {"日付": days, "売上": list(range(200))}
+    forecast = dict(plan_of("売上の今後4週間の予測は？", daily))["forecast"]
+    # 4 weeks of daily data is 28 daily steps: capped at 12 days (with a caveat), never 4 days or 4 months
+    assert forecast["periods"] == 12 and forecast["period"] == "raw"
+    assert "予測は最大12期間（〜2024-07-30）までです。" in text_of("売上の今後4週間の予測は？", daily)["analyst"]["caveats"]
 
 
 @pytest.mark.parametrize("dates,label", [
@@ -1402,6 +1405,11 @@ def test_numbers_written_with_the_header_unit_are_grounded():
     ("0.5ポイント差", ["平均の差は0.5"], []),
     ("2x、3×、2-fold", [2, 3], ["2x", "3×", "2-fold"]),
     ("96行×5列、96×5、3x3 の表", [96, 5, 3], []),
+    # English "points" / "pp" are percentage points too: the relative +61.9% never grounds them
+    ("cvr rose 61.9 points", ["cvr went from 2.1% to 3.4% (+1.3 percentage points, relative +61.9%)"], ["61.9 points"]),
+    ("cvr rose 61.9pp", ["cvr went from 2.1% to 3.4% (+1.3 percentage points, relative +61.9%)"], ["61.9pp"]),
+    ("up 1.3 points, up 1.3pp, up 1.3 pp, up 61.9%, 8 data points",
+     ["cvr went from 2.1% to 3.4% (+1.3 percentage points, relative +61.9%), n=8"], []),
 ])
 def test_guard_units_percent_points_and_multipliers(text, sources, expected):
     assert verify_numbers(text, *sources) == expected
@@ -1453,3 +1461,393 @@ def test_cli_prints_scores_with_three_decimals(tmp_path, capsys):
     path.write_text(sales_csv(), encoding="utf-8")
     assert A.main([str(path), "売上の概要", "--no-model"]) == 0
     assert "[F1] high 0.950 " in capsys.readouterr().out
+
+
+def test_cli_scores_never_print_across_a_label_threshold(tmp_path, capsys, monkeypatch):
+    conf = A._p_conf(0.0093, 25, True)          # 0.949808: medium, which "%.3f" would print as 0.950
+    assert conf["label"] == "medium" and A.score_text(conf["score"]) == "0.949"
+    assert [A.score_text(s) for s in (0.95, 0.999, 0.8, 0.79999, 0.5, 0.882567)] == [
+        "0.950", "0.999", "0.800", "0.799", "0.500", "0.882"]
+    assert A._confidence(0.94999996, "x")["label"] == "high"      # labelled as published (score 0.95)
+    for score in (0.7999999, 0.8, 0.9499, 0.94999996, 0.95, 0.9999):
+        c = A._confidence(score, "x")
+        shown = float(A.score_text(c["score"]))
+        assert c["label"] == ("high" if shown >= 0.95 else "medium" if shown >= 0.8 else "low")
+    path = tmp_path / "s.csv"
+    path.write_text(sales_csv(), encoding="utf-8")
+    monkeypatch.setattr(A, "_fact", lambda ja: A._confidence(0.949808, "x"))
+    assert A.main([str(path), "売上の概要", "--no-model"]) == 0
+    assert "[F1] medium 0.949 " in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- bilingual column concepts
+
+def mine_sales():
+    rows = ["月,地域,売上(万円),広告費,顧客数"]
+    for m in range(18):
+        for i, region in enumerate(("東京", "大阪", "福岡")):
+            rows.append(f"{2024 + m // 12}-{m % 12 + 1:02d},{region},{600 - 150 * i + 9 * m + (m * 7 + i) % 23},"
+                        f"{40 + i * 5 + m % 7},{150 - 30 * i + m % 11}")
+    return "\n".join(rows)
+
+
+def en_sales():
+    return "month,region,sales,ad_spend,customers\n" + "\n".join(
+        f"2024-{m:02d},{r},{100 + m * 3 + i * 20 + (m * i) % 7},{10 + m + i},{50 + m + i * 7}"
+        for m in range(1, 13) for i, r in enumerate(("East", "West", "North")))
+
+
+def test_english_question_terms_find_japanese_columns():
+    plan = plan_of("Which region has the highest sales? Forecast next 3 months.", mine_sales())
+    assert ("group_by", {"by": "地域", "value": "売上(万円)", "agg": "sum"}) in plan
+    assert dict(plan)["forecast"]["value"] == "売上(万円)" and dict(plan)["forecast"]["periods"] == 3
+    assert ("correlate", {"x": "広告費", "y": "顧客数", "method": "pearson"}) in plan_of(
+        "Relationship between ad spend and customers", mine_sales())
+    result = text_of("Which region has the highest sales? Forecast next 3 months.", mine_sales(), "en")
+    assert not any("No numeric column was named" in c for c in result["analyst"]["caveats"])
+    assert finding(result, "breakdown")["statement"].startswith("The total of 売上(万円) by 地域")
+
+
+def test_japanese_question_terms_find_english_columns():
+    assert ("group_by", {"by": "region", "value": "sales", "agg": "sum"}) in plan_of("地域別の売上", en_sales())
+    assert ("correlate", {"x": "ad_spend", "y": "customers", "method": "pearson"}) in plan_of(
+        "広告費と客数の関係は？", en_sales())
+    assert dict(plan_of("エリアごとの売上の推移", en_sales()))["trend"] == {
+        "value": "sales", "time": "month", "agg": "sum", "period": "month", "by": "region"}
+    # exact Japanese names keep working as before
+    assert ("correlate", {"x": "広告費", "y": "顧客数", "method": "pearson"}) in plan_of("広告費と顧客数の関係", mine_sales())
+
+
+def test_concepts_only_name_a_single_matching_column_of_the_right_kind():
+    table = T.load_table({"sales_jp": [1, 5, 3, 4], "sales_us": [2, 3, 9, 1], "region": list("abab")})
+    assert A._mentions("売上の推移", table)[1] == []                    # two sales columns: no guess
+    assert A._mentions("地域別", table)[1] == ["region"]
+    exact = T.load_table({"売上": [1, 5, 3, 4], "revenue": [2, 3, 9, 1]})
+    assert A._mentions("売上の合計", exact)[1] == ["売上"]               # an exact name always wins
+    # a store count is a measure, not the store label; IDs never stand for a concept
+    stores = T.load_table({"店舗名": list("abab"), "店舗数": [1, 2, 3, 4], "customer_id": [7, 8, 9, 6],
+                           "来客数": [5, 6, 7, 8]})
+    assert A._mentions("store別のcustomers", stores)[1:] == (["店舗名", "来客数"], ["店舗名"])
+    # 売上原価 (cost of sales) is not sales; 利益率 (a margin) is not profit
+    cogs = T.load_table({"売上原価": [1, 2, 3, 4], "売上高": [5, 6, 7, 9], "営業利益率": [1, 2, 3, 4]})
+    assert A._mentions("sales and profit", cogs)[1] == ["売上高"]
+    # one-character terms are never looked for in questions (月 is in 来月, 年 in 年齢)
+    assert A._mentions("来月の年齢", T.load_table({"month": ["2024-01", "2024-02"], "x": [1, 2]}))[1] == []
+
+
+def test_concept_terms_inside_a_cell_value_stay_the_value():
+    data = {"地域": ["東京エリア", "大阪エリア"] * 6, "売上": list(range(12))}
+    masked, names, grouped = A._mentions("東京エリアの売上", T.load_table(data))
+    assert names == ["売上"] and "エリア" in masked
+    assert A._value_hits("東京エリアの売上", masked, T.load_table(data), ["地域"]) == {"地域": ["東京エリア"]}
+    assert A._mentions("エリア別の売上", T.load_table(data))[1:] == (["地域", "売上"], ["地域"])
+
+
+def test_concept_table_is_documented():
+    doc = open(__import__("pathlib").Path(A.__file__).with_name("docs") / "QUBIT_ANALYST.md", encoding="utf-8").read()
+    for concept, _, terms in A.CONCEPTS:
+        assert f"`{concept}`" in doc
+        assert all(term in doc for term in terms), concept
+
+
+# ---------------------------------------------------------------- period-aware date labels
+
+def test_monthly_keys_read_as_months_in_statements_but_stay_iso_in_results():
+    result = text_of("月別の売上の上位3件と月の概要", mine_sales())
+    texts = statements(result)
+    assert not any(__import__("re").search(r"\d{4}-\d{2}-\d{2}", s) for s in texts)
+    assert any("「2025-" in s and "月別の売上(万円)の合計" in s for s in texts)
+    assert any(s.startswith("月の期間は2024-01〜2025-06") for s in texts)
+    group = next(o for o in outputs(result) if o.get("by") == "月" and "groups" in o)
+    assert all(len(g["key"]) == 10 and g["key"].endswith("-01") for g in group["groups"])   # ISO in JSON
+    report = result["analyst"]
+    assert verify_numbers(result["generated_text"], narrative_prompt(
+        report["question"], report["findings"], report["caveats"])) == []
+    assert verify_numbers(result["generated_text"], report["findings"], outputs(result)) == []
+
+
+@pytest.mark.parametrize("cells,expected", [
+    ([f"FY{y}" for y in range(2015, 2024)], ("FY2015", "FY2023", "FY2024")),
+    ([f"{y}年度" for y in range(2015, 2024)], ("2015年度", "2023年度", "2024年度")),
+    ([f"{y}年3月期" for y in range(2015, 2024)], ("2015年3月期", "2023年3月期", "2024年3月期")),
+    ([f"{y}年" for y in range(2015, 2024)], ("2015", "2023", "2024")),
+    ([f"{y}-01-01" for y in range(2015, 2024)], ("2015", "2023", "2024")),
+])
+def test_yearly_and_fiscal_periods_read_as_written(cells, expected):
+    data = {"期間": cells, "売上": [100 + 20 * i + (i * 7) % 5 for i in range(len(cells))]}
+    result = text_of("売上の推移と予測", data)
+    trend, forecast = finding(result, "trend")["statement"], finding(result, "forecast")["statement"]
+    assert f"{expected[0]}の" in trend and f"{expected[1]}の" in trend and f"{expected[2]}に" in forecast
+    report = result["analyst"]
+    assert verify_numbers(result["generated_text"], narrative_prompt(
+        report["question"], report["findings"], report["caveats"])) == []
+
+
+def test_daily_dates_keep_iso_and_raw_monthly_steps_read_as_months():
+    daily = {"日付": [f"2024-03-{d:02d}" for d in range(1, 21)], "売上": [100 + d for d in range(20)]}
+    assert "2024-03-01の" in finding(text_of("売上の推移", daily), "trend")["statement"]
+    monthly = "date,sales\n" + "\n".join(f"2024-{m:02d}-01,{100 + m * 5 + m % 3}" for m in range(1, 13))
+    text = finding(text_of("Forecast sales for the next 4 weeks", monthly, "en"), "forecast")["statement"]
+    assert " at 2025-01 " in text and "2025-01-01" not in text
+
+
+# ---------------------------------------------------------------- round-3 fixes
+
+def en_finance():
+    return "month,store,revenue,cogs,profit,margin,unit_price\n" + "\n".join(
+        f"2024-{m:02d},{s},{1000 + 50 * m},{600 + 20 * m},{400 + 30 * m},{(400 + 30 * m) / (1000 + 50 * m) * 100:.1f}%,"
+        f"{10 + m % 3}" for m in range(1, 13) for s in ("A1", "B2"))
+
+
+@pytest.mark.parametrize("question", ["利益率の推移", "粗利率の推移", "売上原価の推移", "客単価の推移"])
+def test_question_compounds_never_name_the_plain_concept(question):
+    """利益率 is a margin, 売上原価 a cost, 客単価 a spend per customer: not profit, revenue or unit_price."""
+    report = text_of(question, en_finance())["analyst"]
+    values = [s["arguments"].get("value") for s in report["steps"][1:]]
+    assert values == ["revenue"]          # the default measure, said to be one, never "the one asked for"
+    assert "質問から対象の数値列を特定できなかったため「revenue」を分析しました。" in report["caveats"]
+
+
+def test_plain_concept_terms_still_name_english_columns():
+    assert dict(plan_of("利益の推移", en_finance()))["trend"]["value"] == "profit"
+    assert dict(plan_of("売上の推移", en_finance()))["trend"]["value"] == "revenue"
+    assert dict(plan_of("単価の推移", en_finance()))["trend"]["value"] == "unit_price"
+
+
+def many_products():
+    return {"地域": [("東", "西", "南", "北")[i % 4] for i in range(1200)],
+            "商品": [f"P{i % 60:02d}" for i in range(1200)],
+            "売上": [100 + (i % 60) * 3 + (i * 7) % 11 for i in range(1200)]}
+
+
+def test_relation_questions_keep_labels_with_many_repeating_levels():
+    assert ("crosstab", {"row": "地域", "col": "商品"}) in plan_of("地域と商品の関係は？", many_products())
+    assert ("compare", {"value": "売上", "by": "商品"}) in plan_of("商品と売上の関係は？", many_products())
+    # a label of one row each with one measure is summarised instead of returning the profile alone
+    one_each = {"商品名": [f"品{i}" for i in range(30)], "売上": [10 + i for i in range(30)]}
+    assert tools_of("商品名と売上の関係は？", one_each) != ["profile"]
+
+
+def school():
+    rows = [("1組", 58), ("2組", 69), ("3組", 66), ("4組", 68)]
+    sizes = {"1組": 40, "2組": 22, "3組": 30, "4組": 28}
+    data = {"クラス": [], "数学": [], "国語": []}
+    for cls, base in rows:
+        for i in range(sizes[cls]):
+            data["クラス"].append(cls)
+            data["数学"].append(base + (i * 7) % 9 - 4)
+            data["国語"].append(60 + (i * 5) % 11)
+    return data
+
+
+def clinic():
+    data = {"日付": [], "診療科": [], "待ち時間(分)": [], "患者数": []}
+    for d in range(30):
+        for dept, base, per_day in (("内科", 31, 3), ("小児科", 50, 1), ("外科", 35, 1), ("皮膚科", 24, 1)):
+            for k in range(per_day):
+                data["日付"].append(f"2025-04-{d + 1:02d}")
+                data["診療科"].append(dept)
+                data["待ち時間(分)"].append(base + (d * 3 + k * 5) % 7 - 3)
+                data["患者数"].append(40 + (d + k) % 9)
+    return data
+
+
+def test_scores_and_per_event_durations_are_averaged_not_summed():
+    plan = plan_of("数学の点数が一番高いクラスは？", school())
+    assert ("group_by", {"by": "クラス", "value": "数学", "agg": "mean"}) in plan
+    text = finding(text_of("数学の点数が一番高いクラスは？", school()), "breakdown")["statement"]
+    assert text.startswith("クラス別の数学の平均は「2組」が最大") and "構成比" not in text
+    group = dict(plan_of("待ち時間が一番長い診療科はどこ？", clinic()))["group_by"]
+    assert group == {"by": "診療科", "value": "待ち時間(分)", "agg": "mean"}
+    assert "「小児科」が最大" in finding(text_of("待ち時間が一番長い診療科はどこ？", clinic()), "breakdown")["statement"]
+    assert dict(plan_of("待ち時間の推移は？", clinic()))["trend"]["agg"] == "mean"
+    logistics = {"carrier": ["Y"] * 30 + ["J"] * 6, "delivery_hours": [27 + i % 3 for i in range(30)] + [37] * 6}
+    assert dict(plan_of("Which carrier has the longest delivery_hours?", logistics))["group_by"]["agg"] == "mean"
+    # totals of hours worked stay totals; a growth question still sums
+    overtime = {"部署": ["営業", "開発"] * 6, "残業時間": list(range(12))}
+    assert dict(plan_of("部署別の残業時間", overtime))["group_by"]["agg"] == "sum"
+    assert A._default_agg(T.load_table(overtime), "残業時間", A._norm("残業時間の伸びが一番速い部署")) == "sum"
+
+
+def dow_sales():
+    import datetime
+    data = {"日付": [], "曜日": [], "金額": []}
+    for i in range(120):
+        day = datetime.date(2025, 1, 1) + datetime.timedelta(days=i)
+        data["日付"].append(day.isoformat())
+        data["曜日"].append("月火水木金土日"[day.weekday()])
+        data["金額"].append(3000 + 10 * i + (i * 37) % 500)
+    return data
+
+
+@pytest.mark.parametrize("question", ["毎月の金額の推移は？", "金額の水準に異常はある？", "来月の金額を予測して",
+                                      "毎日の金額の推移", "今月の金額は？"])
+def test_single_kanji_values_are_not_read_inside_words(question):
+    result = text_of(question, dow_sales())
+    assert A._analyse(question, T.load_table(dow_sales())).value_hits == {}
+    assert not any(s["arguments"].get("by") == "曜日" for s in result["analyst"]["steps"]
+                   if s["tool"] in ("trend", "outliers"))
+    assert not any("だけに絞った" in c for c in result["analyst"]["caveats"])
+
+
+def test_single_kanji_values_still_read_as_values():
+    table = T.load_table({**dow_sales(), "性別": ["男", "女"] * 60})
+    assert A._analyse("土日の金額", table).value_hits == {"曜日": ["土", "日"]}
+    assert A._analyse("月曜日の金額", table).value_hits == {"曜日": ["月"]}
+    assert A._analyse("月と火の金額を比較", table).value_hits == {"曜日": ["月", "火"]}
+    assert A._analyse("男女で金額に差はある？", table).value_hits == {"性別": ["男", "女"]}
+
+
+def wards():
+    names = ("世田谷区", "江東区", "港区", "足立区", "品川区")
+    return {"区": [names[i % 5] for i in range(80)], "価格": [3000 + (i % 5) * 700 + (i * 13) % 300 for i in range(80)],
+            "部門": [("営業部門", "開発部門", "人事部門", "総務部門")[i % 4] for i in range(80)]}
+
+
+def test_a_column_name_inside_its_own_values_keeps_the_named_groups():
+    assert dict(plan_of("世田谷区と江東区の価格を比較して", wards()))["compare"] == {
+        "value": "価格", "by": "区", "a": "世田谷区", "b": "江東区"}
+    assert dict(plan_of("Compare 価格 between 港区 and 足立区", wards()))["compare"] == {
+        "value": "価格", "by": "区", "a": "港区", "b": "足立区"}
+    assert dict(plan_of("開発部門と人事部門の価格を比較して", wards()))["compare"] == {
+        "value": "価格", "by": "部門", "a": "開発部門", "b": "人事部門"}
+    # a column of more than 50 such values (not a default group) is still found through its values
+    shops = [f"{n}{i}号店" for n in ("渋谷", "新宿") for i in range(30)]
+    chain = {"店": [shops[i % 60] for i in range(1200)], "売上": [100 + i % 60 + (i * 7) % 5 for i in range(1200)]}
+    assert dict(plan_of("渋谷3号店と新宿12号店の売上を比較して", chain))["compare"] == {
+        "value": "売上", "by": "店", "a": "渋谷3号店", "b": "新宿12号店"}
+    # the names alone are still column mentions
+    assert ("group_by", {"by": "部門", "value": "価格", "agg": "mean"}) in plan_of("部門別の価格", wards())
+    assert ("group_by", {"by": "区", "value": "価格", "agg": "mean"}) in plan_of("区ごとの価格", wards())
+
+
+def daily(days, start="2025-04-01"):
+    import datetime
+    first = datetime.date.fromisoformat(start)
+    return {"日付": [(first + datetime.timedelta(days=i)).isoformat() for i in range(days)],
+            "売上": [100 + i + (i * 7) % 5 for i in range(days)]}
+
+
+def test_forecast_horizons_are_converted_to_the_series_step():
+    weekly = {"週": [f"2025-{1 + i // 4:02d}-{1 + 7 * (i % 4):02d}" for i in range(26)], "売上": list(range(26))}
+    assert dict(plan_of("来月の売上を予測して", weekly))["forecast"]["periods"] in (4, 5)
+    assert dict(plan_of("来週の売上を予測して", daily(60)))["forecast"]["periods"] == 7
+    assert dict(plan_of("明日の売上を予測して", daily(60)))["forecast"]["periods"] == 1
+    capped = text_of("Forecast 売上 for the next 2 weeks", daily(90), "en")
+    assert dict((p["tool"], p["arguments"]) for p in capped["analyst"]["plan"])["forecast"]["periods"] == 12
+    assert "The forecast is capped at 12 steps (to 2025-07-11)." in capped["analyst"]["caveats"]
+    # 来月 on two months of daily data: monthly totals, and an honest "too few months" instead of one day
+    forecast = dict(plan_of("来月の売上を予測して", daily(61)))["forecast"]
+    assert forecast["period"] == "month" and forecast["periods"] == 1
+    statement = finding(text_of("来月の売上を予測して", daily(61)), "forecast")["statement"]
+    assert statement == "売上は月次の時点が2個しかないため、予測できません（4時点以上が必要です）。"
+    # monthly data keeps counting months
+    monthly = {"月": [f"2024-{m:02d}" for m in range(1, 13)], "売上": list(range(100, 112))}
+    assert dict(plan_of("今後6か月の売上を予測して", monthly))["forecast"]["periods"] == 6
+    # 来年 on a year of daily data: 12 monthly steps, not one day
+    assert {k: v for k, v in dict(plan_of("来年の売上を予測して", daily(400)))["forecast"].items()
+            if k in ("period", "periods")} == {"period": "month", "periods": 12}
+
+
+def clinic_units():
+    data = clinic()
+    data["待ち時間"] = [f"{v}分" for v in data.pop("待ち時間(分)")]
+    data["患者数"] = [f"{v}人" for v in data["患者数"]]
+    data["面積"] = [f"{20 + i % 40}.5㎡" for i in range(len(data["患者数"]))]
+    data["価格"] = [1000 + 30 * (20 + i % 40) + (i * 7) % 50 for i in range(len(data["患者数"]))]
+    return data
+
+
+def test_unit_suffixed_numbers_answer_the_question_that_names_them():
+    plan = plan_of("診療科ごとの平均待ち時間は？", clinic_units())
+    assert ("group_by", {"by": "診療科", "value": "待ち時間", "agg": "mean"}) in plan
+    text = finding(text_of("診療科ごとの平均待ち時間は？", clinic_units()), "breakdown")["statement"]
+    assert text.startswith("診療科別の待ち時間の平均は「小児科」が最大")
+    assert ("correlate", {"x": "面積", "y": "価格", "method": "pearson"}) in plan_of("面積と価格の関係は？", clinic_units())
+    assert T.load_table(school()).column("クラス").kind == "categorical"
+
+
+def budget():
+    return {"部門": ["営業部", "開発部", "人事部", "総務部", "マーケティング部", "経理部", "法務部", "カスタマーサポート部"],
+            "予算(千円)": [12000, 18000, 3000, 2500, 5000, 3000, 1500, 3000],
+            "実績(千円)": [12850, 16900, 2900, 2700, 5600, 2800, 1380, 3400],
+            "差異": ["850", "▲1,100", "▲100", "200", "600", "▲200", "▲120", "400"]}
+
+
+def test_total_questions_report_the_total():
+    sales = {"店舗": ["A", "B", "C"] * 10, "売上": [1000 + 37 * i for i in range(30)]}
+    result = text_of("売上の合計はいくら？", sales)
+    total = finding(result, "total")
+    assert "合計は46,095です。" in total["statement"] and total["evidence"]["sum"] == 46095
+    assert A._ranked(result["analyst"]["findings"])[0]["kind"] == "total"       # the answer leads
+    assert "合計は46,095です。" in result["generated_text"]
+    assert "The total is 530." in finding(text_of("What is the total of 差異?", budget(), "en"), "total")["statement"]
+    both = text_of("予算と実績の合計を比較して", budget())
+    texts = statements(both)
+    assert any("合計は48,000です。" in s for s in texts) and any("合計は48,530です。" in s for s in texts)
+    assert "列同士の比較には対応していないため、各列の要約を示しました。" in both["analyst"]["caveats"]
+    # without a total word nothing changes
+    assert not any("合計は" in s for s in statements(text_of("売上の概要", sales)))
+
+
+def test_english_superlatives_rank_groups():
+    logistics = {"carrier": (["YamatoX"] * 15 + ["JPost"] * 9 + ["SagawaY"] * 12),
+                 "distance_km": [150 + i % 20 for i in range(36)],
+                 "delivery_hours": [27 + i % 3 for i in range(15)] + [37 + i % 2 for i in range(9)] + [34] * 12}
+    assert ("group_by", {"by": "carrier", "value": "delivery_hours", "agg": "mean"}) in plan_of(
+        "Which carrier has the longest delivery_hours?", logistics)
+    slowest = text_of("Which carrier is the slowest?", logistics, "en")
+    assert "group_by" in [s["tool"] for s in slowest["analyst"]["steps"]]
+    assert "No numeric column was named in the question, so distance_km was analysed." in slowest["analyst"]["caveats"]
+    assert "top_n" in tools_of("What is the biggest distance_km?", logistics)
+
+
+def test_a_named_group_value_gets_its_own_figure_in_the_overview():
+    result = text_of("内科の平均待ち時間は？", clinic())
+    assert ("group_by", {"by": "診療科", "value": "待ち時間(分)", "agg": "mean"}) in [
+        (s["tool"], s["arguments"]) for s in result["analyst"]["steps"]]
+    caveats = result["analyst"]["caveats"]
+    assert "「内科」だけに絞った分析には対応していないため、全体（診療科ごと）を分析しました。" in caveats
+    mean = T.mean([v for d, v in zip(clinic()["診療科"], clinic()["待ち時間(分)"]) if d == "内科"])
+    assert f"「内科」の待ち時間(分)の平均は{fmt(mean)}（n=90）です。" in caveats
+    english = text_of("What is the average 待ち時間(分) for 内科?", clinic(), "en")["analyst"]["caveats"]
+    assert f'"内科": the mean of 待ち時間(分) is {fmt(mean)} (n=90).' in english
+
+
+def test_hourly_timestamps_are_aggregated_per_day_with_a_caveat():
+    hourly = {"timestamp": [f"2025-01-{d:02d} {h:02d}:00" for d in range(1, 8) for h in range(24)],
+              "kwh": [50 + h % 12 + d for d in range(7) for h in range(24)]}
+    result = text_of("日ごとのkwhの推移は？", hourly)
+    trend = finding(result, "trend")["statement"]
+    assert trend.startswith("kwh（日ごとの合計）は") and "timestampごと" not in trend
+    assert "timestampの時刻は扱わず、日付ごとに集計しました（時間帯別の分析には対応していません）。" in result["analyst"]["caveats"]
+    english = text_of("kwh trend", hourly, "en")
+    assert "kwh (total per day)" in finding(english, "trend")["statement"]
+    daily_only = {"timestamp": [f"2025-01-{d:02d}" for d in range(1, 8) for _ in range(3)], "kwh": list(range(21))}
+    assert not any("時刻" in c for c in text_of("kwhの推移", daily_only)["analyst"]["caveats"])
+
+
+@pytest.mark.parametrize("header", ["Conversion Rate", "ConversionRate", "conversion_rate", "Click-through rate"])
+def test_rates_with_spaced_or_camel_case_names_are_averaged(header):
+    data = {"channel": ["web"] * 36 + ["app"] * 4, header: [2.0 + (i % 3) * 0.1 for i in range(36)] + [6.0] * 4}
+    plan = plan_of(f"Which channel has the highest {header}?", data)
+    assert ("group_by", {"by": "channel", "value": header, "agg": "mean"}) in plan
+    text = finding(text_of(f"Which channel has the highest {header}?", data, "en"), "breakdown")["statement"]
+    assert '"app" (6, n=4)' in text and "of the total" not in text
+
+
+@pytest.mark.parametrize("name,agg", [("Unit Price", "mean"), ("unitPrice", "mean"), ("Avg Price", "mean"),
+                                      ("Satisfaction Score", "mean"), ("Sales", "sum"), ("Page Views", "sum"),
+                                      ("Amount", "sum")])
+def test_default_aggregation_reads_word_boundaries(name, agg):
+    assert A._default_agg(T.load_table({name: [1, 2, 3]}), name, "") == agg
+
+
+def test_spaced_id_columns_are_never_the_default_measure():
+    rows = 60
+    data = {"Order ID": [100000 + (i * 7919) % 900000 for i in range(rows)],
+            "Order Date": [f"2025-{1 + i // 10:02d}-{1 + i % 10:02d}" for i in range(rows)],
+            "Region": ["East", "West"] * 30, "Amount": [100 + (i * 13) % 70 for i in range(rows)]}
+    assert dict(plan_of("Show me the monthly trend", data))["trend"]["value"] == "Amount"
+    assert not any(s["arguments"].get("column") == "Order ID" or s["arguments"].get("x") == "Order ID"
+                   for s in text_of("Give me an overview", data, "en")["analyst"]["steps"])

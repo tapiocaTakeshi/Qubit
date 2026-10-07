@@ -46,6 +46,15 @@ def name_key(name):
     return re.sub(r"\s+", "", _nfkc(str(name)).casefold())
 
 
+def word_key(name):
+    """Column-name key that keeps word boundaries, for name patterns anchored on them: NFKC, camelCase
+    split, casefold, whitespace runs to one space ("Conversion Rate" / "ConversionRate" -> "conversion
+    rate", "CustomerID" -> "customer id"); underscores and hyphens are kept."""
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", _nfkc(str(name)))
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", text)
+    return " ".join(text.casefold().split())
+
+
 def _clip(text, limit=80):
     text = "".join(" " if unicodedata.category(ch)[0] == "C" else ch for ch in str(text)[:limit * 4])
     return " ".join(text.split())[:limit]
@@ -58,6 +67,10 @@ class Column:
         self.name, self.kind, self.values = name, kind, list(values)
         self.raw_missing, self.coerced, self.unit = raw_missing, coerced, unit
         self.bool_labels = bool_labels or {}      # {True: "はい", False: "いいえ"}: the data's own tokens
+        # datetime columns: how a date is written for people ("day" ISO, "month" YYYY-MM, "year" YYYY,
+        # "fiscal" with date_style "年度" / "fy" / "期"); see date_text. Display only: results keep ISO dates.
+        self.date_grain, self.date_style = "day", None
+        self.has_time = False                     # datetime cells carry times of day that vary within a date
         self._year = None
         self.cache = {}                           # per-column derived facts (values never change)
 
@@ -125,11 +138,15 @@ class Table:
 _NUMBER = re.compile(
     r"(\()?\s*+([+\-−▲△])?\s*+([¥$€£])?\s*+([+\-−])?\s*+"
     r"(\d{1,3}(?:,\d{3})++(?:\.\d++)?|(?:\d++(?:\.\d*+)?|\.\d++)(?:[eE][+-]?\d++)?)"
-    r"\s*+([千万億兆])?\s*+(%|円|ドル|[¥$€£])?\s*+(\))?", re.ASCII)
+    r"\s*+([千万億兆])?\s*+(%|円|ドル|[¥$€£])?\s*+"
+    # a trailing measurement unit (39分, 91人, 33.7㎡ -> m2 after NFKC, 12.5km); never 組/号/店/位/番/階/F,
+    # so labels such as 1組 or 3号店 stay labels. The value is unitless (the unit is not ¥ or %).
+    r"(分|秒|時間|日間|人|名|件|個|回|台|本|枚|歳|才|泊|点|坪|kg|km|kWh|kwh|cm|mm|m2|ml|mL|min|m|g|L|°C|hrs?|h)?"
+    r"\s*+(\))?", re.ASCII)
 _SCALE = {"千": 1e3, "万": 1e4, "億": 1e8, "兆": 1e12}
 _CURRENCY = {"¥": "¥", "円": "¥", "$": "$", "ドル": "$", "€": "€", "£": "£"}
 _DATE = re.compile(r"(\d{4})([-/.])(\d{1,2})\2(\d{1,2})"
-                   r"(?:[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\s*(?:Z|[+-]\d{2}:?\d{2})?)?", re.ASCII)
+                   r"(?:[T ](\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)\s*(?:Z|[+-]\d{2}:?\d{2})?)?", re.ASCII)
 _MONTH = re.compile(r"(\d{4})[-/](\d{1,2})", re.ASCII)
 _JDATE = re.compile(r"(\d{4})\s*年(?:\s*(\d{1,2})\s*月(?:\s*(\d{1,2})\s*日)?)?", re.ASCII)
 # Fiscal years: "2016年度" / "FY2016" start in April; "2016年3月期" is dated by its closing month.
@@ -157,10 +174,10 @@ def _number(value):
     m = _NUMBER.fullmatch(_nfkc(value).strip())
     if not m:
         return None
-    opened, sign, pre, sign2, digits, scale, suffix, closed = m.groups()
+    opened, sign, pre, sign2, digits, scale, suffix, measure, closed = m.groups()
     if bool(opened) != bool(closed) or (sign and sign2) or (opened and (sign or sign2)):
         return None
-    if pre and suffix and suffix != "%":
+    if (pre and suffix and suffix != "%") or (measure and (pre or suffix)):
         return None
     x = float(digits.replace(",", "")) * _SCALE.get(scale, 1.0)
     if opened or (sign or sign2 or "+") in "-−▲△":
@@ -199,6 +216,79 @@ def parse_date(value):
         return datetime.date(*map(int, parts))
     except ValueError:
         return None
+
+
+def _date_form(value):
+    """How one parsed date cell was written -> (grain, style): ("day", None), ("month", None), ("year", None)
+    or ("fiscal", "年度" / "fy" / "期")."""
+    if not isinstance(value, str):
+        return "day", None
+    text = _nfkc(value).strip()
+    if _DATE.fullmatch(text):
+        return "day", None
+    if _MONTH.fullmatch(text) or _DOT_MONTH.fullmatch(text):
+        return "month", None
+    if (m := _JDATE.fullmatch(text)):
+        return ("day" if m.group(3) else "month" if m.group(2) else "year"), None
+    if (m := _FY.fullmatch(text)):
+        return "fiscal", "期" if m.group(2) else "年度" if "年度" in text else "fy"
+    return "day", None
+
+
+def _date_grain(cells, parsed):
+    """(grain, style) of a datetime column: the one form every parsed cell is written in. Full dates that
+    are all the 1st of the month name months when the series steps monthly (2024-01-01, 2024-02-01 …), and
+    years when every date is 1 January of successive years."""
+    forms = {_date_form(cells[i]) for i, _ in parsed}
+    if len(forms) == 1 and next(iter(forms))[0] != "day":
+        grain, style = next(iter(forms))
+        if grain == "fiscal" and len({d.month for _, d in parsed}) > 1:
+            return "day", None          # 2016年度 next to 2016年3月期: no single fiscal label
+        return grain, style
+    dates = sorted({d for _, d in parsed})
+    if len(dates) < 2 or any(d.day != 1 for d in dates):
+        return "day", None
+    gaps = Counter((b.year - a.year) * 12 + b.month - a.month for a, b in zip(dates, dates[1:]))
+    step = gaps.most_common(1)[0][0]
+    if step == 1:
+        return "month", None
+    if step == 12 and all(d.month == 1 for d in dates):
+        return "year", None
+    return "day", None
+
+
+def _has_time(cells, parsed):
+    """Some date holds 2+ distinct times of day (hourly meter readings, timestamped logs): only the date is
+    kept, so rows are aggregated per date and the time of day is not analysed."""
+    times = {}
+    for i, day in parsed:
+        cell = cells[i]
+        if isinstance(cell, datetime.datetime):
+            clock = cell.time().isoformat()
+        elif isinstance(cell, str) and (m := _DATE.fullmatch(_nfkc(cell).strip())) and m.group(5):
+            clock = m.group(5)
+        else:
+            continue
+        seen = times.setdefault(day, set())
+        seen.add(clock)
+        if len(seen) > 1:
+            return True
+    return False
+
+
+def date_text(day, col=None):
+    """A date as people wrote it in col: 2024-08 for a monthly column, 2024 for years, 2024年度 / FY2024 /
+    2024年3月期 for fiscal years, else ISO 2024-08-15."""
+    grain, style = (getattr(col, "date_grain", "day"), getattr(col, "date_style", None))
+    if grain == "month":
+        return f"{day.year:04d}-{day.month:02d}"
+    if grain == "year":
+        return f"{day.year:04d}"
+    if grain == "fiscal":
+        if style == "期":
+            return f"{day.year:04d}年{day.month}月期"
+        return f"FY{day.year:04d}" if style == "fy" else f"{day.year:04d}年度"
+    return day.isoformat()
 
 
 def parse_bool(value):
@@ -431,7 +521,11 @@ def _infer(name, cells):
                 labels = {b: c.most_common(1)[0][0] for b, c in tokens.items()}
             for i, value in parsed:
                 values[i] = value
-            return Column(name, kind, values, len(cells) - total, failures, unit, labels)
+            column = Column(name, kind, values, len(cells) - total, failures, unit, labels)
+            if kind == "datetime":
+                column.date_grain, column.date_style = _date_grain(cells, parsed)
+                column.has_time = _has_time(cells, parsed)
+            return column
     values = [None if v is None else _label(v) for v in cells]
     unique = len({v for v in values if v is not None})
     kind = "categorical" if unique <= max(20, 0.05 * len(cells)) else "text"
@@ -1115,10 +1209,13 @@ def _rows(column):
     return [(i + 1, v) for i, v in enumerate(column.values) if v is not None]
 
 
+# on a word_key, so "Order ID", "CustomerID", "Product Code" and "Invoice No" keep their word boundary
+ID_NAME = re.compile(r"(?<![a-z])id$|^id(?![a-z])|番号|コード|(?:^|[\s_])no\.?$|^#$|\bcode$")
+
+
 def is_id_like(col):
     """ID / 番号 / コード columns and 1, 2, 3… row counters: skipped by default analyses."""
-    key = name_key(col.name)
-    if re.search(r"(?<![a-z])id$|^id(?![a-z])|番号|コード|^no\.?$|^#$|\bcode$", key):
+    if ID_NAME.search(word_key(col.name)):
         return True
     values = col.present()
     return (col.kind == "numeric" and len(values) > 2
@@ -1144,6 +1241,8 @@ def profile(table, args):
                  "unique": len(set(present)), "coerced": col.coerced, "sample": sample}
         if col.unit:
             entry["unit"] = col.unit
+        if col.has_time:
+            entry["has_time"] = True
         columns.append(entry)
     return {"rows": table.n_rows, "n_columns": len(table.columns), "columns": columns,
             "kinds": dict(Counter(c.kind for c in table.columns)),
@@ -1183,8 +1282,11 @@ def describe(table, args):
     """列の要約統計。column 省略時は ID 的な列を除いて先頭から最大20列。"""
     names = ([args["column"]] if args.get("column") else
              [n for n in table.names() if not is_id_like(table.column(n))] or table.names())
-    return {"columns": [_describe_column(table.column(n)) for n in names[:DESCRIBE_LIMIT]],
-            "truncated": len(names) > DESCRIBE_LIMIT}
+    out = {"columns": [_describe_column(table.column(n)) for n in names[:DESCRIBE_LIMIT]],
+           "truncated": len(names) > DESCRIBE_LIMIT}
+    if args.get("total"):
+        out["total"] = True
+    return out
 
 
 def _centred(col, method):
@@ -1458,6 +1560,15 @@ def trend(table, args):
     slope, p = reg["slope"], reg["p_value"]
     direction = _direction(slope, p)
     step = median([b - a for a, b in zip(x, x[1:])])
+    usual = None
+    if kind == "datetime" and period in ("month", "year"):
+        # one step of month / year buckets is the calendar average, not the median day gap (31 for months)
+        gaps = Counter(_months_between(a, b) for a, b in zip(keys, keys[1:]))
+        usual = 12 if period == "year" else gaps.most_common(1)[0][0]
+        step = usual * 365.25 / 12
+    elif kind == "datetime":
+        step = next((m for lo, hi, m in ((28, 31, 365.25 / 12), (89, 92, 365.25 / 4), (364, 366, 365.25))
+                     if lo <= step <= hi), step)
     span = x[-1] - x[0]
     cagr, years = None, None
     if kind == "datetime" and span >= 365:
@@ -1473,10 +1584,8 @@ def trend(table, args):
     peak = max(range(n), key=lambda i: (y[i], -i))
     trough = min(range(n), key=lambda i: (y[i], i))
     adjacent = [True] * n      # month/year buckets: "前月比" only against the previous period, not across a gap
-    if kind == "datetime" and period in ("month", "year"):
-        gaps = [_months_between(a, b) for a, b in zip(keys, keys[1:])]
-        usual = 12 if period == "year" else Counter(gaps).most_common(1)[0][0]
-        adjacent = [True] + [g == usual for g in gaps]
+    if usual is not None:
+        adjacent = [True] + [_months_between(a, b) == usual for a, b in zip(keys, keys[1:])]
     elif kind == "numeric" and table.column(args["time"]).is_year:      # 2015, 2017: no 前年比 across the gap
         adjacent = [True] + [b - a == 1 for a, b in zip(keys, keys[1:])]
     out.update(first=y[0], last=y[-1], first_period=label(0), last_period=label(n - 1),
@@ -1933,11 +2042,14 @@ _GROUP_KINDS = ["categorical", "boolean"]
 _PERIOD = {"type": "enum", "required": False, "enum": ["raw", "month", "year"], "default": "raw"}
 # First month of a period=year bucket (4: 年度). Set by the rule planner, not listed in planner prompts.
 _FISCAL = {"type": "int", "required": False, "min": 1, "max": 12, "internal": True}
+# describe: report the column totals in the statement (the question asks 合計 / total). Set by the rule planner.
+_TOTAL = {"type": "bool", "required": False, "internal": True}
 TOOL_SPECS = {
     "profile": {"description": "行数・列の型・欠損・変換できなかったセルを確認", "label": "データ概要を作成中",
                 "args": {}},
     "describe": {"description": "列の要約統計（件数・平均・標準偏差・四分位・最頻値など）",
-                 "label": "要約統計を計算中", "args": {"column": {"type": "column", "required": False}}},
+                 "label": "要約統計を計算中", "args": {"column": {"type": "column", "required": False},
+                                                      "total": _TOTAL}},
     "correlate": {"description": "数値列どうしの相関係数とp値（x,y省略時は相関の強い組を一覧）",
                   "label": "相関を計算中", "args": {
                       "x": {"type": "column", "required": False, "kinds": ["numeric"]},
@@ -2009,6 +2121,10 @@ def _check_arg(table, key, rule, value):
         if normal not in rule["enum"]:
             raise DataError(f"引数 {key} は {' / '.join(rule['enum'])} のいずれかで指定してください")
         return normal
+    if kind == "bool":
+        if type(value) is not bool:
+            raise DataError(f"引数 {key} は true / false で指定してください")
+        return value
     if kind == "int" and type(value) is not int:
         raise DataError(f"引数 {key} は整数で指定してください")
     if kind == "number" and (type(value) not in (int, float) or value != value):

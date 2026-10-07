@@ -3258,6 +3258,9 @@ def _runpod_handler(event):
         split_status, split_reset, status
     """
     job_input = event.get("input", {})
+    if not isinstance(job_input, dict):
+        # A traceback from the SDK would carry the hostname and worker id; answer like the actions do.
+        return {"error": "input must be an object"}
 
     # Translate RunPod input to EndpointHandler format
     data = {}
@@ -3279,8 +3282,8 @@ def _runpod_handler(event):
     # Pass through extra fields (for training payloads)
     for key in ("qa_pairs", "dataset_ids", "epochs", "lr", "batch_size",
                 "mode", "num_chunks", "resume"):
-        if key in job_input:
-            data.setdefault("parameters", {})[key] = job_input[key]
+        if key in job_input and isinstance(data.setdefault("parameters", {}), dict):
+            data["parameters"][key] = job_input[key]
 
     # Report initialization failures through the queue API instead of
     # crashing before the worker can claim a diagnostic request.

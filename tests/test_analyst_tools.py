@@ -675,7 +675,7 @@ def test_tool_registry_matches_specs():
     for spec in T.TOOL_SPECS.values():
         assert spec["description"] and set(spec) >= {"description", "args"}
         for rule in spec["args"].values():
-            assert rule["type"] in ("column", "string", "int", "enum", "number")
+            assert rule["type"] in ("column", "string", "int", "enum", "number", "bool")
             assert isinstance(rule["required"], bool)
 
 
@@ -1294,3 +1294,98 @@ def test_top_n_labels_rows_by_their_date_without_a_name_column():
 def test_boolean_columns_keep_their_own_words():
     col = load_table({"離職意向": ["はい", "いいえ", "いいえ", "はい"]}).column("離職意向")
     assert col.kind == "boolean" and col.bool_labels == {True: "はい", False: "いいえ"}
+
+
+@pytest.mark.parametrize("cells,grain,style,shown", [
+    (["2024-01", "2024-02", "2024-03"], "month", None, "2024-01"),
+    (["2024年1月", "2024年2月"], "month", None, "2024-01"),
+    (["2024.1", "2024.10", "2024.11"], "month", None, "2024-01"),
+    (["2024-01-01", "2024-02-01", "2024-03-01"], "month", None, "2024-01"),     # monthly first-of-month dates
+    (["2021-01-01", "2022-01-01", "2023-01-01"], "year", None, "2021"),
+    (["2021年", "2022年", "2023年"], "year", None, "2021"),
+    (["2021年度", "2022年度"], "fiscal", "年度", "2021年度"),
+    (["FY2021", "fy2022"], "fiscal", "fy", "FY2021"),
+    (["2021年3月期", "2022年3月期"], "fiscal", "期", "2021年3月期"),
+    (["2024-01-01", "2024-01-02", "2024-01-03"], "day", None, "2024-01-01"),
+    (["2024-01-01", "2024-03-01", "2024-07-01"], "day", None, "2024-01-01"),       # irregular: keep the day
+    (["2021-04-01", "2022-04-01", "2023-04-01"], "day", None, "2021-04-01"),       # never assume a fiscal year
+    (["2021年度", "2022年3月期"], "day", None, "2021-04-01"),                       # mixed fiscal forms
+])
+def test_datetime_columns_remember_how_their_dates_are_written(cells, grain, style, shown):
+    col = load_table({"t": cells, "v": list(range(len(cells)))}).column("t")
+    assert col.kind == "datetime" and (col.date_grain, col.date_style) == (grain, style)
+    assert T.date_text(col.present()[0], col) == shown
+    assert col.present()[0].isoformat() in json.dumps(run_tool(load_table({"t": cells}), "describe", {"column": "t"}))
+
+
+# ---------------------------------------------------------------- round-3 fixes
+
+def test_monthly_slope_per_period_is_per_calendar_month_not_per_median_gap():
+    """The median gap of calendar months is 31 days: one month is the calendar average (30.44 days)."""
+    rows = [(f"{2023 + m // 12}-{m % 12 + 1:02d}", store, base + step * m)
+            for m in range(24) for store, base, step in (("A店", 1000, 10), ("B店", -500, 20))]
+    table = T.load_table({"月": [r[0] for r in rows], "店舗": [r[1] for r in rows], "売上": [r[2] for r in rows]})
+    out = T.run_tool(table, "trend", {"value": "売上", "time": "月", "period": "month", "by": "店舗"})
+    assert out["period_step"] == pytest.approx(365.25 / 12)
+    assert abs(out["slope_per_period"] - 30) < 0.15
+    groups = {g["key"]: g for g in out["groups"]}
+    assert abs(groups["A店"]["slope_per_period"] - 10) < 0.05 and abs(groups["B店"]["slope_per_period"] - 20) < 0.05
+    quarterly = T.load_table({"日付": [f"{2020 + q // 4}-{q % 4 * 3 + 1:02d}-15" for q in range(12)],
+                              "売上": [100 + 5 * q for q in range(12)]})
+    assert abs(T.run_tool(quarterly, "trend", {"value": "売上", "time": "日付"})["slope_per_period"] - 5) < 0.05
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("Conversion Rate", "conversion rate"), ("ConversionRate", "conversion rate"), ("CustomerID", "customer id"),
+    ("unitPrice", "unit price"), ("HTTPStatus", "http status"), ("order_id", "order_id"), ("顧客ID", "顧客id"),
+])
+def test_word_key_keeps_word_boundaries(name, expected):
+    assert T.word_key(name) == expected
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("Order ID", True), ("Customer ID", True), ("CustomerID", True), ("OrderId", True), ("user id", True),
+    ("Product Code", True), ("StockCode", True), ("Invoice No", True), ("InvoiceNo", True), ("Order No.", True),
+    ("顧客ID", True), ("order_id", True), ("#", True), ("No.", True),
+    ("Paid", False), ("Amount Paid", False), ("Valid", False), ("idle_time", False), ("Grid Size", False),
+    ("Coupon Code Used", False), ("Returned Yes/No", False),
+])
+def test_id_names_with_spaces_or_camel_case_are_ids(name, expected):
+    assert T.is_id_like(T.Column(name, "numeric", [3.0, 9.0, 4.0, 7.0])) is expected
+
+
+@pytest.mark.parametrize("cell,value", [
+    ("39分", 39.0), ("91人", 91.0), ("33.7㎡", 33.7), ("12.5km", 12.5), ("15件", 15.0), ("1.2万人", 12000.0),
+    ("-3℃", -3.0), ("85点", 85.0), ("2 時間", 2.0), ("2.5kg", 2.5),
+])
+def test_numbers_with_a_measurement_unit_are_numbers(cell, value):
+    assert T.parse_number(cell) == value
+
+
+@pytest.mark.parametrize("cell", ["1組", "3号店", "2位", "10代", "5F", "第1回", "1回目", "¥100kg", "5%分", "3日"])
+def test_labels_ending_in_a_number_word_stay_labels(cell):
+    assert T.parse_number(cell) is None
+
+
+def test_unit_suffixed_columns_load_as_numbers_and_class_labels_stay_categorical():
+    table = T.load_table({"待ち時間": [f"{20 + i % 9}分" for i in range(30)], "組": [f"{i % 3 + 1}組" for i in range(30)]})
+    assert table.column("待ち時間").kind == "numeric" and table.column("待ち時間").unit is None
+    assert table.column("組").kind == "categorical"
+
+
+def test_timestamps_with_times_of_day_are_flagged():
+    hourly = T.load_table({"timestamp": [f"2025-01-0{d}T{h:02d}:00" for d in (1, 2) for h in range(24)],
+                           "kwh": list(range(48))})
+    assert hourly.column("timestamp").has_time and len(set(hourly.column("timestamp").present())) == 2
+    assert T.run_tool(hourly, "profile", {})["columns"][0]["has_time"] is True
+    for cells in ([f"2025-01-{d:02d}" for d in range(1, 9)], [f"2025-01-{d:02d} 09:00" for d in range(1, 9)]):
+        table = T.load_table({"t": cells, "x": list(range(8))})
+        assert not table.column("t").has_time and "has_time" not in T.run_tool(table, "profile", {})["columns"][0]
+
+
+def test_describe_reports_totals_only_when_asked():
+    table = T.load_table({"売上": [1, 2, 3]})
+    assert "total" not in T.run_tool(table, "describe", {"column": "売上"})
+    assert T.run_tool(table, "describe", {"column": "売上", "total": True})["total"] is True
+    with pytest.raises(T.DataError):
+        T.validate_args(table, "describe", {"total": "yes"})

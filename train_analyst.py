@@ -224,7 +224,7 @@ ARCHETYPES = [
         _q("{M}と{O}の推移", ("trend", {"value": "{M}", "time": "{T}"}),
            ("trend", {"value": "{O}", "time": "{T}"})),
         _q("{O}が最も高かった年は？", ("top_n", {"column": "{O}", "label": "{T}"})),
-        _q("利益は増えている？", ("trend", {"value": "{O}", "time": "{T}"})),
+        _q("従業員が多い年ほど利益も大きい？", ("correlate", {"x": "{E}", "y": "{O}"})),
     ]),
     (_campaign, "ja", [
         _q("{X}AとBで{M}に差はある？", ("compare", {"value": "{M}", "by": "{X}", "a": "A", "b": "B"})),

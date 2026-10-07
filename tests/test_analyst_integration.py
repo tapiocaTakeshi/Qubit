@@ -297,6 +297,38 @@ def test_both_runpod_entrypoints_forward_analyst_data_intact(filename, function,
     assert report["dataset"]["name"] == "売上" and report["dataset"]["rows"] == 12
 
 
+@pytest.mark.parametrize("filename,function,instance_name", [
+    ("runpod_handler.py", "run_handler", "handler"),
+    ("handler.py", "_runpod_handler", "_global_handler"),
+])
+def test_runpod_entrypoints_answer_malformed_input_without_raising(filename, function, instance_name):
+    """A CSV string pasted as parameters (or null, or a number) reaches the action's own validation, and a
+    non-object input is refused: an exception here would become an SDK traceback with the hostname and
+    worker id in the RunPod result."""
+    source = ast.parse((ROOT / filename).read_text(encoding="utf-8"))
+    node = next(n for n in source.body if isinstance(n, ast.FunctionDef) and n.name == function)
+
+    def handle_analyst(data, on_event=None):       # the contract of handler.EndpointHandler._handle_analyst
+        try:
+            return [run_analyst(data, on_event=on_event)]
+        except ValueError as exc:
+            return [{"error": str(exc)}]
+
+    stub = SimpleNamespace(_resolve_action=lambda data: data.get("action"), _handle_analyst=handle_analyst)
+    namespace = {instance_name: stub}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), filename, "exec"), namespace)
+    run = namespace[function]
+    for params in ("月,売上\n2025-01,1", None, 5, ["月,売上"]):
+        job = {"id": "job", "input": {"action": "analyst", "prompt": "売上の推移", "parameters": params}}
+        assert run(job) == {"error": "parameters must be an object"}, params
+        job["input"]["epochs"] = 3           # a top-level training key must not hit the non-object either
+        assert run(job) == {"error": "parameters must be an object"}, params
+    for bad in (None, "売上の推移", ["analyst"]):
+        assert run({"id": "job", "input": bad}) == {"error": "input must be an object"}
+    good = {"id": "job", "input": {"action": "analyst", "prompt": "売上の推移", "parameters": {"csv": CSV}}}
+    assert run(good)["analyst"]["status"] == "completed"
+
+
 # ---------------------------------------------------------------- handler.py source
 
 def call_tables():

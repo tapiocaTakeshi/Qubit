@@ -82,6 +82,9 @@ def run_handler(event):
         }
 
     job_input = event.get("input", {})
+    if not isinstance(job_input, dict):
+        # A traceback from the SDK would carry the hostname and worker id; answer like the actions do.
+        return {"error": "input must be an object"}
 
     # Translate RunPod input to EndpointHandler format
     data = {}
@@ -95,7 +98,10 @@ def run_handler(event):
         data["inputs"] = job_input["inputs"]
 
     if "parameters" in job_input:
-        data["parameters"] = dict(job_input["parameters"])
+        # Non-objects (a CSV string pasted as parameters, null, 5) pass through unchanged so that the
+        # action's own validation answers {"error": ...} instead of dict() raising here.
+        params = job_input["parameters"]
+        data["parameters"] = dict(params) if isinstance(params, dict) else params
 
     # Preserve all training controls that may be sent at input top level.
     # In particular, support both dataset_ids and the common datasets alias.
@@ -111,8 +117,8 @@ def run_handler(event):
         "dpo_grad_accum",
     )
     for key in passthrough_keys:
-        if key in job_input:
-            data.setdefault("parameters", {})[key] = job_input[key]
+        if key in job_input and isinstance(data.setdefault("parameters", {}), dict):
+            data["parameters"][key] = job_input[key]
 
     from neuroquantum_agent_progress import dispatch_job
     result = dispatch_job(handler, data, event)

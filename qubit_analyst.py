@@ -7,6 +7,7 @@ computed results is discarded in favour of the deterministic template.
 import bisect
 import copy
 import datetime
+import decimal
 import json
 import math
 import re
@@ -185,10 +186,133 @@ def _column_keys(table):
     return exact + [(form, next(iter(names))) for form, names in loose.items() if len(names) == 1]
 
 
+# Bilingual column concepts: a question term matches a column whose name (without a trailing unit in
+# brackets) equals or contains a term of the same concept, so "sales" finds 売上(万円) and 地域 finds
+# region. kind limits the columns a concept may name: "measure" numeric, "label" categorical / text /
+# boolean, "time" a date or year column. A concept names a column only when exactly one column matches it;
+# exact column names always win. One-character terms (店, 日, 月, 年) only match a column named exactly
+# that and are never looked for in questions (月 is in 来月, 年 in 年齢). Curated, not a thesaurus:
+# docs/QUBIT_ANALYST.md lists it; keep the two in sync.
+CONCEPTS = (
+    ("sales", "measure", ("sales", "revenue", "revenues", "売上", "売り上げ", "売上高", "販売額", "売上金額")),
+    ("region", "label", ("region", "area", "地域", "エリア", "地方")),
+    ("store", "label", ("store", "shop", "branch", "店舗", "店", "支店")),
+    ("customers", "measure", ("customers", "customer count", "客数", "顧客数", "来客数")),
+    ("ad_spend", "measure", ("ad spend", "ad spending", "advertising", "advertising cost", "広告費", "宣伝費")),
+    ("profit", "measure", ("profit", "operating profit", "gross profit", "利益", "営業利益", "粗利")),
+    ("price", "measure", ("price", "unit price", "単価", "価格")),
+    ("quantity", "measure", ("quantity", "units", "units sold", "qty", "販売数", "数量", "個数")),
+    ("department", "label", ("department", "dept", "部署", "部門")),
+    ("employee", "label", ("employee", "staff", "社員", "従業員")),
+    ("satisfaction", "measure", ("satisfaction", "満足度")),
+    ("date", "time", ("date", "日付", "日")),
+    ("month", "time", ("month", "月")),
+    ("year", "time", ("year", "fiscal year", "年", "年度")),
+    ("category", "label", ("category", "product category", "カテゴリ", "カテゴリー", "分類", "商品カテゴリ")),
+    ("product", "label", ("product", "item", "商品", "製品")),
+    ("conversion", "measure", ("conversion", "conversion rate", "cvr", "転換率", "コンバージョン", "コンバージョン率")),
+    ("churn", "measure", ("churn", "churn rate", "解約率")),
+    ("cost", "measure", ("cost", "costs", "expense", "expenses", "費用", "コスト")),
+    ("orders", "measure", ("orders", "order count", "注文数", "受注件数", "受注数")),
+)
+# names a concept must not reach by containment: 売上原価 is a cost of sales, 利益率 a margin (rate)
+_CONCEPT_NOT = {"sales": re.compile(r"原価|cogs|cost"), "profit": re.compile(r"率|rate|margin|ratio")}
+# The same exclusions in a question: compounds that contain a concept term but name another quantity
+# (利益率 is a margin, 売上原価 a cost, 客単価 a spend per customer) are shielded from the concept scan.
+_CONCEPT_COMPOUNDS = [(t, None) for t in (
+    "利益率", "粗利率", "営業利益率", "経常利益率", "原価率", "売上原価", "売上目標", "売上比率", "売上構成比", "客単価",
+    "profit margin", "gross margin", "operating margin", "profit rate", "cost of sales", "sales target")]
+
+
+def _concept_kind(col, kind):
+    """The column can stand for a concept of this kind (an ID / コード column never does: customer_id is
+    not the customers count)."""
+    if T.ID_NAME.search(T.word_key(col.name)):
+        return False
+    if kind == "time":
+        return col.kind == "datetime" or col.is_year
+    if kind == "measure":
+        return col.kind == "numeric" and not col.is_year
+    return col.kind in ("categorical", "text", "boolean")
+
+
+def _term_in(term, name):
+    """term equals name, or (2+ characters) sits inside it; ASCII terms only between non-alphanumerics."""
+    if term == name:
+        return True
+    if len(term) < 2:
+        return False
+    if _alnum(term[0]) or _alnum(term[-1]):
+        return re.search(r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])", name) is not None
+    return term in name
+
+
+def _concept_keys(table):
+    """([(question term, column)] for the CONCEPTS exactly one column matches, [(cell value, None)] values to
+    shield from them) of a table (cached: tables never change)."""
+    cached = table.__dict__.get("_concept_keys")
+    if cached is not None:
+        return cached
+    keys = []
+    for concept, kind, terms in CONCEPTS:
+        forms = {f for t in terms for f in _variants(t)}
+        blocked = _CONCEPT_NOT.get(concept)
+        found = []
+        for col in table.columns:
+            if not _concept_kind(col, kind):
+                continue
+            names = {_UNIT_SUFFIX.sub("", v) or v for v in _variants(col.name)}
+            if blocked and any(blocked.search(n) for n in names):
+                continue
+            if any(_term_in(t, n) for t in forms for n in names):
+                found.append(col.name)
+        if len(found) == 1:
+            ask = {f for t in terms for f in _variants(t) | _plurals(_norm(t)) if len(f) >= 2}
+            keys += [(form, found[0]) for form in sorted(ask)]
+    # cell values that contain a concept term ("東京エリア" holds エリア): shielded so the value stays a value
+    terms = {k for k, _ in keys}
+    shields = [(v, None) for col in table.columns if col.kind == "categorical"
+               for value in {x for x in col.present() if isinstance(x, str)}
+               for v in _variants(value) if any(t in v and t != v for t in terms)]
+    table.__dict__["_concept_keys"] = keys, shields
+    return keys, shields
+
+
+def _value_shields(table):
+    """[(cell value, ("value", its column))] of categorical values that contain a column name ("港区" holds
+    the column name 区, "営業部門" holds 部門): scanned with the names, longest first, so the value stays a
+    value (cached)."""
+    cached = table.__dict__.get("_value_shields")
+    if cached is not None:
+        return cached
+    keys = {k for k, _ in _column_keys(table)}
+    shields = []
+    for col in table.columns:
+        values = {x for x in col.present() if isinstance(x, str)} if col.kind == "categorical" else set()
+        if len(values) <= 200:
+            shields += [(v, ("value", col.name)) for value in values for v in _variants(value)
+                        if any(k in v and k != v for k in keys)]
+    table.__dict__["_value_shields"] = shields
+    return shields
+
+
+def _column_hits(q, table):
+    """[(start, end, column)] mentions in a normalised question: exact names (and their plural / unit-less
+    forms) first, then CONCEPTS terms in the text that no exact mention or cell value took."""
+    hits = [h for h in _scan(q, _column_keys(table) + _value_shields(table)) if not isinstance(h[2], tuple)]
+    concepts, shields = _concept_keys(table)
+    if concepts:
+        rest = list(q)
+        for i, j, _ in hits + _scan(q, shields + _CONCEPT_COMPOUNDS):
+            rest[i:j] = "\x00" * (j - i)
+        hits = sorted(hits + _scan("".join(rest), concepts), key=lambda m: m[0])
+    return hits
+
+
 def _mention_spans(question, table):
     """(masked question, mentioned names, names used as group keys, [(start, end, name)] mentions)."""
     q = _norm(question)
-    hits = _scan(q, _column_keys(table))
+    hits = _column_hits(q, table)
     timeish = {c.name: c.kind == "datetime" or c.is_year for c in table.columns}     # once per column
     keyish = {c.name: c.kind != "numeric" or c.is_year for c in table.columns}
     askable = {c.name: c.kind in T._GROUP_KINDS for c in table.columns}     # "どの地域", "地域によって"
@@ -221,6 +345,9 @@ _TIME_GROUP = (r"(?:月|年|日|週|四半期|年度|期)(?:別|ごと|毎)|毎(
                r"\b(?:monthly|yearly|annual|annually|daily|weekly|quarterly)\b")
 _MONTHLY = r"月次|月別|月ごと|毎月|月単位|\bmonthly\b|\b(?:by|per|each) month\b"
 _YEARLY = r"年次|年別|年ごと|毎年|年単位|年度別|年度ごと|\b(?:yearly|annual|annually)\b|\b(?:by|per|each) year\b"
+# "Which carrier has the longest delivery time?": English superlatives other than highest / lowest
+_EN_EXTREMES = (r"\blongest\b|\bshortest\b|\bslowest\b|\bfastest\b|\bquickest\b|\bbiggest\b|\bgreatest\b|"
+                r"\bcheapest\b|\b(?:most|least) expensive\b")
 _CAUSAL = r"(?:を|が)(?:増やす|減らす|増や|上げる|下げる)と|\bincreas(?:e|ing) [^?.!]{1,40} (?:raise|lift|boost)"
 _INTENTS = [  # canonical execution order
     ("describe", r"分布|要約|統計|概要|\bdescri|\bsummar|\bdistribution|\boverview"),
@@ -233,7 +360,7 @@ _INTENTS = [  # canonical execution order
     ("compare", r"比較|違い|違う|異な|差|\bcompar|\bvs\b|\bversus\b|\bdifferen|\bdiffer\b|\bvary\b|\bbetter than\b"),
     ("crosstab", r"クロス|独立|\bcrosstab|\bcross[- ]?tab|\bindependen|\bcontingency"),
     ("top_n", r"上位|下位|ランキング|トップ|ワースト|ベスト|\btop\b|\brank|\bbottom\b|\bhighest\b|"
-              r"\blowest\b|\blargest\b|\bsmallest\b"),
+              r"\blowest\b|\blargest\b|\bsmallest\b|" + _EN_EXTREMES),
     ("outliers", r"外れ値|はずれ値|異常|おかし|急増|急減|\boutlier|\banomal|\bunusual"),
     ("forecast", r"予測|見通し|将来|今後|来月|来期|来年|(?:来|翌)□+|\bforecast|\bpredict|\bprojection|\boutlook"),
 ]
@@ -241,7 +368,7 @@ _EXPLICIT_TREND = r"推移|傾向|トレンド|時系列|\btrend|\bover time\b"
 
 
 _SUPERLATIVE = (r"最も|一番|いちばん|最大|最高|最多|最小|最低|最少|\bhighest\b|\blargest\b|\bmost\b|\blowest\b|"
-                r"\bsmallest\b|\bleast\b|\bbest\b|\bworst\b")
+                r"\bsmallest\b|\bleast\b|\bbest\b|\bworst\b|" + _EN_EXTREMES)
 
 
 def _intents(masked):
@@ -287,6 +414,14 @@ def _groups(table):
             + [c.name for c in table.columns if c.kind == "boolean" and ok(c)])
 
 
+def _repeats(col):
+    """A label whose values repeat (2+ distinct, at most half the rows, not a broken numeric column): its
+    groups can be compared or crossed, however many there are (a crosstab folds levels, an ANOVA takes
+    any number of groups). Only labels of (nearly) one row each are not."""
+    present = col.present()
+    return 2 <= len(set(present)) <= len(present) / 2 and not _mostly_numeric(col)
+
+
 def _period(question, table, time_name):
     if not time_name or table.column(time_name).kind != "datetime":
         return "raw"
@@ -318,8 +453,16 @@ def _number_after(pattern, q, low, high):
 
 _MEAN_Q = r"平均|\bmean\b|\baverage\b|\bavg\b"
 _SUM_Q = r"合計|総額|総数|累計|\btotal\b|\bsum\b"
-_NON_ADDITIVE = re.compile(r"率|割合|比率|満足度|スコア|評価|単価|価格|平均|気温|温度|年齢|点数|(?<![a-z])(?:rate|ratio|pct|"
-                           r"percent|score|rating|price|avg|mean|temp|temperature|age|cvr|ctr|nps)(?![a-z])")
+# On a T.word_key ("Conversion Rate" -> "conversion rate"). Per-event durations (待ち時間, delivery_hours) are
+# averaged too; bare 時間 / 日数 / hours are not (残業時間 and 勤務時間 totals are meaningful).
+_NON_ADDITIVE = re.compile(r"率|割合|比率|満足度|スコア|評価|単価|価格|平均|気温|温度|年齢|点数|待ち|所要|リードタイム|滞在時間|"
+                           r"応答時間|処理時間|配送時間|納期|(?<![a-z])(?:rate|ratio|pct|percent|score|rating|price|avg|"
+                           r"mean|temp|temperature|age|cvr|ctr|nps|wait(?:ing)?|lead[ _-]?time|duration|latency|"
+                           r"turnaround|response[ _-]?time|delivery[ _-]?(?:hours?|time|days?|minutes?))(?![a-z])")
+_GROWTH_WORDS = r"伸び|成長|増|減|\bgrow|\bincreas|\bdecreas|\bdeclin"
+# Question words that ask for a per-row level, not a total: test scores, the longest wait, the fastest carrier
+_MEAN_IMPLIED = (r"点数|平均点|長い|短い|遅い|速い|\b(?:scores?|grades?|longest|shortest|slowest|fastest|"
+                 r"quickest)\b")
 
 
 _GROWTH_RATE = r"年平均成長率|平均成長率|年平均伸び率|\baverage (?:annual )?growth(?: rate)?\b|\bcagr\b"
@@ -330,18 +473,21 @@ _SUM_BEFORE = re.compile(r"\b(?:total|sum)\s+(?:of\s+)?(?:the\s+)?$")
 def _sum_attached(table, name, q):
     """The sum word belongs to this column's own mention: "CVRの合計", "total CVR"."""
     return any(n == name and (_SUM_AFTER.match(q, j) or _SUM_BEFORE.search(q[max(0, i - 16):i]))
-               for i, j, n in _scan(q, _column_keys(table)))
+               for i, j, n in _column_hits(q, table))
 
 
 def _default_agg(table, name, q):
-    """Sum additive amounts and counts; average rates, scores, prices (or when the question says 平均).
+    """Sum additive amounts and counts; average rates, scores, prices, per-event durations (or when the
+    question says 平均, or asks for scores or the longest / shortest).
     A sum word elsewhere in the question ("売上合計とCVRの推移") never sums a rate unless attached to it;
     the 平均 inside 年平均成長率 (CAGR) is not a request for averages."""
     col = table.column(name)
-    rate = col.unit == "%" or _binary(col) or bool(_NON_ADDITIVE.search(T.name_key(name)))
+    rate = col.unit == "%" or _binary(col) or bool(_NON_ADDITIVE.search(T.word_key(name)))
     if re.search(_SUM_Q, q) and (not rate or _sum_attached(table, name, q)):
         return "sum"
-    if re.search(_MEAN_Q, re.sub(_GROWTH_RATE, " ", q)) or rate:
+    plain = re.sub(_GROWTH_RATE, " ", q)
+    implied = re.search(_MEAN_IMPLIED, plain) and not re.search(_GROWTH_WORDS, plain)   # "fastest growing" sums
+    if re.search(_MEAN_Q, plain) or implied or rate:
         return "mean"
     return "sum"
 
@@ -438,6 +584,20 @@ def _period_headers(table):
 _ARTICLE = re.compile(r"(?<![A-Za-z])([AI])(?![A-Za-z'])")
 
 
+def _cjk(ch):
+    """A kanji, katakana or 々: a character that continues a word ("毎月", "水準"), unlike kana particles."""
+    return ch == "々" or unicodedata.name(ch, "").startswith(("CJK UNIFIED", "KATAKANA"))
+
+
+def _word_value(masked, i, j, singles):
+    """A one-kanji value (曜日 月火水…, 性別 男/女) at masked[i:j] stands alone: each neighbour is absent, not
+    a kanji / katakana, or another one-kanji value of the column ("土日", "男女"); 曜 / 性 may follow
+    ("月曜日", "女性"). "毎月", "来月", "毎日" and "水準" are words, not the values."""
+    before, after = masked[i - 1] if i else "", masked[j] if j < len(masked) else ""
+    return ((not before or not _cjk(before) or before in singles)
+            and (not after or not _cjk(after) or after in singles or after in "曜性"))
+
+
 def _value_hits(question, masked, table, order):
     """{column: [named group values in question order]} for the string values (<= 200) of the group columns."""
     hits = {}
@@ -446,7 +606,9 @@ def _value_hits(question, masked, table, order):
         values = sorted({v for v in col.present() if isinstance(v, str)})
         if not values or len(values) > 200:
             continue
-        found = [(i, v) for i, _, v in _scan(masked, [(k, v) for v in values for k in _variants(v)])]
+        singles = {_norm(v) for v in values if len(_norm(v)) == 1 and not _norm(v).isascii()}
+        found = [(i, v) for i, j, v in _scan(masked, [(k, v) for v in values for k in _variants(v)])
+                 if _norm(v) not in singles or _word_value(masked, i, j, singles)]
         letters = [v for v in values if _norm(v) in ("a", "i") and v not in {f for _, f in found}]
         if letters:     # "between A and C": the label A reads as an article to the scan; check the casing
             text = unicodedata.normalize("NFKC", question)
@@ -480,7 +642,10 @@ def _analyse(question, table):
     cat = [n for n in mentioned if cols[n].kind in ("categorical", "boolean") and n not in blocked]
     groups = _groups(table)
     first = (cat or groups or [None])[0]
-    value_hits = _value_hits(question, masked, table, ([first] if first else []) + [n for n in groups if n != first])
+    order = ([first] if first else []) + [n for n in groups if n != first]
+    # a column named only inside its own values ("渋谷店と池袋店" of a column 店 with 60 stores) is still scanned
+    order += list(dict.fromkeys(owner for _, _, (_, owner) in _scan(q, _value_shields(table)) if owner not in order))
+    value_hits = _value_hits(question, masked, table, order)
     named = next(iter(value_hits.values()), [])
     if (len(value_hits) == 1 and len(named) >= 2 and not intents & {"trend", "outliers", "forecast", "crosstab"}):
         intents.add("compare")                    # "Does social bring more orders than email?"
@@ -553,19 +718,24 @@ def rule_plan(question, table):
         sizes = Counter(k for k, v in zip(cols[by].values, cols[value].values) if k is not None and v is not None)
         return sum(c >= 2 for c in sizes.values()) >= 3
 
-    def add_describe():
-        steps.extend([("describe", {"column": n}) for n in mentioned[:3]] or [("describe", {})])
+    total = {"total": True} if re.search(_SUM_Q, q) else {}     # "売上の合計はいくら？": state the totals
+
+    def add_describe(names=None):
+        names = mentioned[:3] if names is None else names
+        steps.extend([("describe", {"column": n, **total}) for n in names] or [("describe", {**total})])
 
     def add_correlate():
-        pair = [n for n in cat if n != time_col]
+        """-> whether a step was added."""
+        # a label of (nearly) one row each (商品名 on a product sheet) has no groups to compare or cross
+        pair = [n for n in cat if n != time_col and _repeats(cols[n])]
         if len(pair) >= 2 and not num:      # two categorical columns: association, not a numeric matrix
             steps.append(("crosstab", {"row": pair[0], "col": pair[1]}))
-            return
+            return True
         if pair and len(num) == 1:          # category vs number: compare the group means
             if not anova_ready(pair[0], num[0]):
                 steps.append(("group_by", {"by": pair[0], "value": num[0], "agg": "mean"}))
             steps.append(("compare", {"value": num[0], "by": pair[0]}))
-            return
+            return True
         numeric = _measures(table, exclude=(time_col,))
         method = "spearman" if re.search(r"スピアマン|順位相関|spearman|rank correlation", q) else "pearson"
         if len(num) == 2:
@@ -574,6 +744,9 @@ def rule_plan(question, table):
             steps.append(("correlate", {"x": num[0], "method": method}))
         elif len(numeric) >= 2:
             steps.append(("correlate", {"method": method}))
+        else:
+            return False
+        return True
 
     def add_group_by(by=None):
         by = by or (keys or labels or groups or [None])[0]
@@ -587,17 +760,18 @@ def rule_plan(question, table):
             steps.append(("group_by", {"by": by}))
 
     def add_compare():
+        """-> whether a step was added."""
         by, hits = (cat or groups or [None])[0], []
         if a.value_hits:
             by, hits = next(iter(a.value_hits.items()))
         if by is None or measure is None or by == measure:
-            return
+            return False
         if len(hits) >= 3:      # three or more named groups: every group's mean (an ANOVA when possible)
             if anova_ready(by, measure):
                 steps.append(("compare", {"value": measure, "by": by}))
             else:
                 steps.append(("group_by", {"by": by, "value": measure, "agg": "mean"}))
-            return
+            return True
         if not hits and len(set(cols[by].present())) > 2 and not anova_ready(by, measure):   # show every group
             steps.append(("group_by", {"by": by, "value": measure, "agg": "mean"}))
         args = {"value": measure, "by": by}
@@ -606,6 +780,7 @@ def rule_plan(question, table):
         if len(hits) > 1:
             args["b"] = hits[1]
         steps.append(("compare", args))
+        return True
 
     def add_top_n():
         label = labels[0] if labels else None
@@ -661,17 +836,12 @@ def rule_plan(question, table):
 
     def add_forecast():
         args = trend_args(measure)
-        m = re.search(r"(?<!\d)(\d{1,2})\s*(ヶ月|か月|カ月|ヵ月|ケ月|期間|期|年|四半期|日|週|months?|periods?|years?|"
-                      r"quarters?|days?|weeks?|steps?)", q)
-        if m:
-            args["periods"] = max(1, min(T.LIMITS["max_forecast_periods"], int(m.group(1))))
-            if (re.match(r"日|週|day|week", m.group(2)) and args.get("period") == "month"
-                    and not re.search(_MONTHLY, q)):
-                args["period"] = "raw"            # "next 4 weeks" counts observed steps, not months
-        elif re.search(r"来月|翌月|\bnext month\b", q):
-            args["periods"] = 1
-        elif re.search(r"来年|翌年|\bnext year\b", q):
-            args["periods"] = 12 if args.get("period") == "month" else 1
+        horizon = _horizon(q, table, time_col, args.get("period", "raw"))
+        if horizon:
+            args["periods"], new_period, _ = horizon
+            if time_col and new_period != args.get("period"):
+                args["period"] = new_period
+                args.pop("fiscal_start", None)
         elif re.search(r"来期|翌期|来四半期|翌四半期|\bnext (?:quarter|period)\b", q) and _coarse_steps(
                 table, time_col, args.get("period", "raw")):
             args["periods"] = 1                   # one quarter / year ahead; on monthly data 来期 stays 3 months
@@ -703,9 +873,11 @@ def rule_plan(question, table):
                 continue           # "地域別の推移" / "地域別の異常値": the per-group analysis is the answer
             add_group_by()
         elif intent == "correlate":
-            add_correlate()
+            if not add_correlate() and not a.blocked:
+                add_describe()     # e.g. a label of one row each and one measure: summarise, never stay empty
         elif intent == "compare":
-            add_compare()
+            if not add_compare() and len(num) >= 2:
+                add_describe(num[:2])      # "予算と実績の合計を比較して": no group to compare; each column's summary
         elif intent == "crosstab":
             pair = list(dict.fromkeys(labels + groups))[:2]
             if len(pair) == 2:
@@ -721,11 +893,13 @@ def rule_plan(question, table):
         add_correlate()
         if time_col and measure:
             steps.append(("trend", trend_args(measure)))
-        if group and measure:
-            steps.append(("group_by", {"by": group, "value": measure, "agg": _default_agg(table, measure, q)}))
+        # "内科の平均待ち時間は？": the column whose value was named is the breakdown (its group's figure is reported)
+        by = filtered or group
+        if by and measure:
+            steps.append(("group_by", {"by": by, "value": measure, "agg": _default_agg(table, measure, q)}))
         spread = [n for n in a.measures if not _binary(cols[n])]
         if spread:
-            split = group if group and _group_key(cols[group]) and _scale_split(table, spread[0], group) else None
+            split = by if by and _group_key(cols[by]) and _scale_split(table, spread[0], by) else None
             steps.append(("outliers", {"column": spread[0], **({"by": split} if split else {})}))
     plan, seen = [], set()
     for tool, args in steps:
@@ -742,6 +916,58 @@ def rule_plan(question, table):
 
 _TIME_UNIT_Q = (r"(?:日|週|月|四半期|年度|年)(?!齢|収|代|間|商|俸|額|数|率)|"
                 r"\b(?:day|date|week|month|quarter|year)s?\b")
+
+
+_HORIZON = re.compile(r"(?<!\d)(\d{1,2})\s*(ヶ月|か月|カ月|ヵ月|ケ月|期間|期|年|四半期|日|週|months?|periods?|years?|"
+                      r"quarters?|days?|weeks?|steps?)")
+_HORIZON_WORDS = ((r"明日|翌日|\btomorrow\b", "day"), (r"来週|翌週|\bnext week\b", "week"),
+                  (r"来月|翌月|\bnext month\b", "month"), (r"来年|翌年|\bnext year\b", "year"))
+_UNIT_DAYS = {"day": 1.0, "week": 7.0, "month": 365.25 / 12, "quarter": 365.25 / 4, "year": 365.25}
+_UNIT_MONTHS = {"month": 1, "quarter": 3, "year": 12}
+
+
+def _horizon_unit(word):
+    for unit, pattern in (("month", r"ヶ月|か月|カ月|ヵ月|ケ月|month"), ("quarter", r"四半期|quarter"),
+                          ("year", r"年|year"), ("day", r"日|day"), ("week", r"週|week")):
+        if re.match(pattern, word):
+            return unit
+    return "step"            # 期間 / 期 / periods / steps: steps of the series as observed
+
+
+def _horizon(q, table, time_col, period):
+    """(periods, period, capped) for a forecast horizon the question names, or None. The horizon's unit
+    becomes steps of the series: 来月 on daily data is about 30 days and 来週 7, "next 2 weeks" on weekly
+    data 2 steps, 来年 on monthly data 12. A month / quarter / year horizon that would take more than
+    max_forecast_periods sub-monthly steps is forecast on monthly totals instead (with too few complete
+    months the forecast tool says so); anything else longer is capped at max_forecast_periods."""
+    cap = T.LIMITS["max_forecast_periods"]
+    m = _HORIZON.search(q)
+    if m:
+        n, unit = int(m.group(1)), _horizon_unit(m.group(2))
+    else:
+        unit = next((u for pattern, u in _HORIZON_WORDS if re.search(pattern, q)), None)
+        if unit is None:
+            return None
+        n = 1
+    n = max(1, n)
+    col = table.column(time_col) if time_col else None
+    if unit == "step" or col is None or (col.kind != "datetime" and not col.is_year):
+        return min(n, cap), period, n > cap       # row order or a numeric axis: steps as written
+    if col.is_year:
+        step = 365.25
+    else:
+        if period == "month" and unit in ("day", "week") and not re.search(_MONTHLY, q):
+            period = "raw"                        # rolled-up daily data: "next 4 weeks" counts days
+        dates = sorted(set(col.present()))
+        gaps = sorted((b - a).days for a, b in zip(dates, dates[1:]))
+        raw = max(1, gaps[len(gaps) // 2]) if gaps else 1
+        raw = next((d for lo, hi, d in ((28, 31, _UNIT_DAYS["month"]), (89, 92, _UNIT_DAYS["quarter"]),
+                                        (364, 366, _UNIT_DAYS["year"])) if lo <= raw <= hi), raw)
+        step = {"month": _UNIT_DAYS["month"], "year": _UNIT_DAYS["year"]}.get(period, raw)
+    periods = max(1, round(n * _UNIT_DAYS[unit] / step))
+    if periods > cap and unit in _UNIT_MONTHS and col.kind == "datetime" and step < 28:
+        period, periods = "month", n * _UNIT_MONTHS[unit]
+    return min(periods, cap), period, periods > cap
 
 
 def _coarse_steps(table, time_col, period):
@@ -927,9 +1153,32 @@ def _col(table, name):
         return None
 
 
+_ISO_DAY = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
+
+
+def _when(label, col, period="raw"):
+    """A date label as the column writes its dates: the ISO day 2024-08-01 of a monthly column reads
+    2024-08, of a yearly one 2024, of a fiscal one 2024年度 / FY2024; a calendar-year bucket "2016" of a
+    fiscal column reads 2016年度. Results (JSON) keep their ISO / bucket labels; only statements change."""
+    if col is None or col.kind != "datetime" or not isinstance(label, str):
+        return label
+    try:
+        if _ISO_DAY.fullmatch(label):
+            return T.date_text(datetime.date.fromisoformat(label), col)
+        if period == "year" and col.date_grain == "fiscal" and re.fullmatch(r"\d{4}", label, re.ASCII):
+            month = next(iter(col.present())).month       # a fiscal column has one month (see T._date_grain)
+            return T.date_text(datetime.date(int(label), month, 1), col)
+    except (ValueError, StopIteration):
+        pass
+    return label
+
+
 def _show(value, ja, col=None, limit=40):
     """Display form of a group key / label: a boolean column shows the data's own words (はい/いいえ), or
-    はい/いいえ (yes/no), never Python's True/False or the crosstab's true/false."""
+    はい/いいえ (yes/no), never Python's True/False or the crosstab's true/false; a date reads as the column
+    writes its dates (2024-08 for a monthly column, see _when)."""
+    if col is not None and col.kind == "datetime":
+        return _clip(_when(value, col), limit)
     if col is not None and col.kind == "boolean":
         flag = value if isinstance(value, bool) else {"true": True, "false": False}.get(str(value).casefold())
         if flag is not None:
@@ -947,7 +1196,8 @@ def _points(x, ja, signed=False):
 # ---------------------------------------------------------------- findings
 
 def _confidence(score, basis):
-    score = min(0.999, max(0.0, score))
+    # Label the score as published (6 significant digits), so 0.9499996 is not "medium" with score 0.95.
+    score = T.round_sig(min(0.999, max(0.0, score)))
     label = "high" if score >= 0.95 else "medium" if score >= 0.8 else "low"
     return T.json_safe({"label": label, "score": score, "basis": basis, "apqb": T.apqb(2 * score - 1)})
 
@@ -994,6 +1244,7 @@ def _f_describe(o, table, ja):
         name, unit = c["name"], c.get("unit")
         if not c.get("count"):
             continue
+        kind = "distribution"
         if c["kind"] == "numeric":
             std = c.get("std")
             if ja:
@@ -1005,13 +1256,20 @@ def _f_describe(o, table, ja):
                      f"(min {_v(c['min'], unit)}, max {_v(c['max'], unit)}"
                      + (f", SD {fmt(std)}" if std is not None else "") + f", n={fmt(c['count'])}).")
             skew, col = c.get("skew"), _col(table, name)
+            if o.get("total") and unit != "%" and c.get("sum") is not None and not (col is not None and _binary(col)):
+                s += f"合計は{_v(c['sum'], unit)}です。" if ja else f" The total is {_v(c['sum'], unit)}."
+                kind = "total"          # the total the question asked for: an answer, not a supporting fact
             if skew is not None and abs(skew) >= 1 and not (col is not None and _binary(col)):
                 s += (f"分布は{'右' if skew > 0 else '左'}に裾が長く偏っています（歪度{fmt(skew)}）。" if ja else
                       f" The distribution is skewed to the {'right' if skew > 0 else 'left'} (skewness {fmt(skew)}).")
             evidence = {k: c.get(k) for k in ("count", "mean", "median", "std", "min", "max", "skew")}
+            if o.get("total"):
+                evidence["sum"] = c.get("sum")
         elif c["kind"] == "datetime":
-            s = (f"{name}の期間は{c['min']}〜{c['max']}（{fmt(c['span_days'])}日間）です。" if ja else
-                 f"{name} spans {c['min']} to {c['max']} ({fmt(c['span_days'])} days).")
+            col = _col(table, name)
+            lo, hi = _when(c["min"], col), _when(c["max"], col)
+            s = (f"{name}の期間は{lo}〜{hi}（{fmt(c['span_days'])}日間）です。" if ja else
+                 f"{name} spans {lo} to {hi} ({fmt(c['span_days'])} days).")
             evidence = {k: c.get(k) for k in ("min", "max", "span_days")}
         else:
             top = (c.get("top") or [None])[0]
@@ -1023,7 +1281,7 @@ def _f_describe(o, table, ja):
                  f"The most frequent {name} is \"{shown}\" with {fmt(top['count'])} rows "
                  f"({_share(top['share'])}) out of {fmt(c['unique'])} distinct values.")
             evidence = {"unique": c.get("unique"), "top": top}
-        yield "distribution", s, {"column": name, **evidence}, _fact(ja)
+        yield kind, s, {"column": name, **evidence}, _fact(ja)
 
 
 def _f_correlate(o, table, ja):
@@ -1118,10 +1376,10 @@ def _f_group_by(o, table, ja):
     yield "breakdown", s, evidence, confidence
 
 
-def _period_text(label, kind, ja):
+def _period_text(label, kind, ja, col=None, period="raw"):
     if kind == "row":
         return f"{label}行目" if ja else f"row {label}"
-    return str(label)
+    return str(_when(label, col, period))
 
 
 def _step_unit(o, table):
@@ -1168,6 +1426,7 @@ def _f_trend(o, table, ja):
     if o.get("first") is None or o.get("n", 0) < 2:
         return
     unit, kind = _unit(table, o["value"]), o.get("time_kind")
+    tcol, period = _col(table, o.get("time")), o.get("period") or "raw"
     agg = o.get("agg", "sum")
     pct, first, last = o.get("pct_change"), o["first"], o["last"]
     rows = kind == "row"
@@ -1189,13 +1448,14 @@ def _f_trend(o, table, ja):
                 change += (f", {'from a loss to a profit' if up else 'from a profit to a loss'}" if profit else
                            f", {'from negative to positive' if up else 'from positive to negative'}")
     direction = o.get("direction")
+    daily = tcol is not None and tcol.has_time      # timestamps keep only their date: buckets are days
     if ja:
         note = ("（月次の" + _AGG_JA[agg] + "）" if o.get("period") == "month" else "（年次の" + _AGG_JA[agg] + "）"
-                if o.get("period") == "year" else f"（{o['time']}ごとの{_AGG_JA[agg]}）"
+                if o.get("period") == "year" else f"（{'日' if daily else o['time']}ごとの{_AGG_JA[agg]}）"
                 if o.get("time") and o.get("rows_used", 0) > o["n"] else "")
         s = (("行の並び順で見ると、" if rows else "") +
-             f"{o['value']}{note}は{_period_text(o['first_period'], kind, ja)}の{_v(first, unit)}から"
-             f"{_period_text(o['last_period'], kind, ja)}の{_v(last, unit)}へ{change}変化しました。")
+             f"{o['value']}{note}は{_period_text(o['first_period'], kind, ja, tcol, period)}の{_v(first, unit)}から"
+             f"{_period_text(o['last_period'], kind, ja, tcol, period)}の{_v(last, unit)}へ{change}変化しました。")
         if direction in ("increasing", "decreasing"):
             s += (f"統計的に有意な{'増加' if direction == 'increasing' else '減少'}傾向です"
                   f"（{_p(o['p_value'])}、R²={fmt(o['r2'])}、n={fmt(o['n'])}）。")
@@ -1207,11 +1467,11 @@ def _f_trend(o, table, ja):
             s += f"年平均成長率は{_pct(o['cagr_pct'])}です。"
     else:
         note = (f" (monthly {_AGG_EN[agg]})" if o.get("period") == "month" else f" (yearly {_AGG_EN[agg]})"
-                if o.get("period") == "year" else f" ({_AGG_EN[agg]} per {o['time']})"
+                if o.get("period") == "year" else f" ({_AGG_EN[agg]} per {'day' if daily else o['time']})"
                 if o.get("time") and o.get("rows_used", 0) > o["n"] else "")
         s = (("In row order, " if rows else "") +
-             f"{o['value']}{note} went from {_v(first, unit)} in {_period_text(o['first_period'], kind, ja)} "
-             f"to {_v(last, unit)} in {_period_text(o['last_period'], kind, ja)} ({change}).")
+             f"{o['value']}{note} went from {_v(first, unit)} in {_period_text(o['first_period'], kind, ja, tcol, period)} "
+             f"to {_v(last, unit)} in {_period_text(o['last_period'], kind, ja, tcol, period)} ({change}).")
         if direction in ("increasing", "decreasing"):
             s += (f" The {'upward' if direction == 'increasing' else 'downward'} trend is statistically significant "
                   f"({_p(o['p_value'])}, R²={fmt(o['r2'])}, n={fmt(o['n'])}).")
@@ -1227,7 +1487,6 @@ def _f_trend(o, table, ja):
     yield "trend", s, evidence, _row_order(conf, ja) if rows else conf
     recent = o.get("last_periods") or []
     peak = o.get("peak") or {}
-    tcol = _col(table, o.get("time"))
     axis = kind == "numeric" and not (tcol is not None and tcol.is_year)    # 勤続年数: no "latest" point
     if o["n"] >= 3 and len(recent) >= 2 and recent[-1].get("pct_change") is not None \
             and peak.get("value") is not None and not axis:
@@ -1235,12 +1494,12 @@ def _f_trend(o, table, ja):
         step = (_points(last["value"] - recent[-2]["value"], ja, signed=True) if unit == "%"
                 else _pct(last["pct_change"]))
         if ja:
-            s = (f"直近（{_period_text(last['period'], kind, ja)}）の{o['value']}は{label}{step}で、"
-                 f"期間中の最大は{_period_text(peak['period'], kind, ja)}の{_v(peak['value'], unit)}です。")
+            s = (f"直近（{_period_text(last['period'], kind, ja, tcol, period)}）の{o['value']}は{label}{step}で、"
+                 f"期間中の最大は{_period_text(peak['period'], kind, ja, tcol, period)}の{_v(peak['value'], unit)}です。")
         else:
-            s = (f"The latest {o['value']} ({_period_text(last['period'], kind, ja)}) changed "
+            s = (f"The latest {o['value']} ({_period_text(last['period'], kind, ja, tcol, period)}) changed "
                  f"{step} {label}; the peak was "
-                 f"{_v(peak['value'], unit)} in {_period_text(peak['period'], kind, ja)}.")
+                 f"{_v(peak['value'], unit)} in {_period_text(peak['period'], kind, ja, tcol, period)}.")
         yield "recent", s, {"last": last, "peak": peak, "trough": o.get("trough")}, \
             _row_order(_fact(ja), ja) if rows else _fact(ja)
     if o.get("by"):
@@ -1636,6 +1895,13 @@ def _f_top_n(o, table, ja):
 
 def _f_forecast(o, table, ja):
     points = o.get("points") or []
+    if not points and o.get("reason") and isinstance(o.get("n"), int) and o["n"] < 4:   # say why, never stay silent
+        grain = {"month": ("月次の", "monthly "), "year": ("年次の", "yearly ")}.get(o.get("period"), ("", ""))
+        s = (f"{o['value']}は{grain[0]}時点が{fmt(o['n'])}個しかないため、予測できません（4時点以上が必要です）。" if ja else
+             f"{o['value']} has only {fmt(o['n'])} {grain[1]}points, so no forecast was made (4 or more are needed).")
+        yield "forecast", s, {k: o.get(k) for k in ("value", "time", "n", "period")}, \
+            _confidence(0.5, "判定できなかった結果" if ja else "Not assessable")
+        return
     if not points:
         return
     unit = _unit(table, o["value"])
@@ -1643,7 +1909,7 @@ def _f_forecast(o, table, ja):
     def where(pt):
         if o.get("time") is None:
             return f"{fmt(pt['step'])}期先" if ja else f"{fmt(pt['step'])} step(s) ahead"
-        return str(pt["period"])
+        return str(_when(pt["period"], _col(table, o["time"]), o.get("period") or "raw"))
 
     def band(pt, full):
         rng = f"{_v(pt['lower'], unit)}〜{_v(pt['upper'], unit)}" if ja else \
@@ -1746,12 +2012,25 @@ def _question_caveats(question, table, done, ja):
     if a.intents and not a.num and not a.blocked and a.measure in used:
         out.append(f"質問から対象の数値列を特定できなかったため「{a.measure}」を分析しました。" if ja else
                    f"No numeric column was named in the question, so {a.measure} was analysed.")
+    if "compare" in a.intents and len(a.num) >= 2 and not any(s["tool"] in ("compare", "group_by") for s in done):
+        out.append("列同士の比較には対応していないため、各列の要約を示しました。" if ja else
+                   "Comparing two columns directly is not supported; each column is summarised.")
     trends = [s for s in done if s["tool"] == "trend"]
     if "trend" in a.intents and a.trend_keys and trends and not any(
             s["output"].get("by") or s["output"].get("time") in a.trend_keys for s in trends):
         key = a.trend_keys[0]
         out.append(f"推移は{key}をまとめた全体について計算しています。{key}ごとの推移は計算していません。" if ja else
                    f"The trend is for the overall series; per-{key} trends were not computed.")
+    horizon = _horizon(a.q, table, a.time_col, _period(question, table, a.time_col)) \
+        if "forecast" in a.intents else None
+    forecasts = [s for s in done if s["tool"] == "forecast" and s["output"].get("points")]
+    if horizon and horizon[2] and forecasts:
+        o = forecasts[0]["output"]
+        last = o["points"][-1]["period"]
+        last = _when(last, _col(table, o.get("time")), o.get("period") or "raw") if o.get("time") else None
+        cap = T.LIMITS["max_forecast_periods"]
+        out.append(f"予測は最大{cap}期間{f'（〜{last}）' if last else ''}までです。" if ja else
+                   f"The forecast is capped at {cap} steps{f' (to {last})' if last else ''}.")
     if a.wide and set(a.intents) & {"trend", "forecast"}:
         heads = _period_headers(table)
         listed = f"{heads[0]}…{heads[-1]}"
@@ -1777,7 +2056,8 @@ def _question_caveats(question, table, done, ja):
 
 
 def _named_groups(done, table, by, values, ja):
-    """The named groups' own rows of a per-group trend / outlier check (the answer a filter would give)."""
+    """The named groups' own rows of a per-group breakdown / trend / outlier check (the answer a filter
+    would give)."""
     out, wanted = [], {T._label(v) for v in values[:3]}
     for step in done:
         o = step["output"]
@@ -1787,8 +2067,17 @@ def _named_groups(done, table, by, values, ja):
             if T._label(g.get("key")) not in wanted:
                 continue
             key = _show(g["key"], ja, _col(table, by), 20)
-            if step["tool"] == "trend" and g.get("first") is not None:
-                unit = _unit(table, o["value"])
+            if step["tool"] == "group_by" and o.get("value") and g.get("value") is not None:
+                agg, unit = o.get("agg"), o.get("unit")
+                vcol = _col(table, o["value"])
+                rate = agg == "mean" and vcol is not None and _binary(vcol)
+                shown = _v(g["value"] * 100, "%") if rate else _v(g["value"], unit)
+                what = ("割合" if rate else _AGG_JA.get(agg, agg)) if ja else ("rate" if rate else _AGG_EN.get(agg, agg))
+                out.append(f"「{key}」の{o['value']}の{what}は{shown}（n={fmt(g['count'])}）です。" if ja else
+                           f"\"{key}\": the {what} of {o['value']} is {shown} (n={fmt(g['count'])}).")
+            elif step["tool"] == "trend" and g.get("first") is not None:
+                unit, tcol = _unit(table, o["value"]), _col(table, o.get("time"))
+                g = {**g, **{k: _when(g[k], tcol, o.get("period") or "raw") for k in ("first_period", "last_period")}}
                 change = _pct(g["pct_change"]) if g.get("pct_change") is not None and unit != "%" else \
                     ("+" if (g.get("change") or 0) > 0 else "") + _v(g.get("change"), unit)
                 p = f"、{_p(g['p_value'])}" if g.get("p_value") is not None else ""
@@ -1871,6 +2160,10 @@ def build_caveats(steps, table, *, language="ja", question=None):
                            f"{fmt(table.coerced)} cells could not be parsed as numbers or dates and were "
                            "treated as missing.")
         for col in used:
+            if col.has_time:
+                caveats.append(f"{col.name}の時刻は扱わず、日付ごとに集計しました（時間帯別の分析には対応していません）。" if ja
+                               else f"Times of day in {col.name} were ignored; rows were aggregated per date (hour-of-day "
+                               "analysis is not supported).")
             if col.unit == "%":
                 caveats.append(f"列「{col.name}」は%単位の値です。差は%ポイント、「相対」と書いた変化率は相対的な変化です。"
                                if ja else f"{col.name} is in percent units; differences are in percentage points, "
@@ -2065,7 +2358,8 @@ _NUMBER = re.compile(
     # 2x / 2× / 2-fold are multipliers (an attached x/× not followed by a digit: "96×5", "3x3" stay plain);
     # percentage points are tried before "%" so that "5.7%ポイント" is one points token
     r"(?P<pct>[x×](?![0-9A-Za-z]|\.\d|\s?\d)|\s?-?fold\b|\s?(?:%\s?(?:ポイント|pts?\b|points?\b)|"
-    r"(?:パーセント)?ポイント|percentage points?\b|pts?\b|%|パーセント|percent\b|pct\b|倍|times\b|割))?")
+    r"(?:パーセント)?ポイント|percentage points?\b|points?\b|pp\b|pts?\b|%|パーセント|percent\b|pct\b|倍|times\b|"
+    r"割))?")
 # Direction words fix the sign of an unsigned number: directly after it ("87%減少", "an 87% increase") or
 # directly before it ("マイナス87%", "fell 87%", "up by 2.4%"); "down to 5" stays a level.
 _NEG = re.compile(r"\s?の?(?:減少|減|低下|下落|マイナス|下が|落ち込|縮小)|\s(?:decrease|decline|drop|fall)\b", re.I)
@@ -2122,7 +2416,7 @@ def _tokens(line):
         mult = (_SCALES.get(word, 1.0) if scale else 1.0) * (10.0 ** power if exp else 1.0)
         unit = (pct or "").strip()
         kind = ("times" if unit in ("倍", "times", "x", "×") or unit.endswith("fold") else
-                "pts" if re.search(r"ポイント|pt|point", unit) else "pct" if unit else "plain")
+                "pts" if re.search(r"ポイント|pt|point|pp", unit) else "pct" if unit else "plain")
         if unit == "割":
             mult, step = mult * 10, max(step, 1.0)
         prefix = m.group("sign")
@@ -2172,8 +2466,8 @@ def verify_numbers(text, *sources):
 
     The controller passes the exact narration prompt as the only source: a number the model was
     never shown cannot be grounded by coincidence. A % token matches a % source as written, or a
-    unitless source below 1 (a share, R², r) ×100; ポイント only a ポイント or unitless source and never a
-    % one; multipliers (倍, 2x, 2-fold) only a 倍 source (the results contain none); a signed token
+    unitless source below 1 (a share, R², r) ×100; ポイント (points, pp, pts) only a ポイント or unitless
+    source and never a % one; multipliers (倍, 2x, 2-fold) only a 倍 source (the results contain none); a signed token
     (−, ▲, +, or a direction word next to it) only a source of the same or no sign. A 万/千 next to a
     number is a multiplier, except that a value written with the unit of a column header shown in the
     prompt ("1,277万円" under 売上(万円)) also matches its bare mantissa.
@@ -2528,6 +2822,12 @@ def _read_input(path):
     raise ValueError("文字コードを判別できません（UTF-8 または Shift_JIS を使用してください）")
 
 
+def score_text(score):
+    """A confidence score to 3 decimals, rounded down so the text never crosses a label threshold:
+    0.949808 ("medium") prints 0.949, not 0.950."""
+    return f"{decimal.Decimal(repr(float(score))).quantize(decimal.Decimal('0.001'), rounding=decimal.ROUND_FLOOR):.3f}"
+
+
 def main(argv=None):
     import argparse
     parser = argparse.ArgumentParser(description="Qubit Analyst: CSV / JSON の表データを質問に沿って分析します")
@@ -2557,7 +2857,7 @@ def main(argv=None):
             print("\n所見:" if args.language == "ja" else "\nFindings:")
             for f in report["findings"]:
                 c = f["confidence"]
-                print(f"[{f['id']}] {c['label']} {c['score']:.3f} {f['statement']}")
+                print(f"[{f['id']}] {c['label']} {score_text(c['score'])} {f['statement']}")
         if report["next_questions"]:
             print("\n次の質問候補:" if args.language == "ja" else "\nNext questions:")
             for q in report["next_questions"]:
