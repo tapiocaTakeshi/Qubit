@@ -2515,25 +2515,65 @@ def verify_numbers(text, *sources):
 
 
 _LOOP = re.compile(r"(.{2,12}?)\1{3,}", re.S)     # the same 2-12 char unit four or more times in a row
+_SENTENCE = re.compile(r"[。！？\n]+|[.!?](?=\s|$)|\s-\s")     # "1.5" is a number, not a sentence end
+_CONFIDENCE_TAG = re.compile(r"[（(](?:信頼度|confidence): ?[^）)]{1,8}[）)]")
+_ENDINGS = tuple("。.!?！？）)」")
 
 
 def _repetitive(text):
-    """Degenerate decoding loops ("いくつかのいくつかの…", one bullet over and over) carry no analysis."""
+    """Degenerate decoding loops ("いくつかのいくつかの…", one bullet or sentence over and over)."""
     raw = text.encode("utf-8")
     if len(raw) >= 120 and len(zlib.compress(raw, 9)) < 0.2 * len(raw):
         return True
     lines = Counter(line.strip(" -・*\t") for line in text.splitlines())
     lines.pop("", None)
     if sum(lines.values()) >= 3 and max(lines.values()) >= 3:
-        return True     # digit runs ("1200000…" in a clipped label) are values, not loops
+        return True
+    sentences = Counter(" ".join(part.split()).strip(" -・*")
+                        for part in _SENTENCE.split(_CONFIDENCE_TAG.sub("", text)))
+    if any(count >= 2 and len(sentence) >= 10 for sentence, count in sentences.items()):
+        return True     # findings never repeat a sentence verbatim; a loop of whole sentences does
+    # digit runs ("1200000…" in a clipped label) are values, not loops
     return any(any(ch.isalpha() for ch in m.group(1)) for m in _LOOP.finditer(text))
 
 
-def _narrative_problem(text, prompt=None):
-    """Why a model narrative cannot replace the template, or None.
+_REJECTION_NOTES = {
+    "repetitive": ("モデルの文章が同じ表現の繰り返しだったため、テンプレートの要約を使用しました。",
+                   "The model summary repeated itself; the template was used."),
+    "ungrounded": ("モデルの文章が分析結果の数値を引用していなかったため、テンプレートの要約を使用しました。",
+                   "The model summary cited none of the results; the template was used."),
+    "off_topic": ("モデルの文章が質問への主な結果を述べていなかったため、テンプレートの要約を使用しました。",
+                  "The model summary did not state the main result; the template was used."),
+    "truncated": ("モデルの文章が途中で切れていたため、テンプレートの要約を使用しました。",
+                  "The model summary was cut off; the template was used."),
+}
 
-    With the narration prompt, text that cites none of its numbers is "ungrounded": a summary that
-    states no result (or a fluent loop without digits) would pass the numeric guard vacuously.
+
+def _primary_result(prompt):
+    """The first result line of a narration prompt: the finding that answers the question."""
+    for title in ("\n結果:\n", "\nResults:\n"):
+        if title in prompt:
+            first = prompt.split(title, 1)[1].split("\n", 1)[0]
+            return first if first.startswith("- ") else None
+    return None
+
+
+def _outside_results(prompt):
+    """The narration prompt without its results block: instructions, question and caveats."""
+    for title, notes in (("\n結果:\n", "\n注意:\n"), ("\nResults:\n", "\nCaveats:\n")):
+        if title in prompt:
+            head, _, tail = prompt.partition(title)
+            return [head] + ([tail.split(notes, 1)[1]] if notes in tail else [])
+    return [prompt]
+
+
+def _narrative_problem(text, prompt=None):
+    """Why a model narrative cannot replace the template (number checks aside), or None.
+
+    Without a prompt only the form is checked. With the narration prompt, text that cites none of
+    its numbers is "ungrounded" (a summary stating no result passes the numeric guard vacuously),
+    text that never gives the first finding's own numbers is "off_topic", and text cut off
+    mid-sentence is "truncated".
     """
     if not text:
         return "empty"
@@ -2545,12 +2585,42 @@ def _narrative_problem(text, prompt=None):
         return "garbage"
     if _repetitive(text):
         return "repetitive"
-    if prompt is not None:
-        cited = [t for line in text.splitlines()
-                 for t in _tokens(_ORDINAL.sub(r"\1", unicodedata.normalize("NFKC", line)))]
-        if not cited and any(True for _ in _tokens(unicodedata.normalize("NFKC", prompt))):
-            return "ungrounded"
+    if prompt is None:
+        return None
+    cited = [t for line in text.splitlines()
+             for t in _tokens(_ORDINAL.sub(r"\1", unicodedata.normalize("NFKC", line)))]
+    if not cited and any(True for _ in _tokens(unicodedata.normalize("NFKC", prompt))):
+        return "ungrounded"
+    primary = _primary_result(prompt)
+    if primary:
+        # The answer must be stated: cite a number of the first finding that the question and caveats
+        # do not also contain (a bare caveat "n=28" or a copied row count is not an answer).
+        rest = "\n".join(_outside_results(prompt))
+        own = [t for t in _tokens(unicodedata.normalize("NFKC", primary)) if verify_numbers(t[0], rest)]
+        if own and not any(not verify_numbers(t[0], primary) and verify_numbers(t[0], rest) for t in cited):
+            return "off_topic"
+    if not text.rstrip().endswith(_ENDINGS):
+        return "truncated"
     return None
+
+
+def narrative_verdict(text, prompt):
+    """(reason, unverified numbers) for a model narrative against its exact narration prompt.
+
+    reason is None when the runtime would publish it. Form is checked first, then every number
+    (a fabricated number is reported as "unverified" with the tokens; None if the guard itself
+    failed), then whether the text states the answer.
+    """
+    problem = _narrative_problem(text)
+    if problem:
+        return problem, []
+    try:
+        unverified = verify_numbers(text, prompt)
+    except Exception:
+        return "unverified", None
+    if unverified:
+        return "unverified", unverified
+    return _narrative_problem(text, prompt), []
 
 
 # ---------------------------------------------------------------- controller
@@ -2784,27 +2854,18 @@ class AnalystController:
                     "The narrative prompt exceeded the model context; the template was used."
                     if exc.args[0] == "context" else "The model could not write the summary; the template was used."))
             else:
-                problem = _narrative_problem(text, prompt)
-                try:    # only numbers the model was shown can ground its text; a guard failure is "unverified"
-                    unverified = [] if problem else verify_numbers(text, prompt)
-                except Exception:
+                rejected, unverified = narrative_verdict(text, prompt)
+                if unverified is None:  # only numbers the model was shown can ground its text
                     unverified = [self.t("（照合できませんでした）", "(could not verify)")]
-                if problem in ("repetitive", "ungrounded"):
-                    rejected = problem
-                    self.warnings.append(self.t(
-                        "モデルの文章が同じ表現の繰り返しだったため、テンプレートの要約を使用しました。" if problem == "repetitive"
-                        else "モデルの文章が分析結果の数値を引用していなかったため、テンプレートの要約を使用しました。",
-                        "The model summary repeated itself; the template was used." if problem == "repetitive"
-                        else "The model summary cited none of the results; the template was used."))
-                elif problem:
-                    rejected = problem
-                    self.warnings.append(self.t("モデルの文章が空・長すぎる・不正な形式のため、テンプレートの要約を使用しました。",
-                                                "The model summary was empty, too long or malformed; the template was used."))
-                elif unverified:
-                    rejected = "unverified"
+                if rejected in _REJECTION_NOTES:
+                    self.warnings.append(self.t(*_REJECTION_NOTES[rejected]))
+                elif rejected == "unverified":
                     self.warnings.append(self.t("モデルの文章に分析結果で確認できない数値があったため、テンプレートの要約を使用しました。",
                                                 "The model summary contained numbers not found in the results; "
                                                 "the template was used."))
+                elif rejected:
+                    self.warnings.append(self.t("モデルの文章が空・長すぎる・不正な形式のため、テンプレートの要約を使用しました。",
+                                                "The model summary was empty, too long or malformed; the template was used."))
                 else:
                     narrative, source = text, "model"
         return self.report(narrative, findings, caveats, dataset, source, unverified,

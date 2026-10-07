@@ -1905,3 +1905,31 @@ def test_narrative_rejected_reports_each_fallback_reason():
     def overflow(prompt):
         raise ValueError("Analyst prompt exceeds model context window")
     assert run_analyst(request("売上の推移", max_steps=0), overflow)["analyst"]["narrative_rejected"] == "context"
+
+
+# Shapes a briefly fine-tuned checkpoint produced: near-copies of the template that loop whole
+# sentences, stop mid-way, or quote only a caveat while the answer is missing.
+def _prompt_for(question, data=None):
+    report = run_analyst(request(question, data, use_model=False))["analyst"]
+    return A.narrative_prompt(question, report["findings"], report["caveats"], "ja"), report
+
+
+def test_sentence_loops_are_repetitive_even_without_newlines():
+    line = "データは36行×3列です(カテゴリ1列・数値2列)。欠損セルは0件です。(信頼度: 高) - "
+    assert A._repetitive("36行×3列のデータを分析しました。 主な結果: - " + line * 3)
+    assert A._repetitive("主な結果: - " + "carrierのデータを分析しました。 主な結果: - " * 6)
+
+
+def test_caveat_only_or_cut_off_narratives_do_not_state_the_answer():
+    prompt, report = _prompt_for("売上の推移")
+    caveat = next(line for line in prompt.splitlines() if "最小でn=" in line)[2:]
+    assert A.narrative_verdict(caveat, prompt)[0] == "off_topic"
+    answer = first_result_line(prompt)
+    assert A.narrative_verdict(answer, prompt) == (None, [])
+    assert A.narrative_verdict(answer.rstrip("。）)") + "で、", prompt)[0] == "truncated"
+
+
+def test_fabricated_numbers_are_reported_as_unverified_before_content_checks():
+    prompt, _ = _prompt_for("売上の推移")
+    reason, unverified = A.narrative_verdict("売上は987,654万円でした。", prompt)
+    assert reason == "unverified" and unverified == ["987,654万"]

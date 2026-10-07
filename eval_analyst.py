@@ -93,7 +93,11 @@ def _timed(generate, prompt):
 
 
 def eval_plan(rows, generate):
+    """Planner decisions. by_target splits exact matches by the target's status, and
+    majority_baseline is what always answering the commonest status would score: a planner
+    that only ever says "complete" can look accurate while never proposing an analysis."""
     counts, samples, seconds = Counter(), [], 0.0
+    by_target = {}
     for row in rows:
         question, language, table, steps = TA._replay(row)
         prompt, target = TA.compile_record(row)
@@ -111,12 +115,16 @@ def eval_plan(rows, generate):
                 outcome = ("exact" if decision == expected else
                            "same_status" if decision[0] == expected[0] else "valid_other")
         counts[outcome] += 1
+        bucket = by_target.setdefault(expected[0], {"n": 0, "exact": 0})
+        bucket["n"] += 1
+        bucket["exact"] += outcome == "exact"
         if len(samples) < SAMPLES:
             samples.append({"question": question, "target": target, "output": _clip(output), "outcome": outcome})
     n = len(rows)
     valid = counts["exact"] + counts["same_status"] + counts["valid_other"]
     return {"n": n, "outcomes": dict(counts), "valid_json_rate": valid / n if n else None,
-            "exact_rate": counts["exact"] / n if n else None,
+            "exact_rate": counts["exact"] / n if n else None, "by_target": by_target,
+            "majority_baseline": max((b["n"] for b in by_target.values()), default=0) / n if n else None,
             "seconds_per_call": seconds / n if n else None, "samples": samples}
 
 
@@ -130,8 +138,7 @@ def eval_narrate(rows, generate):
         if error:
             outcome = error
         else:
-            problem = A._narrative_problem(text, prompt)
-            outcome = problem or ("unverified" if A.verify_numbers(text, prompt) else "accepted")
+            outcome = A.narrative_verdict(text, prompt)[0] or "accepted"
             sims.append(similarity(text, target))
         counts[outcome] += 1
         if len(samples) < SAMPLES:
@@ -216,6 +223,7 @@ def main(argv=None):
     with args.output.open("x", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2, allow_nan=False)
     summary = {"plan_valid_json": report["plan"]["valid_json_rate"], "plan_exact": report["plan"]["exact_rate"],
+               "plan_by_target": report["plan"]["by_target"], "plan_majority_baseline": report["plan"]["majority_baseline"],
                "narrate_accepted": report["narrate"]["accepted_rate"],
                "narrate_outcomes": report["narrate"]["outcomes"],
                "scenario_model_narratives": report["scenario"]["model_narrative_rate"],

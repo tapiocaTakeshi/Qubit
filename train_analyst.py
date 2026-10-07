@@ -329,10 +329,11 @@ def compile_record(row):
     findings = A.build_findings(steps, table, language=language)
     caveats = A.build_caveats(steps, table, language=language, question=question)
     prompt = A.narrative_prompt(question, findings, caveats, language)
-    if A._narrative_problem(target, prompt):
-        raise ValueError("Invalid narration target")
-    if A.verify_numbers(target, prompt):
+    reason = A.narrative_verdict(target, prompt)[0]     # the runtime guard, unchanged
+    if reason == "unverified":
         raise ValueError("Narration target contains numbers not found in the narration prompt")
+    if reason:
+        raise ValueError(f"Narration target would be rejected at runtime ({reason})")
     return prompt, target
 
 

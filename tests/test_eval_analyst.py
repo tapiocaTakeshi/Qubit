@@ -30,6 +30,7 @@ def test_plan_suite_scores_targets_exactly_and_garbage_as_invalid(held_out):
     targets = {TA.compile_record(r)[0]: TA.compile_record(r)[1] for r in plan_rows}
     perfect = E.eval_plan(plan_rows, lambda prompt: targets[prompt])
     assert perfect["exact_rate"] == perfect["valid_json_rate"] == 1.0
+    assert all(b["exact"] == b["n"] for b in perfect["by_target"].values())
     garbage = E.eval_plan(plan_rows, lambda prompt: "もちろん!ここに" * 9)
     assert garbage["valid_json_rate"] == 0.0 and garbage["outcomes"] == {"invalid": len(plan_rows)}
     assert len(garbage["samples"]) <= E.SAMPLES and all(len(s["output"]) <= E.CLIP + 1 for s in garbage["samples"])
@@ -66,3 +67,11 @@ def test_main_refuses_an_existing_report_and_bad_bounds(tmp_path):
         with pytest.raises(SystemExit):
             E.main(argv)
     assert json.loads(existing.read_text()) == {}
+
+
+def test_always_complete_planner_scores_exactly_the_majority_baseline(held_out):
+    rows = TA.split_records(TA.bootstrap_records())[1]
+    plan_rows = [r for r in rows if r["stage"] == "plan"]
+    lazy = E.eval_plan(plan_rows, lambda prompt: '{"status":"complete"}')
+    assert lazy["exact_rate"] == pytest.approx(lazy["majority_baseline"])
+    assert lazy["by_target"]["continue"]["exact"] == 0 < lazy["by_target"]["continue"]["n"]
