@@ -153,7 +153,8 @@ def eval_scenarios(cases, endpoint, max_steps):
     results, sources, rejected, stops = [], Counter(), Counter(), Counter()
     for name, data, question in cases:
         start = time.monotonic()
-        [result] = endpoint._handle_analyst({"inputs": question, "parameters": {"data": data, "max_steps": max_steps}})
+        [result] = endpoint._handle_analyst({"inputs": question, "parameters": {
+            "data": data, "max_steps": max_steps, "use_model": True}})
         spent = time.monotonic() - start
         report = result.get("analyst") or {}
         sources[report.get("narrative_source")] += 1

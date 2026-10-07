@@ -2,6 +2,7 @@
 import ast
 import copy
 import json
+import os
 import sys
 import typing
 from pathlib import Path
@@ -28,7 +29,7 @@ SAFE_DECODING = {"temperature": 0.2, "repetition_penalty": 1.0,
 
 def method(name):
     node = next(n for n in ENDPOINT.body if isinstance(n, ast.FunctionDef) and n.name == name)
-    namespace = {"Dict": typing.Dict, "List": typing.List, "Any": typing.Any}
+    namespace = {"Dict": typing.Dict, "List": typing.List, "Any": typing.Any, "os": os}
     exec(compile(ast.Module(body=[node], type_ignores=[]), "handler.py", "exec"), namespace)
     return namespace[name]
 
@@ -60,7 +61,7 @@ def endpoint(reply=model_reply, *, max_seq_len=1024, tokens=lambda text: len(tex
 
 
 def request(**params):
-    return {"action": "analyst", "inputs": "売上の推移を教えて", "parameters": {"data": CSV, **params}}
+    return {"action": "analyst", "inputs": "売上の推移を教えて", "parameters": {"data": CSV, "use_model": True, **params}}
 
 
 def template_text():
@@ -374,3 +375,20 @@ def test_runpod_image_contains_the_analyst_trainer_and_its_imports():
     local = {f"{n.names[0].name if isinstance(n, ast.Import) else n.module}.py" for n in ast.walk(tree)
              if isinstance(n, (ast.Import, ast.ImportFrom))} & {p.name for p in ROOT.glob("*.py")}
     assert "train_analyst.py" in copied and local <= copied
+
+
+@pytest.mark.parametrize("flag,expected_calls", [(None, 0), ("", 0), ("0", 0), ("1", 2), ("true", 2)])
+def test_serving_default_keeps_the_model_off_unless_enabled(monkeypatch, flag, expected_calls):
+    if flag is None:
+        monkeypatch.delenv("QUBIT_ANALYST_USE_MODEL", raising=False)
+    else:
+        monkeypatch.setenv("QUBIT_ANALYST_USE_MODEL", flag)
+    ep = endpoint()
+    data = request()
+    del data["parameters"]["use_model"]
+    [result] = ep._handle_analyst(data)
+    assert ep._handle_inference.call_count == expected_calls
+    assert result["analyst"]["use_model"] is bool(expected_calls)
+    assert "use_model" not in data["parameters"]          # the caller's request is not mutated
+    [explicit] = endpoint()._handle_analyst(request(use_model=True))
+    assert explicit["analyst"]["use_model"] is True

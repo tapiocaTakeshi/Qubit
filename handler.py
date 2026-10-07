@@ -638,6 +638,12 @@ class EndpointHandler:
         """Grounded table analysis; the model may only propose checked steps and draft text."""
         try:
             from qubit_analyst import run_analyst
+            params = data.get("parameters")
+            # Off unless asked: eval_analyst found no checkpoint yet whose plans or summaries add to the
+            # deterministic report. Requests may still opt in; QUBIT_ANALYST_USE_MODEL=1 flips the default.
+            if (isinstance(params, dict) and "use_model" not in params
+                    and os.environ.get("QUBIT_ANALYST_USE_MODEL", "").strip().lower() not in ("1", "true", "yes")):
+                data = {**data, "parameters": {**params, "use_model": False}}
             return [run_analyst(data, self._analyst_generate, on_event=on_event)]
         except ValueError as exc:
             return [{"error": str(exc)}]
