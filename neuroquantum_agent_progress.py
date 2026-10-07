@@ -1,9 +1,13 @@
 """RunPod adapter kept separate from the model and controller."""
 import json
 
+# Streamed actions publish {"<action>_event": e, "<action>_events": [...]}.
+STREAMED_ACTIONS = ("agent", "analyst")
+
 
 def dispatch_job(handler, data, job):
-    if handler._resolve_action(data) != "agent":
+    action = handler._resolve_action(data)
+    if action not in STREAMED_ACTIONS:
         return handler(data)
 
     events = []
@@ -13,6 +17,7 @@ def dispatch_job(handler, data, job):
         from runpod.serverless.modules.rp_progress import progress_update
         events.append(event)
         # Polling can miss updates; each snapshot includes all events so far.
-        progress_update(job, json.dumps({"agent_event": event, "agent_events": events}, ensure_ascii=False))
+        progress_update(job, json.dumps({f"{action}_event": event, f"{action}_events": events}, ensure_ascii=False))
 
-    return handler._handle_agent(data, on_event=publish)
+    run = handler._handle_agent if action == "agent" else handler._handle_analyst
+    return run(data, on_event=publish)

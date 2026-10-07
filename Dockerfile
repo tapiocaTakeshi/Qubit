@@ -27,6 +27,7 @@ COPY handler.py .
 COPY neuroquantum_agent.py neuroquantum_search.py ./
 COPY neuroquantum_agent_protocol.py train_agent.py ./
 COPY neuroquantum_agent_progress.py ./
+COPY qubit_analyst.py qubit_analyst_tools.py ./
 COPY runpod_handler.py .
 COPY runpod_manager.py .
 COPY dataset_utils.py .
@@ -43,7 +44,8 @@ COPY train_split_learning.py .
 COPY training_history.json .
 
 # Fail the image build on Python syntax errors instead of creating crash-looping workers.
-RUN python -m py_compile handler.py runpod_handler.py commoncrawl_loader.py training_stages.py
+RUN python -m py_compile handler.py runpod_handler.py commoncrawl_loader.py training_stages.py \
+    qubit_analyst.py qubit_analyst_tools.py
 
 # 環境変数
 ENV PYTHONUNBUFFERED=1

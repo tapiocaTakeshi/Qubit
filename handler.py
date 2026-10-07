@@ -5,6 +5,7 @@ neuroQ - NeuroQuantum Transformer
 Supports both inference and training via the "action" field:
   - action: "inference" (default) — text generation
   - action: "agent"               — bounded read-only tool loop
+  - action: "analyst"             — grounded table analysis (qubit_analyst.py)
   - action: "train"               — fine-tuning on HF datasets
   - action: "train_qa"            — QA pairs training (qa_pairs format)
   - action: "train_qa_dataset"    — QA-format fine-tuning on HF datasets
@@ -324,6 +325,8 @@ class EndpointHandler:
 
     Supports:
       - action: "inference" (default) — text generation
+      - action: "agent"               — bounded read-only tool loop
+      - action: "analyst"             — grounded table analysis (qubit_analyst.py)
       - action: "train"               — general dataset training
       - action: "train_qa"            — QA pairs training (qa_pairs format)
       - action: "train_qa_dataset"    — QA-format training on HF datasets
@@ -513,7 +516,7 @@ class EndpointHandler:
             4. デフォルト "inference"
 
         Supported actions:
-            inference, agent, train, train_qa, train_dpo, train_split, train_split_next,
+            inference, agent, analyst, train, train_qa, train_dpo, train_split, train_split_next,
             train_multistage_3b, split_status, split_reset, status,
             restore_pre_commoncrawl, reset_checkpoint
 
@@ -525,6 +528,7 @@ class EndpointHandler:
         # Action routing table
         _routes = {
             "agent":            self._handle_agent,
+            "analyst":          self._handle_analyst,
             "jev_judge":        self._handle_jev_judge,
             "train":            self._handle_train,
             "train_qa":         self._train_qa,
@@ -607,6 +611,33 @@ class EndpointHandler:
 
         try:
             return [run_agent(data, generate, on_event=on_event)]
+        except ValueError as exc:
+            return [{"error": str(exc)}]
+
+    def _handle_analyst(self, data: Dict[str, Any], on_event=None) -> List[Dict[str, Any]]:
+        """Grounded table analysis; the model may only propose checked steps and draft text."""
+        from qubit_analyst import run_analyst
+
+        max_new_tokens = 320
+
+        def generate(prompt):
+            # Same safety as _handle_agent: model text never reaches __call__.
+            # Reserve room for the reply; _handle_inference would otherwise drop
+            # the start of the prompt (the instruction) once the window is full.
+            formatted = f"質問: {prompt}\n回答:"
+            token_count = len(self.tokenizer.encode(formatted, add_special=False))
+            if token_count + 2 + max_new_tokens > self.config["max_seq_len"]:
+                raise ValueError("Analyst prompt exceeds model context window")
+            return self._handle_inference({"inputs": prompt, "parameters": {
+                "temperature": 0.2, "max_new_tokens": max_new_tokens,
+                "repetition_penalty": 1.0, "no_repeat_ngram_size": 0,
+                "presence_penalty": 0, "frequency_penalty": 0,
+                "repeat_span_blocking": False, "deduplicate_output": False,
+                "min_new_tokens": 0,
+            }})[0].get("generated_text", "")
+
+        try:
+            return [run_analyst(data, generate, on_event=on_event)]
         except ValueError as exc:
             return [{"error": str(exc)}]
 
@@ -3218,7 +3249,7 @@ def _runpod_handler(event):
         }
 
     Supported actions:
-        inference (default), agent, train, train_qa, train_qa_dataset,
+        inference (default), agent, analyst, train, train_qa, train_qa_dataset,
         train_split, train_split_next, train_split_learning,
         train_dpo, train_combined_dpo,
         split_status, split_reset, status

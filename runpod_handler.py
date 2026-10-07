@@ -70,7 +70,7 @@ def run_handler(event):
         }
 
     Supported actions:
-        inference (default), agent, train, train_qa, train_qa_dataset,
+        inference (default), agent, analyst, train, train_qa, train_qa_dataset,
         train_split, train_split_next, train_dpo, train_combined_dpo,
         split_status, split_reset, status
     """
