@@ -78,10 +78,11 @@ def test_narration_targets_are_the_template_and_pass_the_numeric_guard():
     for row, target in rows:
         table, steps = replay(row)
         findings = A.build_findings(steps, table, language=row["language"])
-        caveats = A.build_caveats(steps, table, language=row["language"])
+        caveats = A.build_caveats(steps, table, language=row["language"], question=row["question"])
         assert target == A.template_narrative(row["question"], findings, caveats, A.dataset_summary(table),
                                               row["language"])
-        assert A.verify_numbers(target, findings, [s["output"] for s in steps]) == []
+        # the runtime guard sees only the narration prompt, so the target cites nothing else
+        assert A.verify_numbers(target, A.narrative_prompt(row["question"], findings, caveats, row["language"])) == []
         assert len(target) <= TA.NARRATE_CHARS
 
 
@@ -191,9 +192,25 @@ def test_curriculum_fits_the_checked_in_vocabulary(tmp_path):
     tokenizer = SimpleNamespace(bos_id=2, eos_id=3, bof_id=processor.PieceToId("<bof>"),
                                 eof_id=processor.PieceToId("<eof>"),
                                 encode=lambda text, add_special=False: processor.EncodeAsIds(text))
-    for row in RECORDS:
+    for row, (prompt, _) in zip(RECORDS, COMPILED):
         ids, labels = encode_record(row, tokenizer, 1024)   # serving max_seq_len
         assert len(ids) <= 1024 and any(label != -100 for label in labels)
+        prefix = labels.index(next(label for label in labels if label != -100))
+        # the serving handler refuses token_count + 2 + generation length > max_seq_len
+        assert prefix + A.generation_tokens(prompt) <= 1024, row["question"]
+
+
+def test_rows_the_serving_handler_would_refuse_are_rejected():
+    row = plan_row("complete")
+    prompt, answer = compile_record(row)
+    prefix = 2 + len(f"質問: {prompt}\n回答:")
+    assert A.generation_tokens(prompt) == A.PLANNER_NEW_TOKENS == 96 and len(answer) + 2 < 96
+    encode_record(row, CharTokenizer(), prefix + 96)
+    with pytest.raises(ValueError, match="serving handler would refuse"):
+        encode_record(row, CharTokenizer(), prefix + len(answer) + 2)   # fits 1024-style, not prompt + 96
+    narration = next(r for r in RECORDS if r["stage"] == "narrate")
+    prompt, answer = compile_record(narration)
+    assert A.generation_tokens(prompt) == A.NARRATIVE_NEW_TOKENS == TA.MAX_NEW_TOKENS == 320
 
 
 def test_train_candidate_reuses_the_agent_loop_with_analyst_encoding(monkeypatch):

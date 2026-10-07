@@ -616,14 +616,13 @@ class EndpointHandler:
 
     def _handle_analyst(self, data: Dict[str, Any], on_event=None) -> List[Dict[str, Any]]:
         """Grounded table analysis; the model may only propose checked steps and draft text."""
-        from qubit_analyst import run_analyst
-
-        max_new_tokens = 320
 
         def generate(prompt):
             # Same safety as _handle_agent: model text never reaches __call__.
-            # Reserve room for the reply; _handle_inference would otherwise drop
-            # the start of the prompt (the instruction) once the window is full.
+            # Reserve room for the reply (96 tokens for a plan decision, 320 for the
+            # narrative); _handle_inference would otherwise drop the start of the
+            # prompt (the instruction) once the window is full.
+            max_new_tokens = generation_tokens(prompt)
             formatted = f"質問: {prompt}\n回答:"
             token_count = len(self.tokenizer.encode(formatted, add_special=False))
             if token_count + 2 + max_new_tokens > self.config["max_seq_len"]:
@@ -637,9 +636,13 @@ class EndpointHandler:
             }})[0].get("generated_text", "")
 
         try:
+            from qubit_analyst import generation_tokens, run_analyst
             return [run_analyst(data, generate, on_event=on_event)]
         except ValueError as exc:
             return [{"error": str(exc)}]
+        except Exception:
+            # Never let a traceback (paths, worker identity) reach the RunPod result.
+            return [{"error": "analyst request failed"}]
 
     def _handle_inference(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Generate text from prompt."""

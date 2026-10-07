@@ -1,4 +1,5 @@
 """Qubit Analyst data tools: loading, statistics (scipy reference values), tools, validation, limits."""
+import calendar
 import datetime
 import json
 import math
@@ -736,10 +737,12 @@ def test_json_safe_and_round_sig():
                        "c": datetime.date(2024, 1, 2), "d": (1, True, None), 3: 1234567.89,
                        "e": {1, 2}, "f": object()})
     assert out["a"] is None and out["b"] == [None, None, 0.333333, 0.0]
-    assert out["c"] == "2024-01-02" and out["d"] == [1, True, None] and out["3"] == 1234570.0
+    assert out["c"] == "2024-01-02" and out["d"] == [1, True, None] and out["3"] == 1234568.0
     assert out["e"] == [1, 2] and isinstance(out["f"], str)
     strict_json(out)
-    assert T.round_sig(123456789) == 123457000.0 and T.round_sig(1.23456789e-12) == 1.23457e-12
+    # integer digits are never rounded away: yen totals stay exact, decimals keep 6 significant digits
+    assert T.round_sig(123456789) == 123456789.0 and T.round_sig(1.23456789e-12) == 1.23457e-12
+    assert T.round_sig(13456789.123) == 13456789.0 and T.round_sig(-98765.4321) == -98765.4
     assert T.round_sig(float("nan")) is None and T.round_sig(True) is None
 
 
@@ -750,3 +753,155 @@ def test_number_tokens():
     assert {12.5, 2024.0, 3.0, 1.0, -7.0} <= set(tokens) and 1.0 in tokens
     assert len(tokens) == len(set(tokens))
     assert T.number_tokens([]) == [] and T.number_tokens("no digits") == []
+
+
+# ---------------------------------------------------------------- review regressions
+
+def daily(start, days, value=lambda i: 100 + 0.2 * i):
+    first = datetime.date(*start)
+    return load_table({"d": [(first + datetime.timedelta(days=i)).isoformat() for i in range(days)],
+                       "v": [value(i) for i in range(days)]})
+
+
+def test_partial_month_and_year_buckets_are_dropped_not_compared():
+    table = daily((2024, 1, 20), 199)          # strictly increasing, 2024-01-20 .. 2024-08-05
+    out = run_tool(table, "trend", {"value": "v", "time": "d", "period": "month"})
+    assert out["partial_periods"] == ["2024-01", "2024-08"] and out["n"] == 6
+    assert out["direction"] == "increasing" and out["pct_change"] > 0 and out["first_period"] == "2024-02"
+    assert all(p["pct_change"] is None or p["pct_change"] > 0 for p in out["last_periods"])
+    fc = run_tool(table, "forecast", {"value": "v", "time": "d", "period": "month", "periods": 3})
+    assert fc["partial_periods"] == ["2024-01", "2024-08"] and fc["slope"] > 0
+    assert [p["period"] for p in fc["points"]] == ["2024-08", "2024-09", "2024-10"]
+    assert fc["points"][0]["estimate"] > out["last"]          # was 2,870 falling while true totals rise
+    months = load_table({"m": [f"{2024 + i // 12}-{i % 12 + 1:02d}" for i in range(15)], "v": list(range(100, 115))})
+    yearly = run_tool(months, "trend", {"value": "v", "time": "m", "period": "year"})
+    assert yearly["partial_periods"] == ["2025"] and yearly["n"] == 1 and "2つ未満" in yearly["reason"]
+    full = run_tool(daily((2023, 1, 1), 730), "trend", {"value": "v", "time": "d", "period": "month"})
+    assert full["partial_periods"] == [] and full["n"] == 24 and not full["uneven_periods"]
+    weekly = load_table({"d": [(datetime.date(2023, 1, 2) + datetime.timedelta(weeks=i)).isoformat()
+                               for i in range(104)], "v": [1000] * 104})
+    assert run_tool(weekly, "trend", {"value": "v", "time": "d", "period": "month"})["uneven_periods"] is True
+
+
+def test_zscore_reports_undetectable_small_samples_and_iqr_zero():
+    table = load_table({"v": [100, 102, 98, 101, 99, 103, 97, 100, 5000]})
+    z = run_tool(table, "outliers", {"column": "v", "method": "zscore"})
+    assert z["count"] is None and "n=9" in z["reason"]          # max |z| = 8/sqrt(9) < 3
+    assert run_tool(table, "outliers", {"column": "v"})["count"] == 1
+    assert run_tool(load_table({"v": [1, 1, 1, 1, 1000]}), "outliers",
+                    {"column": "v", "method": "zscore", "threshold": 2})["count"] is None
+    flags = run_tool(load_table({"v": [0] * 20 + [1] * 3}), "outliers", {"column": "v"})
+    assert flags["count"] is None and flags["iqr"] == 0 and flags["reason"]
+
+
+def test_dotted_year_month_labels_are_months_not_decimals():
+    table = load_table("年月,売上\n" + "\n".join(f"2024.{m},{100 * m}" for m in range(1, 13)))
+    col = table.column("年月")
+    assert col.kind == "datetime" and len(set(col.values)) == 12 and col.values[9] == datetime.date(2024, 10, 1)
+    assert run_tool(table, "group_by", {"by": "年月", "value": "売上"})["n_groups"] == 12
+    assert T.parse_date("2024.01") is None
+    assert load_table({"price": ["2019.5", "2020.12", "2021.3"]}).column("price").kind == "numeric"
+
+
+def test_percent_columns_are_averaged_and_never_given_shares():
+    table = load_table("地域,利益率,d\n東,10%,2024-01-01\n東,12%,2024-01-02\n西,20%,2024-01-03\n西,22%,2024-01-04\n")
+    assert validate_args(table, "group_by", {"by": "地域", "value": "利益率"})["agg"] == "mean"
+    out = run_tool(table, "group_by", {"by": "地域", "value": "利益率", "agg": "sum"})
+    assert all(g["share"] is None for g in out["groups"])
+    assert "top_share" not in run_tool(table, "top_n", {"column": "利益率"})
+    assert validate_args(table, "trend", {"value": "利益率", "time": "d"})["agg"] == "mean"
+    assert run_tool(table, "forecast", {"value": "利益率", "time": "d"})["agg"] == "mean"
+    assert run_tool(table, "trend", {"value": "利益率", "time": "d"})["cagr"] is None
+
+
+def test_forecast_steps_month_end_quarter_end_and_mid_month_calendars():
+    ends = [datetime.date(2024, m, calendar.monthrange(2024, m)[1]).isoformat() for m in range(1, 13)]
+    out = run_tool(load_table({"d": ends, "v": list(range(12))}), "forecast", {"value": "v", "time": "d", "periods": 6})
+    assert [p["period"] for p in out["points"]] == ["2025-01-31", "2025-02-28", "2025-03-31", "2025-04-30",
+                                                    "2025-05-31", "2025-06-30"]
+    quarters = ["2024-03-31", "2024-06-30", "2024-09-30", "2024-12-31"]
+    out = run_tool(load_table({"d": quarters, "v": [1, 2, 4, 5]}), "forecast", {"value": "v", "time": "d", "periods": 2})
+    assert [p["period"] for p in out["points"]] == ["2025-03-31", "2025-06-30"]
+    mid = [f"2024-{m:02d}-15" for m in range(1, 7)]
+    out = run_tool(load_table({"d": mid, "v": list(range(6))}), "forecast", {"value": "v", "time": "d", "periods": 2})
+    assert [p["period"] for p in out["points"]] == ["2024-07-15", "2024-08-15"]
+
+
+def test_minority_unit_cells_are_coerced_not_relabelling_the_column():
+    col = load_table({"売上": ["¥1,000", "¥1,200", "¥900", "¥1,100", "¥1,050", "¥980", "¥1,010", "¥1,300",
+                               "¥1,150", "5%"]}).column("売上")
+    assert (col.kind, col.unit, col.coerced, col.values[-1]) == ("numeric", "¥", 1, None)
+
+
+def test_crosstab_fold_label_never_collides_with_a_real_level():
+    rows = [f"L{i}" for i in range(15) for _ in range(30 - i)] + ["その他"] * 100 + ["その他(集約)"] * 90
+    out = run_tool(load_table({"r": rows, "c": ["x", "y"] * (len(rows) // 2) + ["x"] * (len(rows) % 2)}),
+                   "crosstab", {"row": "r", "col": "c"})
+    totals = dict(zip(out["table"]["rows"], out["table"]["row_totals"]))
+    assert totals["その他(集約)"] == 90 and out["table"]["rows"][-1] == "その他(集約2)"
+    assert sum(totals.values()) == len(rows)
+
+
+def test_number_parsing_is_linear_on_hostile_cells_and_group_labels():
+    attack = "(" + " " * 28 + "1" * 12 + " " * 22 + "x"
+    start = time.perf_counter()
+    assert T.parse_number(attack) is None and load_table({"v": [1] * 45 + [attack] * 5}).column("v").coerced == 5
+    table = load_table({"g": [float(i % 4) for i in range(40)], "v": list(range(40))})
+    with pytest.raises(DataError):
+        run_tool(table, "compare", {"value": "v", "by": "g", "a": attack})
+    assert time.perf_counter() - start < 0.5
+    assert T.parse_number(" ( ¥ 1,234.5 ) ") == -1234.5 and T.parse_number("1.5e3") == 1500.0
+
+
+def test_huge_integer_threshold_is_a_data_error_not_overflow(sales):
+    with pytest.raises(DataError):
+        validate_args(sales, "outliers", {"column": "売上", "threshold": int("1" * 400)})
+    assert validate_args(sales, "outliers", {"column": "売上", "threshold": 2})["threshold"] == 2.0
+
+
+def test_lone_surrogates_are_scrubbed_from_cells_and_string_arguments():
+    table = load_table([{"region": "\ud800east", "sales": 1}, {"region": "west", "sales": 2}] * 3)
+    out = run_tool(table, "group_by", {"by": "region", "value": "sales"})
+    json.dumps(out, ensure_ascii=False).encode("utf-8")
+    assert {g["key"] for g in out["groups"]} == {"?east", "west"}
+    assert validate_args(table, "compare", {"value": "sales", "by": "region", "a": "\udfffwest"})["a"] == "?west"
+
+
+def test_tiny_magnitudes_do_not_divide_by_zero():
+    assert T.skewness([0.0, 1e-160, 2e-160, 5e-160]) is None
+    test = T.welch_ttest([0.0, 1e-160, 2e-160], [5e-160, 3e-160, 4e-160])
+    assert test["df"] == pytest.approx(4.0) and test["p_value"] is not None
+    assert T.welch_ttest(X, Z)["df"] == pytest.approx(14.354683603462354, rel=1e-12)
+    table = load_table({"g": ["a", "b"] * 4, "tiny": [0.0, 1e-160, 2e-160, 5e-160] * 2})
+    assert run_tool(table, "describe", {})["columns"][1]["skew"] is None
+
+
+def test_cr_only_line_endings_parse():
+    table = load_table('date,sales\r2024-01-01,10\r2024-02-01,12\r2024-03-01,"1,500"\r')
+    assert table.kinds() == {"date": "datetime", "sales": "numeric"} and table.n_rows == 3
+    assert load_table('a,b\r1,"x\ry"\r2,z\r').column("b").values == ["x\ry", "z"]
+
+
+def test_id_and_year_columns_are_skipped_unless_named():
+    table = load_table({"社員ID": list(range(1001, 1021)), "年": [2020 + i % 4 for i in range(20)],
+                        "満足度": [3, 4, 2, 5, 4, 3, 3, 4, 5, 2] * 2, "残業": [10, 5, 20, 1, 6, 9, 12, 7, 2, 25] * 2})
+    matrix = run_tool(table, "correlate", {})
+    assert matrix["columns"] == ["満足度", "残業"] and len(matrix["pairs"]) == 1
+    assert run_tool(table, "correlate", {"x": "社員ID", "y": "満足度"})["r"] is not None
+    assert "社員ID" not in [c["name"] for c in run_tool(table, "describe", {})["columns"]]
+    assert run_tool(table, "describe", {"column": "社員ID"})["columns"][0]["count"] == 20
+
+
+def test_compare_marks_defaulted_groups():
+    table = load_table({"g": list("ABCD") * 6, "v": list(range(24))})
+    assert run_tool(table, "compare", {"value": "v", "by": "g"})["defaulted"] is True
+    assert run_tool(table, "compare", {"value": "v", "by": "g", "a": "C"})["defaulted"] is False
+
+
+def test_cagr_for_year_columns_and_never_across_zero():
+    years = load_table({"年度": list(range(2018, 2025)), "売上高": [100, 108, 115, 120, 131, 140, 150]})
+    assert run_tool(years, "trend", {"value": "売上高", "time": "年度"})["cagr_pct"] == pytest.approx(6.991, rel=1e-3)
+    swing = load_table({"年度": list(range(2018, 2025)), "利益": [50, -20, 30, -10, 60, 40, 30]})
+    assert run_tool(swing, "trend", {"value": "利益", "time": "年度"})["cagr"] is None
+    plain = load_table({"t": list(range(2018, 2025)), "v": [100, 108, 115, 120, 131, 140, 150]})
+    assert run_tool(plain, "trend", {"value": "v", "time": "t"})["cagr"] is None    # not a year column

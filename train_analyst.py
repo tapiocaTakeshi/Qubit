@@ -4,8 +4,8 @@ Validation is the default; --train explicitly trains a separate candidate from -
 This never replaces/syncs the serving checkpoint and never downloads a model/dataset.
 Prompts are rebuilt with qubit_analyst's runtime builders and every target passes the
 inference validators: plan targets parse with parse_plan_decision and never repeat a done
-step; narration targets pass the numeric guard against findings computed by running the
-tools. External JSONL rows use the same contract: table id, question, language, data,
+step; narration targets pass the numeric guard against the exact narration prompt (the only
+numbers the runtime accepts), and every prompt leaves room for its runtime generation length. External JSONL rows use the same contract: table id, question, language, data,
 stage, steps already run (plus remaining for plan rows) and target.
 """
 import argparse
@@ -27,7 +27,7 @@ STAGES = ("plan", "narrate")
 ROW_KEYS = {"plan": {"table", "question", "language", "data", "stage", "steps", "remaining", "target"},
             "narrate": {"table", "question", "language", "data", "stage", "steps", "target"}}
 MAX_ROW_STEPS = A.MAX_PLAN + A.MAX_MODEL_STEPS
-MAX_NEW_TOKENS = 320      # handler._handle_analyst generation length
+MAX_NEW_TOKENS = A.NARRATIVE_NEW_TOKENS    # handler._handle_analyst reserves A.generation_tokens(prompt)
 PLANNER_STEPS = 3         # runtime default max_steps, so the first decision sees remaining=3
 NARRATE_CHARS = 480       # keeps synthetic narration inside MAX_NEW_TOKENS (<=0.65 tokens/char)
 TABLES, QUESTIONS_PER_TABLE = 40, 5
@@ -320,11 +320,11 @@ def compile_record(row):
     if not isinstance(target, str) or target != target.strip() or A._narrative_problem(target):
         raise ValueError("Invalid narration target")
     findings = A.build_findings(steps, table, language=language)
-    caveats = A.build_caveats(steps, table, language=language)
-    outputs = [s["output"] for s in steps if s["status"] == "completed"]
-    if A.verify_numbers(target, findings, caveats, outputs, A.dataset_summary(table)):
-        raise ValueError("Narration target contains numbers not found in the results")
-    return A.narrative_prompt(question, findings, caveats, language), target
+    caveats = A.build_caveats(steps, table, language=language, question=question)
+    prompt = A.narrative_prompt(question, findings, caveats, language)
+    if A.verify_numbers(target, prompt):
+        raise ValueError("Narration target contains numbers not found in the narration prompt")
+    return prompt, target
 
 
 def _minimal_args(table, tool, args):
@@ -360,9 +360,12 @@ def _question_records(base, table, ideal):
     if any(s["status"] != "completed" for s in steps):
         raise ValueError(f"Curriculum step failed for {question!r}")
     findings = A.build_findings(steps, table, language=language)
-    caveats = A.build_caveats(steps, table, language=language)
+    caveats = A.build_caveats(steps, table, language=language, question=question)
     row["target"] = A.template_narrative(question, findings, caveats, A.dataset_summary(table), language)
-    if len(row["target"]) <= NARRATE_CHARS:   # longer reports exceed the generation budget
+    prompt = A.narrative_prompt(question, findings, caveats, language)
+    # Longer reports exceed the generation budget; a template citing a line the prompt had to drop
+    # would teach the model to state numbers it was not shown.
+    if len(row["target"]) <= NARRATE_CHARS and not A.verify_numbers(row["target"], prompt):
         rows.append(row)
     return rows
 
@@ -403,15 +406,20 @@ def split_records(records):
 
 
 def encode_record(row, tokenizer, max_length):
-    """train_agent's layout and answer-only labels; the answer and its EOS must also fit in the
-    MAX_NEW_TOKENS the handler generates, or the model would learn replies it cannot finish."""
+    """train_agent's layout and answer-only labels. Mirrors the serving handler: the prompt must leave
+    room for the stage's generation length (A.generation_tokens: 96 for plans, 320 for narration) or
+    the handler would refuse it, and the answer plus EOS must fit in that length."""
     prompt, answer = compile_record(row)
     prefix = [tokenizer.bof_id, tokenizer.bos_id] + tokenizer.encode(
         f"質問: {prompt}\n回答:", add_special=False)
     target = tokenizer.encode(answer, add_special=False) + [tokenizer.eos_id, tokenizer.eof_id]
+    new_tokens = A.generation_tokens(prompt)
     if len(prefix) + len(target) > max_length:
         raise ValueError("Training example exceeds context window; do not silently truncate")
-    if len(target) - 1 > MAX_NEW_TOKENS:
+    if len(prefix) + new_tokens > max_length:     # handler: token_count + 2 + max_new_tokens > max_seq_len
+        raise ValueError("Training prompt leaves no room for the runtime generation length; "
+                         "the serving handler would refuse it")
+    if len(target) - 1 > new_tokens:
         raise ValueError("Training answer exceeds the runtime generation length; do not silently truncate")
     return prefix + target, [-100] * len(prefix) + target
 

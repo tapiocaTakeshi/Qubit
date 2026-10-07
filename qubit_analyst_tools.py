@@ -2,8 +2,10 @@
 
 Cells and column names are untrusted data: they are parsed, never executed and never used
 as format strings. Statistics are pure Python (checked against scipy in tests) and every
-tool returns JSON-safe output: no NaN/Infinity, floats rounded to 6 significant digits.
+tool returns JSON-safe output: no NaN/Infinity, floats rounded to 6 significant digits (integer
+digits are never rounded away). Requires Python 3.11+ (possessive regex quantifiers).
 """
+import calendar
 import csv
 import datetime
 import io
@@ -55,6 +57,7 @@ class Column:
     def __init__(self, name, kind, values, raw_missing=0, coerced=0, unit=None):
         self.name, self.kind, self.values = name, kind, list(values)
         self.raw_missing, self.coerced, self.unit = raw_missing, coerced, unit
+        self._year = None
 
     @property
     def missing(self):
@@ -65,11 +68,11 @@ class Column:
 
     @property
     def is_year(self):
-        """Numeric column named like year/年/年度 holding 4-digit years."""
-        if self.kind != "numeric" or not re.search(r"year|年", name_key(self.name)):
-            return False
-        values = self.present()
-        return bool(values) and all(v.is_integer() and 1000 <= v <= 9999 for v in values)
+        """Numeric column named like year/年/年度 holding 4-digit years (cached: values never change)."""
+        if self._year is None:
+            values = self.present() if self.kind == "numeric" and re.search(r"year|年", name_key(self.name)) else []
+            self._year = bool(values) and all(v.is_integer() and 1000 <= v <= 9999 for v in values)
+        return self._year
 
     def __repr__(self):
         return f"Column({self.name!r}, {self.kind!r}, rows={len(self.values)})"
@@ -110,16 +113,24 @@ class Table:
 
 # ---------------------------------------------------------------- cell parsing
 
+# Possessive quantifiers keep matching linear: nothing else in the pattern matches ASCII
+# whitespace, and digit runs cannot be re-split (a failing 64-char cell used to take seconds).
 _NUMBER = re.compile(
-    r"(\()?\s*([+\-−▲△])?\s*([¥$€£])?\s*([+\-−])?\s*"
-    r"(\d{1,3}(?:,\d{3})+(?:\.\d+)?|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)"
-    r"\s*([千万億兆])?\s*(%|円|ドル|[¥$€£])?\s*(\))?", re.ASCII)
+    r"(\()?\s*+([+\-−▲△])?\s*+([¥$€£])?\s*+([+\-−])?\s*+"
+    r"(\d{1,3}(?:,\d{3})++(?:\.\d++)?|(?:\d++(?:\.\d*+)?|\.\d++)(?:[eE][+-]?\d++)?)"
+    r"\s*+([千万億兆])?\s*+(%|円|ドル|[¥$€£])?\s*+(\))?", re.ASCII)
 _SCALE = {"千": 1e3, "万": 1e4, "億": 1e8, "兆": 1e12}
 _CURRENCY = {"¥": "¥", "円": "¥", "$": "$", "ドル": "$", "€": "€", "£": "£"}
 _DATE = re.compile(r"(\d{4})([-/.])(\d{1,2})\2(\d{1,2})"
                    r"(?:[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\s*(?:Z|[+-]\d{2}:?\d{2})?)?", re.ASCII)
 _MONTH = re.compile(r"(\d{4})[-/](\d{1,2})", re.ASCII)
 _JDATE = re.compile(r"(\d{4})\s*年(?:\s*(\d{1,2})\s*月(?:\s*(\d{1,2})\s*日)?)?", re.ASCII)
+_DOT_MONTH = re.compile(r"(?:19|20)\d{2}\.(?:0?[1-9]|1[0-2])", re.ASCII)
+
+
+def scrub(text):
+    """Replace lone UTF-16 surrogates (legal in JSON escapes, illegal in UTF-8) with '?'."""
+    return text.encode("utf-8", "replace").decode("utf-8")
 
 
 def _number(value):
@@ -230,7 +241,7 @@ def _cell(value, row):
     if isinstance(value, str):
         if len(value) > LIMITS["max_cell_chars"]:
             raise DataError(f"{row}行目のセルが長すぎます（最大{LIMITS['max_cell_chars']}文字）")
-        text = _nfkc(value).strip()[:LIMITS["max_cell_chars"]]
+        text = _nfkc(scrub(value)).strip()[:LIMITS["max_cell_chars"]]
         return None if text.casefold() in MISSING_TOKENS else text
     raise DataError("セルの値は文字列・数値・真偽値・null のいずれかで指定してください")
 
@@ -248,12 +259,13 @@ def _decode(blob):
 
 def _sniff(text):
     sample = text[:65536]
-    if len(text) > len(sample) and "\n" in sample:
-        sample = sample[:sample.rindex("\n")]
+    cut = max(sample.rfind("\n"), sample.rfind("\r"))      # CR-only files (classic Mac exports) too
+    if len(text) > len(sample) and cut > 0:
+        sample = sample[:cut]
     best, best_score = ",", None
     for delimiter in (",", "\t", ";", "|"):
         try:
-            rows = [r for r in itertools.islice(csv.reader(io.StringIO(sample), delimiter=delimiter), 60)
+            rows = [r for r in itertools.islice(csv.reader(io.StringIO(sample, newline=""), delimiter=delimiter), 60)
                     if any(cell.strip() for cell in r)]
         except csv.Error:
             continue
@@ -275,7 +287,7 @@ def _read_text(text):
         raise DataError("データが空です")
     names, raw, rows = None, None, 0
     try:
-        for record in csv.reader(io.StringIO(text), delimiter=_sniff(text)):
+        for record in csv.reader(io.StringIO(text, newline=""), delimiter=_sniff(text)):
             if not any(cell.strip() for cell in record):
                 continue
             if names is None:
@@ -357,11 +369,23 @@ def _unique_names(names):
     return result
 
 
+def _dotted_months(name, present):
+    """"2024.1" … "2024.12" are months, not decimals, when "2024.1"/"2024.10" collide or the name says so."""
+    if not present or not all(isinstance(v, str) and _DOT_MONTH.fullmatch(v) for _, v in present):
+        return False
+    texts = {v for _, v in present}
+    return len({float(v) for v in texts}) < len(texts) or bool(re.search(r"月|month|date|period|日付|時期",
+                                                                          name_key(name)))
+
+
 def _infer(name, cells):
     present = [(i, v) for i, v in enumerate(cells) if v is not None]
     total = len(present)
     allowed = total - (9 * total + 9) // 10      # kind needs >= 90% conforming values
-    for kind, parser in (("numeric", _number), ("datetime", parse_date), ("boolean", parse_bool)):
+    parsers = [("numeric", _number), ("datetime", parse_date), ("boolean", parse_bool)]
+    if _dotted_months(name, present):
+        parsers.insert(0, ("datetime", lambda v: datetime.date(int(v[:4]), int(v[5:]), 1)))
+    for kind, parser in parsers:
         parsed, failures = [], 0
         for i, value in present:
             result = parser(value)
@@ -372,15 +396,21 @@ def _infer(name, cells):
             else:
                 parsed.append((i, result))
         else:
-            if total:
-                values, unit = [None] * len(cells), None
-                if kind == "numeric":
-                    units = Counter(u for _, (_, u) in parsed if u)
-                    unit = "%" if "%" in units else (units.most_common(1)[0][0] if units else None)
-                    parsed = [(i, x) for i, (x, _) in parsed]
-                for i, value in parsed:
-                    values[i] = value
-                return Column(name, kind, values, len(cells) - total, failures, unit)
+            if not total:
+                continue
+            values, unit = [None] * len(cells), None
+            if kind == "numeric":
+                # The majority explicit unit wins; cells in another unit (one "5%" among yen) are coerced.
+                units = Counter(u for _, (_, u) in parsed if u)
+                unit = units.most_common(1)[0][0] if units else None
+                odd = {i for i, (_, u) in parsed if u and u != unit}
+                failures += len(odd)
+                if failures > allowed:
+                    continue
+                parsed = [(i, x) for i, (x, _) in parsed if i not in odd]
+            for i, value in parsed:
+                values[i] = value
+            return Column(name, kind, values, len(cells) - total, failures, unit)
     values = [None if v is None else _label(v) for v in cells]
     unique = len({v for v in values if v is not None})
     kind = "categorical" if unique <= max(20, 0.05 * len(cells)) else "text"
@@ -496,7 +526,10 @@ def skewness(xs):
         return None
     m2 /= n
     m3 = _fsum(d * d * d for d in (x - m for x in xs)) / n
-    return _out(m3 / (m2 * math.sqrt(m2)) * math.sqrt(n * (n - 1.0)) / (n - 2.0))
+    denom = m2 * math.sqrt(m2)
+    if not denom > 0:          # m2 underflowed for |x| below ~1e-100 (scipy gives nan)
+        return None
+    return _out(m3 / denom * math.sqrt(n * (n - 1.0)) / (n - 2.0))
 
 
 def _paired(xs, ys):
@@ -774,7 +807,8 @@ def welch_ttest(a, b):
     if va + vb <= 0 or not math.isfinite(va + vb):
         return {**result, "reason": "両グループとも値が一定のため検定できません"}
     t = (result["mean_a"] - result["mean_b"]) / math.sqrt(va + vb)
-    df = (va + vb) * (va + vb) / (va * va / (len(a) - 1) + vb * vb / (len(b) - 1))
+    ra, rb = va / (va + vb), vb / (va + vb)          # scale-free Welch df: no underflow for tiny values
+    df = 1.0 / (ra * ra / (len(a) - 1) + rb * rb / (len(b) - 1))
     p = student_t_sf(abs(t), df)
     return {**result, "t": _out(t), "df": _out(df),
             "p_value": None if p is None else min(1.0, 2.0 * p)}
@@ -849,12 +883,18 @@ def _effect(d):
 # ---------------------------------------------------------------- JSON helpers
 
 def round_sig(x, digits=6):
+    """Round to `digits` significant digits, but never round away integer digits (12345678 stays exact)."""
     x = _as_float(x)
-    return None if x is None else float(format(x, f".{digits}g")) + 0.0
+    if x is None:
+        return None
+    if x == 0:
+        return 0.0
+    digits = min(17, max(digits, math.floor(math.log10(abs(x))) + 1))
+    return float(format(x, f".{digits}g")) + 0.0
 
 
 def json_safe(obj, _depth=0):
-    """Non-finite floats -> None, floats -> 6 significant digits, dates -> ISO strings."""
+    """Non-finite floats -> None, floats -> 6 significant digits (integer part kept), dates -> ISO."""
     if _depth > 64:
         return None
     if obj is None or isinstance(obj, (bool, str)):
@@ -928,6 +968,16 @@ def _rows(column):
     return [(i + 1, v) for i, v in enumerate(column.values) if v is not None]
 
 
+def is_id_like(col):
+    """ID / 番号 / コード columns and 1, 2, 3… row counters: skipped by default analyses."""
+    key = name_key(col.name)
+    if re.search(r"(?<![a-z])id$|^id(?![a-z])|番号|コード|^no\.?$|^#$|\bcode$", key):
+        return True
+    values = col.present()
+    return (col.kind == "numeric" and len(values) > 2
+            and values in (list(map(float, range(1, len(values) + 1))), list(map(float, range(len(values))))))
+
+
 @_tool("profile")
 def profile(table, args):
     """行数・列の型・欠損・変換できなかったセル。"""
@@ -983,8 +1033,9 @@ def _describe_column(col):
 
 @_tool("describe")
 def describe(table, args):
-    """列の要約統計。column 省略時は先頭から最大20列。"""
-    names = [args["column"]] if args.get("column") else table.names()
+    """列の要約統計。column 省略時は ID 的な列を除いて先頭から最大20列。"""
+    names = ([args["column"]] if args.get("column") else
+             [n for n in table.names() if not is_id_like(table.column(n))] or table.names())
     return {"columns": [_describe_column(table.column(n)) for n in names[:DESCRIBE_LIMIT]],
             "truncated": len(names) > DESCRIBE_LIMIT}
 
@@ -1033,6 +1084,7 @@ def correlate(table, args):
         return {"mode": "pair", "method": method, **_pair(table.column(x), table.column(y), method)}
     limit = LIMITS["max_corr_columns"]
     numeric = [c for c in table.columns if c.kind == "numeric"]
+    numeric = [c for c in numeric if not (is_id_like(c) or c.is_year)] or numeric   # unless named
     anchor = table.column(x or y) if (x or y) else None
     if anchor is not None:
         others = [c for c in numeric if c is not anchor]
@@ -1083,7 +1135,8 @@ def group_by(table, args):
     rows.sort(key=lambda r: (r[1] is None, -(r[1] or 0), _label(r[0])))
     everything = [v for vals in groups.values() for v in vals]
     total = _aggregate(everything, agg)
-    shares = agg in ("sum", "count") and total and total > 0 and all((r[1] or 0) >= 0 for r in rows)
+    shares = (agg in ("sum", "count") and (vcol is None or vcol.unit != "%") and total and total > 0
+              and all((r[1] or 0) >= 0 for r in rows))     # a share of summed rates is meaningless
     limit = LIMITS["max_groups"]
     out = {"by": bcol.name, "value": vcol.name if vcol else None, "agg": agg,
            "groups": [{"key": _key(k), "value": v, "count": c,
@@ -1104,28 +1157,50 @@ def group_by(table, args):
     return out
 
 
+def _partial_edges(keys, days, period):
+    """First/last month (year) bucket observed on < 80% as many distinct dates as a full one."""
+    distinct = sorted(set().union(*days.values()))
+    gaps = [float((b - a).days) for a, b in zip(distinct, distinct[1:])]
+    step = max(1.0, median(gaps)) if gaps else 1.0
+
+    def expected(k):
+        if len(keys) >= 3:
+            return median([float(len(days[j])) for j in keys[1:-1]])
+        length = calendar.monthrange(k.year, k.month)[1] if period == "month" else 365 + calendar.isleap(k.year)
+        return length / step
+    return [k for k in dict.fromkeys((keys[0], keys[-1])) if len(days[k]) < 0.8 * expected(k)]
+
+
 def _series(table, value, time, agg="sum", period="raw"):
+    """Aggregated series; month/year buckets that cover only part of the period are dropped."""
     vcol = table.column(value)
     if not time:
         pairs = _rows(vcol)
         keys = [p[0] for p in pairs]
         return {"kind": "row", "keys": keys, "x": [float(k) for k in keys],
-                "y": [p[1] for p in pairs], "rows": len(pairs)}
+                "y": [p[1] for p in pairs], "rows": len(pairs), "partial": [], "uneven": False}
     tcol = table.column(time)
     if tcol.kind not in ("datetime", "numeric"):
         raise DataError("time には日付列または数値列を指定してください")
-    buckets, rows = {}, 0
+    rollup = tcol.kind == "datetime" and period in ("month", "year")
+    buckets, days, rows = {}, {}, 0
     for t, v in zip(tcol.values, vcol.values):
         if t is None or v is None:
             continue
-        if tcol.kind == "datetime" and period in ("month", "year"):
-            t = datetime.date(t.year, t.month if period == "month" else 1, 1)
-        buckets.setdefault(t, []).append(v)
+        key = datetime.date(t.year, t.month if period == "month" else 1, 1) if rollup else t
+        buckets.setdefault(key, []).append(v)
+        if rollup:
+            days.setdefault(key, set()).add(t)
         rows += 1
     keys = sorted(buckets)
+    partial = _partial_edges(keys, days, period) if rollup and len(keys) >= 2 else []
+    keys = [k for k in keys if k not in partial]
+    rows -= sum(len(buckets[k]) for k in partial)
+    counts = [len(buckets[k]) for k in keys]
     y = [_out(_fsum(buckets[k]) / (len(buckets[k]) if agg == "mean" else 1)) for k in keys]
     x = [float((k - keys[0]).days) for k in keys] if tcol.kind == "datetime" else list(keys)
-    return {"kind": tcol.kind, "keys": keys, "x": x, "y": y, "rows": rows}
+    return {"kind": tcol.kind, "keys": keys, "x": x, "y": y, "rows": rows, "partial": partial,
+            "uneven": rollup and agg == "sum" and bool(counts) and max(counts) > 1.2 * min(counts)}
 
 
 def _time_name(table, args):
@@ -1152,10 +1227,13 @@ def trend(table, args):
     keys, x, y, kind = s["keys"], s["x"], s["y"], s["kind"]
     n = len(y)
     out = {"value": table.column(args["value"]).name, "time": _time_name(table, args),
-           "time_kind": kind, "agg": agg, "period": period, "n": n, "rows_used": s["rows"]}
+           "time_kind": kind, "agg": agg, "period": period, "n": n, "rows_used": s["rows"],
+           "partial_periods": [_period(k, kind, period) for k in s["partial"]],
+           "uneven_periods": s["uneven"]}
     if n < 2:
-        return {**out, "direction": "unknown", "direction_ja": DIRECTION_LABELS["unknown"],
-                "reason": "推移を見るには2時点以上が必要です"}
+        reason = ("期間全体をカバーする" + ("月" if period == "month" else "年") + "が2つ未満のため推移を判定できません"
+                  if s["partial"] else "推移を見るには2時点以上が必要です")
+        return {**out, "direction": "unknown", "direction_ja": DIRECTION_LABELS["unknown"], "reason": reason}
 
     def label(i):
         return _period(keys[i], kind, period)
@@ -1166,10 +1244,15 @@ def trend(table, args):
                  else "increasing" if slope > 0 else "decreasing" if slope < 0 else "flat")
     step = median([b - a for a, b in zip(x, x[1:])])
     span = x[-1] - x[0]
-    cagr = None
-    if kind == "datetime" and span >= 365 and y[0] and y[-1] and y[0] > 0 and y[-1] > 0:
+    cagr, years = None, None
+    if kind == "datetime" and span >= 365:
+        years = span / 365.25
+    elif kind == "numeric" and span >= 1 and table.column(args["time"]).is_year:
+        years = span
+    # endpoints only mean something if every period is > 0; a growth rate of a rate (%) is not reported
+    if years and table.column(args["value"]).unit != "%" and all(v is not None and v > 0 for v in y):
         try:
-            cagr = _out((y[-1] / y[0]) ** (365.25 / span) - 1.0)
+            cagr = _out((y[-1] / y[0]) ** (1.0 / years) - 1.0)
         except OverflowError:
             pass
     peak = max(range(n), key=lambda i: (y[i], -i))
@@ -1206,6 +1289,9 @@ def outliers(table, args):
     if method == "iqr":
         xs = sorted(values)
         q1, q3 = _quantile_sorted(xs, 0.25), _quantile_sorted(xs, 0.75)
+        if q3 == q1:       # 0/1 flags, zero-inflated amounts: "normal range 0 to 0" would flag every 1
+            return {**out, "q1": q1, "q3": q3, "iqr": 0.0,
+                    "reason": "四分位範囲が0のためIQR法では外れ値を判定できません"}
         lower, upper = q1 - k * (q3 - q1), q3 + k * (q3 - q1)
         out.update(q1=q1, q3=q3, iqr=q3 - q1)
     else:
@@ -1213,6 +1299,10 @@ def outliers(table, args):
         if not sd:
             return {**out, "mean": m, "std": sd, "count": 0, "share": 0.0, "high": 0, "low": 0,
                     "reason": _FLAT}
+        n = len(values)
+        if (n - 1) / math.sqrt(n) <= k:     # with the sample SD, |z| can never exceed (n-1)/sqrt(n)
+            return {**out, "mean": m, "std": sd,
+                    "reason": f"データ数（n={n}）が少ないため、|z|>{k:g} の外れ値は原理的に検出できません（IQR法を使ってください）"}
         lower, upper = m - k * sd, m + k * sd
         out.update(mean=m, std=sd)
     flagged = [(row, v) for row, v in rows if v < lower or v > upper]
@@ -1234,10 +1324,13 @@ def _find_group(groups, label):
     for key in groups:
         if _label(key) == label:
             return key
+    parsed = {}            # parse the label once, not once per group key
     for key in groups:
-        parsed = (parse_bool(label) if isinstance(key, bool) else parse_number(label)
-                  if isinstance(key, float) else parse_date(label) if isinstance(key, datetime.date) else None)
-        if parsed is not None and parsed == key:
+        kind = bool if isinstance(key, bool) else float if isinstance(key, float) else \
+            datetime.date if isinstance(key, datetime.date) else None
+        if kind is not None and kind not in parsed:
+            parsed[kind] = {bool: parse_bool, float: parse_number, datetime.date: parse_date}[kind](label)
+        if kind is not None and parsed[kind] is not None and parsed[kind] == key:
             return key
     matches = [key for key in groups if name_key(_label(key)) == name_key(label)]
     if len(matches) == 1:
@@ -1263,7 +1356,8 @@ def compare(table, args):
         a = rest.pop(0)
     if b is None and rest:
         b = rest.pop(0)
-    out = {"value": vcol.name, "by": bcol.name, "n_groups": len(groups)}
+    out = {"value": vcol.name, "by": bcol.name, "n_groups": len(groups),
+           "defaulted": args.get("a") is None and args.get("b") is None}
     if a is None or b is None:
         return {**out, "a": None, "b": None, "diff": None, "pct_diff": None, "t": None, "df": None,
                 "p_value": None, "cohen_d": None, "effect": None, "significant": None,
@@ -1295,7 +1389,10 @@ def _levels(labels):
     if len(ordered) <= limit:
         return ordered, {k: k for k in ordered}, 0
     kept = ordered[:limit - 1]
-    other = OTHER if OTHER not in kept else OTHER + "(集約)"
+    other, i = OTHER, 1
+    while other in kept:           # the fold label must never collide with a real level
+        other = f"{OTHER}(集約)" if i == 1 else f"{OTHER}(集約{i})"
+        i += 1
     mapping = {k: k for k in kept}
     mapping.update({k: other for k in ordered[limit - 1:]})
     return kept + [other], mapping, len(ordered) - len(kept)
@@ -1347,7 +1444,7 @@ def top_n(table, args):
     if col.kind == "numeric":
         values = [v for _, v in rows]
         total = _fsum(values)
-        if values and total > 0 and min(values) >= 0:
+        if values and total > 0 and min(values) >= 0 and col.unit != "%":
             out["top_share"] = _fsum(v for _, v in ranked) / total
         if col.unit:
             out["unit"] = col.unit
@@ -1356,19 +1453,27 @@ def top_n(table, args):
     return out
 
 
-def _add_months(day, months):
-    index = day.year * 12 + day.month - 1 + months
-    return datetime.date(index // 12, index % 12 + 1, 1)
+def _add_months(day, months, dom=1):
+    """Calendar-month step; dom is the day of month (clamped to the month length) or "end"."""
+    y, m = divmod(day.year * 12 + day.month - 1 + months, 12)
+    last = calendar.monthrange(y, m + 1)[1]
+    return datetime.date(y, m + 1, last if dom == "end" else min(dom, last))
+
+
+def _month_end(day):
+    return day.day == calendar.monthrange(day.year, day.month)[1]
 
 
 def _future(s, periods, period):
     keys, x, kind = s["keys"], s["x"], s["kind"]
     if kind == "datetime":
-        if all(k.day == 1 for k in keys):
+        first = all(k.day == 1 for k in keys)
+        if first or median([b - a for a, b in zip(x, x[1:])]) >= 28:   # monthly or coarser: calendar steps
             gaps = Counter((b.year - a.year) * 12 + b.month - a.month for a, b in zip(keys, keys[1:]))
             top = max(gaps.values())
-            step = min(g for g, c in gaps.items() if c == top)
-            dates = [_add_months(keys[-1], step * i) for i in range(1, periods + 1)]
+            step = max(1, min(g for g, c in gaps.items() if c == top))
+            dom = 1 if first else "end" if all(_month_end(k) for k in keys) else keys[-1].day
+            dates = [_add_months(keys[-1], step * i, dom) for i in range(1, periods + 1)]
         else:
             step = max(1, round(median([b - a for a, b in zip(x, x[1:])])))
             dates = [keys[-1] + datetime.timedelta(days=step * i) for i in range(1, periods + 1)]
@@ -1381,13 +1486,15 @@ def _future(s, periods, period):
 def forecast(table, args):
     """線形トレンドによる将来値と95%予測区間。"""
     periods, period = args.get("periods") or 3, args.get("period") or "raw"
-    s = _series(table, args["value"], args.get("time"), "sum", period)
+    agg = args.get("agg") or ("mean" if table.column(args["value"]).unit == "%" else "sum")
+    s = _series(table, args["value"], args.get("time"), agg, period)
     x, y = s["x"], s["y"]
     n = len(y)
     out = {"method": "linear_trend", "value": table.column(args["value"]).name,
-           "time": _time_name(table, args), "time_kind": s["kind"], "period": period, "n": n,
+           "time": _time_name(table, args), "time_kind": s["kind"], "agg": agg, "period": period, "n": n,
            "periods": periods, "level": 0.95, "points": [], "r2": None, "slope": None,
-           "p_value": None, "caveat": FORECAST_CAVEAT}
+           "p_value": None, "caveat": FORECAST_CAVEAT,
+           "partial_periods": [_period(k, s["kind"], period) for k in s["partial"]]}
     if n < 4:
         return {**out, "reason": "予測には4時点以上が必要です"}
     reg = linregress(x, y)
@@ -1443,7 +1550,7 @@ TOOL_SPECS = {
     "trend": {"description": "時系列の推移・傾き・変化率・年平均成長率", "label": "推移を分析中", "args": {
         "value": {"type": "column", "required": True, "kinds": ["numeric"]},
         "time": {"type": "column", "required": False, "kinds": ["datetime", "numeric"]},
-        "agg": {"type": "enum", "required": False, "enum": ["sum", "mean"], "default": "sum"},
+        "agg": {"type": "enum", "required": False, "enum": ["sum", "mean"]},
         "period": _PERIOD}},
     "outliers": {"description": "IQR法またはzスコア法で外れ値を検出", "label": "外れ値を検出中", "args": {
         "column": {"type": "column", "required": True, "kinds": ["numeric"]},
@@ -1467,6 +1574,7 @@ TOOL_SPECS = {
         "time": {"type": "column", "required": False, "kinds": ["datetime", "numeric"]},
         "periods": {"type": "int", "required": False, "min": 1,
                     "max": LIMITS["max_forecast_periods"], "default": 3},
+        "agg": {"type": "enum", "required": False, "enum": ["sum", "mean"]},
         "period": _PERIOD}},
     "calculator": {"description": "数値と + - * / % による計算", "label": "計算中", "args": {
         "expression": {"type": "string", "required": True, "max_length": 200}}},
@@ -1487,7 +1595,7 @@ def _check_arg(table, key, rule, value):
     if kind == "string":
         if not isinstance(value, str) or not 0 < len(value.strip()) <= rule.get("max_length", 500):
             raise DataError(f"引数 {key} は1〜{rule.get('max_length', 500)}文字の文字列で指定してください")
-        return value.strip()
+        return scrub(value.strip())
     if kind == "enum":
         normal = value.strip().casefold() if isinstance(value, str) else None
         if normal not in rule["enum"]:
@@ -1495,13 +1603,11 @@ def _check_arg(table, key, rule, value):
         return normal
     if kind == "int" and type(value) is not int:
         raise DataError(f"引数 {key} は整数で指定してください")
-    if kind == "number":
-        if type(value) not in (int, float) or not math.isfinite(value):
-            raise DataError(f"引数 {key} は数値で指定してください")
-        value = float(value)
-    if not rule["min"] <= value <= rule["max"]:
+    if kind == "number" and (type(value) not in (int, float) or value != value):
+        raise DataError(f"引数 {key} は数値で指定してください")
+    if not rule["min"] <= value <= rule["max"]:      # exact int/float comparison: a 400-digit int never overflows
         raise DataError(f"引数 {key} は {rule['min']}〜{rule['max']} の範囲で指定してください")
-    return value
+    return float(value) if kind == "number" else value
 
 
 def _distinct(args, a, b):
@@ -1535,12 +1641,14 @@ def validate_args(table, tool, args):
         _distinct(result, "x", "y")
     elif tool == "group_by":
         _distinct(result, "by", "value")
-        if "agg" not in result:
-            result["agg"] = "sum" if result.get("value") else "count"
+        if "agg" not in result:      # rates are averaged, never summed, unless asked
+            value = result.get("value")
+            result["agg"] = "count" if not value else "mean" if table.column(value).unit == "%" else "sum"
         elif result["agg"] != "count" and not result.get("value"):
             raise DataError("count 以外の集計には value（数値列）が必要です")
     elif tool in ("trend", "forecast"):
         _distinct(result, "value", "time")
+        result.setdefault("agg", "mean" if table.column(result["value"]).unit == "%" else "sum")
         if result["period"] != "raw" and (not result.get("time")
                                           or table.column(result["time"]).kind != "datetime"):
             raise DataError("period（month / year）は日付列の time と組み合わせて指定してください")

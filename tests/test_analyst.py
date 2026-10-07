@@ -330,7 +330,7 @@ def test_fabricated_number_in_model_narrative_falls_back_to_template():
     result = run_analyst(request("売上の推移"), Mock(side_effect=[COMPLETE, text]))
     report = result["analyst"]
     assert report["narrative_source"] == "template"
-    assert report["unverified_numbers"] == ["123.45%"]      # "2" is grounded (e.g. R², n=24)
+    assert report["unverified_numbers"] == ["123.45%", "2倍"]   # results never contain a 倍 multiplier
     assert result["generated_text"] != text and result["generated_text"].startswith("96行×5列")
     assert any("確認できない数値" in w for w in report["warnings"])
 
@@ -681,3 +681,322 @@ def test_cli_prints_report_and_json(tmp_path, capsys):
     assert "Key findings:" in capsys.readouterr().out
     assert A.main([str(tmp_path / "missing.csv"), "q"]) == 2
     assert A.main([str(path), "q", "--max-steps", "9"]) == 2
+
+
+# ---------------------------------------------------------------- review regressions
+
+def plan_of(question, data):
+    return [(p["tool"], p["arguments"]) for p in rule_plan(question, T.load_table(data))]
+
+
+def tools_of(question, data):
+    return [tool for tool, _ in plan_of(question, data)]
+
+
+def text_of(question, data, language="ja", **params):
+    return run_analyst(request(question, data, use_model=False, language=language, **params))
+
+
+def test_daily_series_ending_mid_month_is_not_reported_as_a_decline():
+    start = __import__("datetime").date(2024, 1, 20)
+    data = "日付,売上\n" + "\n".join(f"{start + __import__('datetime').timedelta(days=i)},{100 + 0.2 * i:.1f}"
+                                    for i in range(199))
+    result = text_of("売上の推移は？", data)
+    trend = next(f for f in result["analyst"]["findings"] if f["kind"] == "trend")
+    assert trend["evidence"]["direction"] == "increasing" and trend["evidence"]["pct_change"] > 0
+    assert "データが期間の一部しかない 2024-01、2024-08 は月次・年次の集計から除外しました。" in result["analyst"]["caveats"]
+    months = "月,売上\n" + "\n".join(f"{2024 + m // 12}-{m % 12 + 1:02d},{100 + m}" for m in range(15))
+    text = text_of("売上の年ごとの推移は？", months)["generated_text"]
+    assert "-73" not in text and "期間全体をカバーする年が2つ未満" in text
+
+
+def test_large_integers_are_reported_exactly():
+    text = text_of("売上の上位3件は？", "商品,売上\nA,12345678\nB,9876543\nC,1234567\nD,7654321\n")["generated_text"]
+    assert "12,345,678" in text and "12,345,700" not in text
+    data = "店舗,売上\n東京,12345678\n大阪,9876543\n名古屋,7654321\n東京,1111111\n大阪,2222222\n名古屋,3333333"
+    assert "13,456,789" in text_of("店舗別の売上合計は？", data)["generated_text"]
+
+
+def test_zscore_on_a_small_sample_never_claims_no_outliers():
+    data = {"店": [f"S{i}" for i in range(9)], "売上": [100, 102, 98, 101, 99, 103, 97, 100, 5000]}
+    result = text_of("売上の外れ値をzスコアで調べて", data)
+    assert "外れ値は見つかりませんでした" not in result["generated_text"]
+    assert "zスコア法（|z|>3）では外れ値を判定できません" in result["generated_text"]
+    assert "9行目の5,000" in result["generated_text"]      # the IQR step added for n <= 10 finds it
+
+
+def test_rates_are_averaged_and_percentage_differences_are_points():
+    result = text_of("地域別の利益率は？", "地域,利益率\n東,10%\n東,12%\n東,11%\n東,9%\n西,20%\n西,22%\n")
+    group = next(s for s in result["analyst"]["steps"] if s["tool"] == "group_by")
+    assert group["arguments"]["agg"] == "mean" and "構成比" not in result["generated_text"]
+    assert "「西」が最大（21%、n=2）" in result["generated_text"]
+    ab = "日付,パターン,CVR\n" + "\n".join(f"2024-06-{d:02d},{g},{c}%" for d in range(1, 9)
+                                          for g, c in (("A", 3.0 + d % 3 * 0.1), ("B", 3.6 + d % 2 * 0.1)))
+    statement = next(f for f in text_of("AとBのCVRを比較して", ab)["analyst"]["findings"] if f["kind"] == "comparison")
+    assert "ポイント（相対" in statement["statement"]
+    en = next(f for f in text_of("Compare CVR between A and B", ab, "en")["analyst"]["findings"]
+              if f["kind"] == "comparison")
+    assert "percentage points (relative" in en["statement"]
+
+
+@pytest.mark.parametrize("dates,period", [
+    (["2019-04-01", "2020-04-01", "2021-04-01", "2022-04-01", "2023-04-01"], "year"),   # fiscal years
+    (["2024-01-01", "2024-04-01", "2024-07-01", "2024-10-01", "2025-01-01"], "raw"),    # quarters
+    (["2024-01-01", "2024-02-01", "2024-03-01", "2024-04-01", "2024-05-01"], "month"),
+    ([f"2023-01-02+{7 * i}" for i in range(80)], "raw"),                                 # weekly
+])
+def test_period_follows_the_data_granularity(dates, period):
+    import datetime
+    if "+" in dates[0]:
+        dates = [(datetime.date(2023, 1, 2) + datetime.timedelta(days=int(d.split("+")[1]))).isoformat() for d in dates]
+    table = T.load_table({"日付": dates, "売上": list(range(100, 100 + len(dates)))})
+    assert A._period("売上の推移は？", table, "日付") == period
+    if period == "year":
+        assert "（年次の合計）は2019の1,000" in text_of("売上の推移は？", {"日付": dates, "売上": [1000, 1100, 1250, 1300, 1480]})[
+            "generated_text"]
+
+
+def survey_csv():
+    lines = ["回答月,満足度"]
+    for m in range(12):          # more answers every month while the average satisfaction falls
+        for k in range(10 + 3 * m):
+            lines.append(f"2024-{m + 1:02d}-01,{(4.5 - 0.08 * m) + (0.5 if k % 2 else -0.5)}")
+    return "\n".join(lines)
+
+
+def test_average_questions_and_non_additive_measures_are_not_summed():
+    trend = next(s for s in text_of("月別の平均満足度の推移は？", survey_csv())["analyst"]["steps"] if s["tool"] == "trend")
+    assert trend["arguments"]["agg"] == "mean" and trend["output"]["direction"] == "decreasing"
+    forecast = dict(plan_of("満足度の今後の予測は？", survey_csv()))["forecast"]
+    assert forecast["agg"] == "mean"
+    hr = {"部署": ["営業"] * 6 + ["人事"] * 2, "満足度": [3, 2, 3, 3, 2, 3, 5, 4]}
+    assert dict(plan_of("満足度が一番高い部署は？", hr))["group_by"] == {"by": "部署", "value": "満足度", "agg": "mean"}
+    assert dict(plan_of("部署別の満足度の合計は？", hr))["group_by"]["agg"] == "sum"
+    assert dict(plan_of("このデータを分析して", hr))["group_by"]["agg"] == "mean"
+
+
+def test_top_n_by_metric_ranks_entities_and_by_numeric_is_not_a_key():
+    orders = {"product": ["Phone", "Laptop", "Phone", "Tablet", "Laptop", "Phone"],
+              "units": [1, 2, 3, 1, 1, 2], "revenue": [800, 2400, 2400, 500, 1200, 1600]}
+    assert A._mentions("top 3 products by revenue", T.load_table(orders))[1:] == (["product", "revenue"], [])
+    assert dict(plan_of("What are the top 3 products by revenue?", orders))["group_by"] == {
+        "by": "product", "value": "revenue", "agg": "sum"}
+    stores = {"店舗": ["新宿", "渋谷", "新宿", "池袋", "渋谷", "新宿"], "売上": [5, 9, 7, 3, 2, 8]}
+    result = text_of("売上トップ3の店舗は？", stores)
+    assert "「新宿」が最大（20" in result["generated_text"] and "次いで「渋谷」（11" in result["generated_text"]
+    unique = {"商品": ["A", "B", "C", "D"], "売上": [5, 9, 7, 3]}
+    assert dict(plan_of("売上トップ3の商品は？", unique))["top_n"]["label"] == "商品"
+
+
+def test_unit_suffixed_headers_match_and_defaulted_measures_are_disclosed():
+    data = "決算日,売上高(百万円),営業利益（百万円）\n" + "\n".join(
+        f"2024-{m:02d}-01,{1000 + 10 * m},{50 - 3 * m}" for m in range(1, 9))
+    assert dict(plan_of("営業利益の推移は？", data))["trend"]["value"] == "営業利益（百万円）"
+    clash = {"売上(円)": [1, 2, 3], "売上(個)": [4, 5, 6]}
+    assert A._mentions("売上の推移", T.load_table(clash))[1] == []           # ambiguous: no guess
+    caveats = text_of("一番売れたのはどれ？", {"商品": ["A", "B", "C"], "売上": [5, 9, 7]})["analyst"]["caveats"]
+    assert "質問から対象の数値列を特定できなかったため「売上」を分析しました。" in caveats
+
+
+def messy_csv():
+    sales = ["1,200", "N/A", "1,340", "#REF!", "1,005", "1,1OO", "1,250", "1,390", "1,410", "1,060", "1,180",
+             "1,420", "1,330", "1,080", "1,290"]
+    return "日付,支店,売上,気温\n" + "\n".join(
+        f"2024-01-{i + 1:02d},{['東京', '大阪', '名古屋'][i % 3]},\"{s}\",{25 + i}" for i, s in enumerate(sales))
+
+
+def test_a_named_column_with_bad_cells_is_never_replaced_by_another_measure():
+    result = text_of("支店別の売上は？", messy_csv())
+    steps = result["analyst"]["steps"]
+    assert not any(s["arguments"].get("value") == "気温" or s["arguments"].get("column") == "気温" for s in steps)
+    assert "「売上」は数値として解釈できないセルが2件あるため、数値列として扱えませんでした（例: #REF!）。" in \
+        result["analyst"]["caveats"]
+    assert tools_of("気温と売上の関係は？", messy_csv()) == ["profile"]
+
+
+def test_relationship_between_categories_is_a_crosstab():
+    data = {"部署": ["営業", "開発", "人事"] * 8, "性別": ["男", "女"] * 12, "満足度": list(range(24)),
+            "残業": [(i * 7) % 11 for i in range(24)]}
+    assert plan_of("部署と性別の関係は？", data)[1] == ("crosstab", {"row": "部署", "col": "性別"})
+    assert tools_of("部署と満足度の関係は？", data) == ["profile", "group_by", "compare"]
+    assert dict(plan_of("満足度と残業の関係は？", data))["correlate"]["x"] == "満足度"
+
+
+def test_small_groups_show_n_lower_confidence_and_get_a_caveat():
+    data = {"部署": ["営業"] * 10 + ["経理"], "満足度": [3, 2, 3, 3, 2, 3, 2, 3, 3, 2, 5]}
+    result = text_of("部署別の平均満足度は？", data)
+    breakdown = next(f for f in result["analyst"]["findings"] if f["kind"] == "breakdown")
+    assert "「経理」が最大（5、n=1）" in breakdown["statement"] and breakdown["confidence"]["label"] == "low"
+    assert any("「経理」などデータ数の少ないグループ" in c for c in result["analyst"]["caveats"])
+
+
+def test_null_results_gain_confidence_with_n_and_answers_lead():
+    small, large = A._p_conf(0.8, 8, True, null=True), A._p_conf(0.8, 2000, True, null=True)
+    assert small["label"] == "low" and large["label"] == "medium" and large["score"] > small["score"]
+    assert A._p_conf(0.0001, 12, True)["label"] == "medium"         # was low at any p for n<18
+    assert A._p_conf(0.0001, 24, True)["label"] == "medium" and A._p_conf(0.0001, 30, True)["label"] == "high"
+    report = text_of("このデータを分析して", None)["analyst"]
+    kinds = [f["kind"] for f in A._ranked(report["findings"])]
+    assert kinds.index("correlation") < kinds.index("outlier")       # plan order, not confidence order
+
+
+def test_non_significant_correlation_is_not_stated_as_existing():
+    data = {"広告費": [10, 12, 9, 15, 11, 14, 8, 13], "売上": [100, 98, 104, 110, 97, 101, 99, 108]}
+    result = text_of("広告費と売上の関係は？", data)
+    corr = next(f for f in result["analyst"]["findings"] if f["kind"] == "correlation")
+    assert corr["evidence"]["p_value"] >= 0.05 and "統計的に有意ではありません" in corr["statement"]
+    assert "相関があります" not in corr["statement"]
+
+
+def test_comparing_many_groups_shows_all_and_says_which_two_were_tested():
+    data = {"地域": ["九州", "北海道", "関東", "関西"] * 6, "売上": [i * 10 + (i % 4) * 100 for i in range(24)]}
+    result = text_of("地域間で売上を比較して", data)
+    assert tools_of("地域間で売上を比較して", data) == ["profile", "group_by", "compare"]
+    assert "4グループのうち件数の多い2グループを比較しています。" in result["generated_text"]
+    assert "関東" in result["generated_text"] and "関西" in result["generated_text"]
+
+
+def test_binary_outcomes_are_rates_not_outliers():
+    data = {"variant": ["A", "B"] * 50, "converted": [1 if i % 11 == 0 else 0 for i in range(50)] +
+            [1 if i % 5 == 0 else 0 for i in range(50)], "revenue": [100 + i for i in range(100)]}
+    assert dict(plan_of("このデータを分析して", data))["outliers"]["column"] == "revenue"
+    comparison = next(f for f in text_of("AとBでconvertedに差はある？", data)["analyst"]["findings"]
+                      if f["kind"] == "comparison")
+    assert "convertedの割合（" in comparison["statement"] and "ポイント（相対" in comparison["statement"]
+    assert "効果量" not in comparison["statement"]
+
+
+def test_forecast_horizon_follows_the_question():
+    monthly = {"月": [f"2024-{m:02d}" for m in range(1, 13)], "売上": list(range(100, 112))}
+    assert dict(plan_of("来月の売上を予測して", monthly))["forecast"]["periods"] == 1
+    assert dict(plan_of("来年の売上を予測して", monthly))["forecast"]["periods"] == 12
+    import datetime
+    days = [(datetime.date(2024, 1, 1) + datetime.timedelta(days=i)).isoformat() for i in range(200)]
+    forecast = dict(plan_of("売上の今後4週間の予測は？", {"日付": days, "売上": list(range(200))}))["forecast"]
+    assert forecast["periods"] == 4 and forecast["period"] == "raw"
+
+
+@pytest.mark.parametrize("dates,label", [
+    ([f"2024-{m:02d}" for m in range(1, 7)], "前月比"),
+    (["2024-01-01", "2024-01-08", "2024-01-15", "2024-01-22", "2024-01-29"], "前週比"),
+    (["2024-03-31", "2024-06-30", "2024-09-30", "2024-12-31"], "前四半期比"),
+])
+def test_recent_change_names_the_actual_period(dates, label):
+    text = text_of("売上の推移は？", {"日付": dates, "売上": list(range(100, 100 + len(dates)))})["generated_text"]
+    assert f"の売上は{label}" in text and "前期比" not in text
+    years = {"年": [2020, 2021, 2022, 2023], "売上": [10, 12, 15, 16]}
+    assert "前年比" in text_of("売上の推移は？", years)["generated_text"]
+
+
+def test_per_group_trend_question_says_the_trend_is_overall():
+    caveats = text_of("地域別の売上の推移は？", None)["analyst"]["caveats"]
+    assert "推移は地域をまとめた全体について計算しています。地域ごとの推移は計算していません。" in caveats
+
+
+def test_time_keywords_survive_a_column_named_month_or_year():
+    docs = "月,地域,売上,広告費\n" + "\n".join(f"2025-{m:02d},{r},{1000 + 50 * m + 300 * i},{150 + 9 * m}"
+                                             for m in range(1, 9) for i, r in enumerate(("東日本", "西日本")))
+    assert tools_of("毎月の売上は？", docs) == ["profile", "trend"]
+    assert dict(plan_of("毎月の売上は？", docs))["trend"]["period"] == "month"
+    assert dict(plan_of("来月の売上は？", docs))["forecast"]["time"] == "月"
+    yearly = {"年": list(range(2010, 2024)), "売上高": [1000 + 80 * i for i in range(14)]}
+    assert "trend" in tools_of("毎年の売上高は？", yearly) and "forecast" in tools_of("来年の売上高は？", yearly)
+    assert dict(plan_of("地域別の売上", docs))["group_by"]["by"] == "地域"
+
+
+def test_crafted_questions_stay_fast():
+    import time as clock
+    table = T.load_table("ﷺ,v\n" + "\n".join(f"2024-01-{d:02d},{d}" for d in range(1, 11)))
+    start = clock.perf_counter()
+    rule_plan("ﷺ" * 2000, table)
+    years = T.load_table({"年": [2000 + i % 20 for i in range(20000)], "v": list(range(20000))})
+    rule_plan("年" * 2000, years)
+    assert clock.perf_counter() - start < 3
+
+
+def test_request_and_caller_plan_numbers_never_overflow():
+    with pytest.raises(ValueError, match="max_seconds"):
+        validate_request(json.loads('{"inputs":"概要","parameters":{"data":"a,b\\n1,2","max_seconds":' + "1" * 400 + "}}"))
+    plan = [{"tool": "outliers", "arguments": {"column": "売上", "threshold": int("1" * 400)}}]
+    report = run_analyst(request("売上の外れ値", use_model=False, plan=plan))["analyst"]
+    assert report["status"] == "completed" and report["steps"][0]["status"] == "failed"
+    assert any(s["tool"] == "outliers" and s["status"] == "completed" for s in report["steps"])
+    model = Mock(side_effect=[action("outliers", column="売上", threshold=int("1" * 400)), "oops", "まとめです。"])
+    assert run_analyst(request("売上の推移"), model)["analyst"]["planner_stop"] == "invalid_decision"
+
+
+def test_lone_surrogates_never_reach_the_output():
+    result = run_analyst(request("概要\ud800", [{"region": "\ud800east", "sales": 1}, {"region": "west", "sales": 2}],
+                                 use_model=False))
+    json.dumps(result, ensure_ascii=False).encode("utf-8")
+    assert result["analyst"]["question"] == "概要?"
+
+
+def test_cli_rejects_deep_json_and_unbounded_streams(tmp_path, capsys, monkeypatch):
+    import os
+    import threading
+    deep = tmp_path / "deep.json"
+    deep.write_text("[" * 100000 + "]" * 100000, encoding="utf-8")
+    assert A.main([str(deep), "概要"]) == 2 and "JSONを解析できません" in capsys.readouterr().err
+    monkeypatch.setitem(T.LIMITS, "max_chars", 1000)          # 4,000 bytes
+    fifo = tmp_path / "pipe.csv"
+    os.mkfifo(fifo)
+
+    def writer():
+        try:
+            with open(fifo, "wb") as handle:
+                handle.write(b"a,b\n" + b"1,2\n" * 5000)
+        except OSError:
+            pass
+    threading.Thread(target=writer, daemon=True).start()
+    assert A.main([str(fifo), "概要"]) == 2 and "大きすぎます" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- numeric guard regressions
+
+def test_guard_survives_runs_of_zeros_in_text_and_cells():
+    assert verify_numbers("売上は12" + "0" * 400 + "です。", [1.0]) == ["12" + "0" * 38]
+    result = run_analyst(request("売上の推移"), Mock(side_effect=[COMPLETE, "売上は12" + "0" * 400 + "です。"]))
+    report = result["analyst"]
+    assert report["status"] == "completed" and report["narrative_source"] == "template" and report["findings"]
+    labels = {"品目": ["code12" + "0" * 400, "みかん"] * 3, "売上": [1, 2, 3, 4, 5, 6]}
+    report = run_analyst(request("品目別の売上", labels), Mock(side_effect=[COMPLETE, "売上はみかんが最大です。"]))["analyst"]
+    assert report["status"] == "completed" and report["narrative_source"] == "model"
+
+
+def test_guard_only_accepts_numbers_the_model_was_shown():
+    question = "広告費と売上の関係は？過去18か月"
+    report = run_analyst(request(question), Mock(side_effect=[
+        COMPLETE, "広告費と売上には強い相関があります（r=0.9、決定係数0.95）。95%の確率で売上が伸びます。"]))["analyst"]
+    assert report["narrative_source"] == "template" and {"0.9", "0.95", "95%"} <= set(report["unverified_numbers"])
+    report = run_analyst(request("売上の推移を教えて"), Mock(side_effect=[COMPLETE, "2050年には1984年以来の水準です。"]))[
+        "analyst"]
+    assert report["unverified_numbers"] == ["2050", "1984"]
+    report = run_analyst(request("売上の推移を過去24か月で教えて"), Mock(side_effect=[
+        COMPLETE, "過去24か月で売上は+87.23%変化しました。"]))["analyst"]
+    assert report["narrative_source"] == "model"
+
+
+@pytest.mark.parametrize("text,sources,expected", [
+    ("構成比は0.26%", [26.29], ["0.26%"]),                      # 100x under-statement
+    ("0.2629%", [0.262925], ["0.2629%"]),
+    ("69.78%増加", [6980], ["69.78%"]),
+    ("24%が欠損", ["n=24"], ["24%"]),
+    ("構成比は26.29%", ["構成比26.29%"], []),
+    ("87.23%減少、−87.23%、▲87.23%", ["+87.23%変化"], ["87.23%", "−87.23%", "▲87.23%"]),
+    ("87.23%増加、+87.23%の伸び、87.23%の増加、87.23%", ["+87.23%変化"], []),
+    ("45.5%減少、−45.5%、45.5%の減少", ["へ-45.5%変化しました"], []),
+    ("45.5%増加", ["へ-45.5%変化しました"], ["45.5%"]),
+    ("2024-12の売上", ["2024-12"], []),
+    ("87.23倍、2倍、3 times", ["+87.23%", 2, 3], ["87.23倍", "2倍", "3 times"]),
+    ("約9割", ["構成比90.2%"], []),
+    ("約5割", ["構成比90.2%"], ["5割"]),
+])
+def test_verify_numbers_types_signs_and_multipliers(text, sources, expected):
+    assert verify_numbers(text, sources) == expected
+
+
+def test_failed_reports_have_null_dataset_and_empty_lists():
+    report = run_analyst(request("概要", "a,b\n", use_model=False))["analyst"]
+    assert report["status"] == "failed" and report["dataset"] is None
+    assert report["findings"] == report["caveats"] == report["next_questions"] == []

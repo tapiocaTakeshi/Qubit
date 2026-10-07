@@ -6,11 +6,13 @@ computed results is discarded in favour of the deterministic template.
 """
 import bisect
 import copy
+import datetime
 import json
 import math
 import re
 import sys
 import time
+import types
 import unicodedata
 from collections import Counter
 
@@ -22,8 +24,13 @@ LANGUAGES = ("ja", "en")
 MAX_QUESTION = 2000
 MAX_PLAN = 8
 MAX_MODEL_STEPS = 6
-PLANNER_LIMIT = 1500
-NARRATIVE_LIMIT = 1800
+# Prompt caps in characters. The repo tokenizer spends ~0.6-0.68 tokens/char on these prompts and the
+# model has max_seq_len=1024, so planner prompts must leave room for PLANNER_NEW_TOKENS and narration
+# prompts for NARRATIVE_NEW_TOKENS (handler.py reserves generation_tokens(prompt) per call).
+PLANNER_LIMIT = 1300
+NARRATIVE_LIMIT = 1000
+PLANNER_NEW_TOKENS = 96          # plan decisions are short JSON (curriculum targets <= ~71 tokens)
+NARRATIVE_NEW_TOKENS = 320
 MAX_NARRATIVE = 3000
 MAX_FINDINGS_IN_TEMPLATE = 6
 _CURRENCY = ("¥", "$", "€", "£")
@@ -76,7 +83,8 @@ def validate_request(data):
     if type(steps) is not int or not 0 <= steps <= MAX_MODEL_STEPS:
         raise ValueError(f"max_steps must be an integer from 0 to {MAX_MODEL_STEPS}")
     seconds = params.get("max_seconds", 120)
-    if type(seconds) not in (int, float) or not math.isfinite(seconds) or not 1 <= seconds <= 240:
+    # Range first: math.isfinite(10**400) raises OverflowError; NaN/inf fail the comparison anyway.
+    if type(seconds) not in (int, float) or not 1 <= seconds <= 240:
         raise ValueError("max_seconds must be between 1 and 240")
     language = params.get("language", "ja")
     if not isinstance(language, str) or language not in LANGUAGES:
@@ -98,7 +106,7 @@ def validate_request(data):
         if not isinstance(arguments, dict):
             raise ValueError("plan step arguments must be an object")
         steps_in.append({"tool": item["tool"], "arguments": arguments})
-    return question.strip(), table_input, {
+    return T.scrub(question.strip()), table_input, {
         "use_model": use_model, "max_steps": steps, "max_seconds": seconds, "language": language,
         "table_name": name.strip() or "data", "plan": steps_in}
 
@@ -144,25 +152,56 @@ def _variants(text):
     return {v for v in (key, re.sub(r"\s+", "", key), key.replace("_", " ")) if v}
 
 
+def _plurals(word):
+    """English plural forms of a column name ("products", "categories"), words of 3+ letters only."""
+    if not re.fullmatch(r"[a-z][a-z ]+[a-z]", word):
+        return set()
+    return {word + "s", word + "es"} | ({word[:-1] + "ies"} if word.endswith("y") else set())
+
+
+_UNIT_SUFFIX = re.compile(r"\s*[(\[【][^()\[\]【】]*[)\]】]\s*$")   # 売上高(百万円), 売上（円）, sales [USD]
+_GROUP_AFTER = re.compile(r"\s?(?:別|ごと|毎)")
+_GROUP_BEFORE = re.compile(r"\b(?:by|per|each) $")
+
+
+def _column_keys(table):
+    """(key, column) pairs to find in a question: exact name variants, then English plurals and the
+    name without a trailing unit in brackets, unless that loose form is shared with another column."""
+    exact = [(v, c.name) for c in table.columns for v in _variants(c.name)]
+    taken = {v for v, _ in exact}
+    loose = {}
+    for c in table.columns:
+        for v in _variants(c.name):
+            for form in _plurals(v) | {_UNIT_SUFFIX.sub("", v)}:
+                if form and form != v and form not in taken:
+                    loose.setdefault(form, set()).add(c.name)
+    return exact + [(form, next(iter(names))) for form, names in loose.items() if len(names) == 1]
+
+
 def _mentions(question, table):
     """(normalised question with mentioned columns masked, mentioned names, names used as group keys).
 
     Time-like columns are masked with □ so that "月別" reads as a time breakdown; others with ■.
+    "<col>別/ごと/毎" groups by any column; English "by/per/each <col>" only by a non-numeric (or year)
+    column, so "top products by revenue" keeps revenue as the measure.
     """
     q = _norm(question)
-    hits = _scan(q, [(v, c.name) for c in table.columns for v in _variants(c.name)])
+    hits = _scan(q, _column_keys(table))
+    timeish = {c.name: c.kind == "datetime" or c.is_year for c in table.columns}     # once per column
+    keyish = {c.name: c.kind != "numeric" or c.is_year for c in table.columns}
     masked, names, grouped = list(q), [], []
     for i, j, name in hits:
-        col = table.column(name)
-        masked[i:j] = ("□" if col.kind == "datetime" or col.is_year else "■") * (j - i)
+        masked[i:j] = ("□" if timeish[name] else "■") * (j - i)
         if name not in names:
             names.append(name)
-        if name not in grouped and (re.match(r"\s?(?:別|ごと|毎)", q[j:]) or re.search(r"\b(?:by|per|each) $", q[:i])):
+        if name not in grouped and (_GROUP_AFTER.match(q, j) or (
+                keyish[name] and _GROUP_BEFORE.search(q[max(0, i - 6):i]))):
             grouped.append(name)
     return "".join(masked), names, grouped
 
 
-_TIME_GROUP = (r"(?:月|年|日|週|四半期|年度|期)(?:別|ごと|毎)|毎(?:月|年|日|週)|□+\s?(?:別|ごと|毎)|"
+# (?<!□) stops re.search restarting inside a long run of □ (quadratic on crafted questions).
+_TIME_GROUP = (r"(?:月|年|日|週|四半期|年度|期)(?:別|ごと|毎)|毎(?:月|年|日|週|□+)|(?<!□)□+\s?(?:別|ごと|毎)|"
                r"\b(?:by|per|each) □+|"
                r"\b(?:by|per|each) (?:month|year|day|week|quarter|date)\b|"
                r"\b(?:monthly|yearly|annual|annually|daily|weekly|quarterly)\b")
@@ -180,7 +219,7 @@ _INTENTS = [  # canonical execution order
     ("top_n", r"上位|下位|ランキング|トップ|ワースト|ベスト|\btop\b|\brank|\bbottom\b|\bhighest\b|"
               r"\blowest\b|\blargest\b|\bsmallest\b"),
     ("outliers", r"外れ値|はずれ値|異常|\boutlier|\banomal|\bunusual"),
-    ("forecast", r"予測|見通し|将来|今後|来月|来期|来年|\bforecast|\bpredict|\bprojection|\boutlook"),
+    ("forecast", r"予測|見通し|将来|今後|来月|来期|来年|(?:来|翌)□+|\bforecast|\bpredict|\bprojection|\boutlook"),
 ]
 
 
@@ -199,13 +238,12 @@ def _intents(masked):
     return [tool for tool, _ in _INTENTS if tool in found]
 
 
-def _id_like(col):
-    key = T.name_key(col.name)
-    if re.search(r"(?<![a-z])id$|^id(?![a-z])|番号|コード|^no\.?$|^#$|\bcode$", key):
-        return True
-    values = col.present()
-    return (col.kind == "numeric" and len(values) > 2
-            and values in (list(map(float, range(1, len(values) + 1))), list(map(float, range(len(values))))))
+_id_like = T.is_id_like
+
+
+def _binary(col):
+    """0/1 flags (converted, churned): rates, not amounts; no outliers or skewness."""
+    return col.kind == "numeric" and set(col.present()) == {0.0, 1.0}
 
 
 def _measures(table, exclude=()):
@@ -221,8 +259,8 @@ def _default_time(table):
 
 
 def _groups(table):
-    def ok(col):
-        return 2 <= len(set(col.present())) <= T.LIMITS["max_groups"]
+    def ok(col):      # a mostly-numeric text column ("1,200", "#REF!") is a broken measure, not a group key
+        return 2 <= len(set(col.present())) <= T.LIMITS["max_groups"] and not _mostly_numeric(col)
     return ([c.name for c in table.columns if c.kind == "categorical" and ok(c)]
             + [c.name for c in table.columns if c.kind == "boolean" and ok(c)])
 
@@ -235,10 +273,18 @@ def _period(question, table, time_name):
         return "year"
     if re.search(_MONTHLY, q):
         return "month"
-    dates = set(table.column(time_name).present())
-    if len(dates) > 1 and all(d.day == 1 for d in dates):     # already monthly / yearly data
-        return "year" if all(d.month == 1 for d in dates) else "month"
-    if len(dates) > 60 and (max(dates) - min(dates)).days >= 180:
+    dates = sorted(set(table.column(time_name).present()))
+    if len(dates) < 2:
+        return "raw"
+    if all(d.day == 1 for d in dates):        # already monthly / quarterly / yearly data: modal month gap
+        gaps = Counter((b.year - a.year) * 12 + b.month - a.month for a, b in zip(dates, dates[1:]))
+        step = gaps.most_common(1)[0][0]
+        if step % 12 == 0 and len({d.month for d in dates}) == 1:
+            return "year"                      # incl. fiscal years dated YYYY-04-01
+        return "month" if step == 1 else "raw"
+    # Only daily-ish data is rolled up to months; weekly data would put 4 or 5 weeks in a month.
+    gaps = sorted((b - a).days for a, b in zip(dates, dates[1:]))
+    if len(dates) > 60 and (dates[-1] - dates[0]).days >= 180 and gaps[len(gaps) // 2] <= 3:
         return "month"
     return "raw"
 
@@ -248,32 +294,68 @@ def _number_after(pattern, q, low, high):
     return max(low, min(high, int(m.group(1)))) if m else None
 
 
-def rule_plan(question, table):
-    """Deterministic plan from keywords and mentioned columns -> [{"tool","arguments","source"}]."""
-    table = T.load_table(table)
+_MEAN_Q = r"平均|\bmean\b|\baverage\b|\bavg\b"
+_SUM_Q = r"合計|総額|総数|累計|\btotal\b|\bsum\b"
+_NON_ADDITIVE = re.compile(r"率|割合|比率|満足度|スコア|評価|単価|価格|平均|気温|温度|年齢|点数|(?<![a-z])(?:rate|ratio|pct|"
+                           r"percent|score|rating|price|avg|mean|temp|temperature|age|cvr|ctr|nps)(?![a-z])")
+
+
+def _default_agg(table, name, q):
+    """Sum additive amounts and counts; average rates, scores, prices (or when the question says 平均)."""
+    if re.search(_SUM_Q, q):
+        return "sum"
+    col = table.column(name)
+    if re.search(_MEAN_Q, q) or col.unit == "%" or _binary(col) or _NON_ADDITIVE.search(T.name_key(name)):
+        return "mean"
+    return "sum"
+
+
+def _mostly_numeric(col):
+    """Bad cells of a text column that is mostly numbers (a sales column with '#REF!'), else []."""
+    if col.kind not in ("categorical", "text"):
+        return []
+    counts = Counter(col.present())
+    bad = [v for v in counts if T.parse_number(v) is None]
+    return bad if counts and sum(counts[v] for v in bad) <= sum(counts.values()) / 2 else []
+
+
+def _analyse(question, table):
+    """Shared reading of a question: mentions, measure, time column, group keys and intents."""
     masked, mentioned, grouped = _mentions(question, table)
     q = _norm(question)
     cols = {c.name: c for c in table.columns}
     years = [n for n in mentioned if cols[n].is_year]
     keys = [n for n in grouped if cols[n].kind != "datetime" and n not in years]
     num = [n for n in mentioned if cols[n].kind == "numeric" and n not in years and n not in keys]
-    cat = [n for n in mentioned if cols[n].kind in ("categorical", "boolean")]
-    labels = [n for n in mentioned if cols[n].kind in ("categorical", "boolean", "text")]
+    blocked = [n for n in mentioned if n not in keys and _mostly_numeric(cols[n])]
     dts = [n for n in mentioned if cols[n].kind == "datetime"]
     time_col = (dts or years or [_default_time(table)])[0]
-    measures = num or _measures(table, exclude=(time_col,))
-    measure = measures[0] if measures else None
+    # A named column that could not be read as numbers is never silently replaced by another measure.
+    measures = num or ([] if blocked else _measures(table, exclude=(time_col,)))
+    intents = set(_intents(masked))
+    labels = [n for n in mentioned if cols[n].kind in ("categorical", "boolean", "text") and n not in blocked]
+    if re.search(_SUPERLATIVE, masked):    # "which region sells most" is a breakdown, else a ranking
+        intents.add("group_by" if keys or labels else "top_n")
+    return types.SimpleNamespace(
+        q=q, masked=masked, mentioned=mentioned, cols=cols, years=years, keys=keys, num=num, blocked=blocked,
+        cat=[n for n in mentioned if cols[n].kind in ("categorical", "boolean") and n not in blocked], labels=labels,
+        time_col=time_col, measures=measures, measure=measures[0] if measures else None,
+        intents=[tool for tool, _ in _INTENTS if tool in intents])
+
+
+def rule_plan(question, table):
+    """Deterministic plan from keywords and mentioned columns -> [{"tool","arguments","source"}]."""
+    table = T.load_table(table)
+    a = _analyse(question, table)
+    q, masked, cols, keys, num, cat, labels = a.q, a.masked, a.cols, a.keys, a.num, a.cat, a.labels
+    mentioned, time_col, measure = a.mentioned, a.time_col, a.measure
     groups = _groups(table)
     group = (cat or groups or [None])[0]
     period = _period(question, table, time_col)
-    intents = set(_intents(masked))
-    if re.search(_SUPERLATIVE, masked):    # "which region sells most" is a breakdown, else a ranking
-        intents.add("group_by" if keys or labels else "top_n")
-    intents = [tool for tool, _ in _INTENTS if tool in intents]
     steps = [("profile", {})]
 
     def trend_args(value):
-        args = {"value": value}
+        args = {"value": value, "agg": _default_agg(table, value, q)}
         if time_col:
             args.update(time=time_col, period=period)
         return args
@@ -282,6 +364,14 @@ def rule_plan(question, table):
         steps.extend([("describe", {"column": n}) for n in mentioned[:3]] or [("describe", {})])
 
     def add_correlate():
+        pair = [n for n in cat if n != time_col]
+        if len(pair) >= 2 and not num:      # two categorical columns: association, not a numeric matrix
+            steps.append(("crosstab", {"row": pair[0], "col": pair[1]}))
+            return
+        if pair and len(num) == 1:          # category vs number: compare the group means
+            steps.append(("group_by", {"by": pair[0], "value": num[0], "agg": "mean"}))
+            steps.append(("compare", {"value": num[0], "by": pair[0]}))
+            return
         numeric = _measures(table, exclude=(time_col,))
         method = "spearman" if re.search(r"スピアマン|順位相関|spearman|rank correlation", q) else "pearson"
         if len(num) == 2:
@@ -291,14 +381,14 @@ def rule_plan(question, table):
         elif len(numeric) >= 2:
             steps.append(("correlate", {"method": method}))
 
-    def add_group_by():
-        by = (keys or labels or groups or [None])[0]
+    def add_group_by(by=None):
+        by = by or (keys or labels or groups or [None])[0]
         if by is None:
             return
-        agg = ("mean" if re.search(r"平均|\bmean\b|\baverage\b", q) else "median"
-               if re.search(r"中央値|\bmedian\b", q) else None)
+        value = num[0] if num else measure
         if num or (measure and not re.search(r"件数|\bcount\b|how many", q)):
-            steps.append(("group_by", {"by": by, "value": num[0] if num else measure, "agg": agg or "sum"}))
+            agg = "median" if re.search(r"中央値|\bmedian\b", q) else _default_agg(table, value, q)
+            steps.append(("group_by", {"by": by, "value": value, "agg": agg}))
         else:
             steps.append(("group_by", {"by": by}))
 
@@ -316,6 +406,8 @@ def rule_plan(question, table):
                     break
         if by is None or measure is None or by == measure:
             return
+        if not hits and len(set(cols[by].present())) > 2:     # show every group, not just the 2 tested
+            steps.append(("group_by", {"by": by, "value": measure, "agg": "mean"}))
         args = {"value": measure, "by": by}
         if hits:
             args["a"] = hits[0]
@@ -323,7 +415,47 @@ def rule_plan(question, table):
             args["b"] = hits[1]
         steps.append(("compare", args))
 
-    for intent in intents:
+    def add_top_n():
+        label = labels[0] if labels else None
+        if label and measure:
+            present = cols[label].present()
+            if len(set(present)) < len(present):    # "top 3 stores": rank store totals, not single rows
+                add_group_by(label)
+                return
+        args = {"column": measure, "order": "asc" if re.search(
+            r"下位|ワースト|少な|低い|小さい|\bbottom\b|\blowest\b|\bsmallest\b|\bworst\b", q) else "desc"}
+        n = _number_after(r"(?:上位|下位|トップ|ワースト|ベスト|\btop|\bbottom)\s*(\d{1,2})(?!\d)", q, 1,
+                          T.LIMITS["max_top_n"]) or _number_after(
+            r"(?<!\d)(\d{1,2})\s*(?:件|位|社|店|名|人|個)", q, 1, T.LIMITS["max_top_n"])
+        if n:
+            args["n"] = n
+        if label:
+            args["label"] = label
+        steps.append(("top_n", args))
+
+    def add_outliers():
+        method = "zscore" if re.search(r"zスコア|z-?score|標準偏差|σ|sigma", q) else "iqr"
+        steps.append(("outliers", {"column": measure, "method": method}))
+        n = len(cols[measure].present())
+        if method == "zscore" and n and (n - 1) / math.sqrt(n) <= 3:    # z-scores cannot flag anything here
+            steps.append(("outliers", {"column": measure, "method": "iqr"}))
+
+    def add_forecast():
+        args = trend_args(measure)
+        m = re.search(r"(?<!\d)(\d{1,2})\s*(ヶ月|か月|カ月|ヵ月|ケ月|期間|期|年|四半期|日|週|months?|periods?|years?|"
+                      r"quarters?|days?|weeks?|steps?)", q)
+        if m:
+            args["periods"] = max(1, min(T.LIMITS["max_forecast_periods"], int(m.group(1))))
+            if (re.match(r"日|週|day|week", m.group(2)) and args.get("period") == "month"
+                    and not re.search(_MONTHLY, q)):
+                args["period"] = "raw"            # "next 4 weeks" counts observed steps, not months
+        elif re.search(r"来月|翌月|\bnext month\b", q):
+            args["periods"] = 1
+        elif re.search(r"来年|翌年|\bnext year\b", q):
+            args["periods"] = 12 if args.get("period") == "month" else 1
+        steps.append(("forecast", args))
+
+    for intent in a.intents:
         if intent == "describe":
             add_describe()
         elif intent == "trend":
@@ -339,36 +471,21 @@ def rule_plan(question, table):
             if len(pair) == 2:
                 steps.append(("crosstab", {"row": pair[0], "col": pair[1]}))
         elif intent == "top_n" and measure:
-            args = {"column": measure, "order": "asc" if re.search(
-                r"下位|ワースト|少な|低い|小さい|\bbottom\b|\blowest\b|\bsmallest\b|\bworst\b", q) else "desc"}
-            n = _number_after(r"(?:上位|下位|トップ|ワースト|ベスト|\btop|\bbottom)\s*(\d{1,2})(?!\d)", q, 1,
-                              T.LIMITS["max_top_n"]) or _number_after(
-                r"(?<!\d)(\d{1,2})\s*(?:件|位|社|店|名|人|個)", q, 1, T.LIMITS["max_top_n"])
-            if n:
-                args["n"] = n
-            if labels:
-                args["label"] = labels[0]
-            steps.append(("top_n", args))
+            add_top_n()
         elif intent == "outliers" and measure:
-            method = "zscore" if re.search(r"zスコア|z-?score|標準偏差|σ|sigma", q) else "iqr"
-            steps.append(("outliers", {"column": measure, "method": method}))
+            add_outliers()
         elif intent == "forecast" and measure:
-            args = trend_args(measure)
-            periods = _number_after(
-                r"(?<!\d)(\d{1,2})\s*(?:ヶ月|か月|カ月|ヵ月|ケ月|期間|期|年|四半期|日|週|months?|periods?|years?|"
-                r"quarters?|days?|weeks?|steps?)", q, 1, T.LIMITS["max_forecast_periods"])
-            if periods:
-                args["periods"] = periods
-            steps.append(("forecast", args))
-    if not intents:  # overview
+            add_forecast()
+    if not a.intents:  # overview
         add_describe()
         add_correlate()
         if time_col and measure:
             steps.append(("trend", trend_args(measure)))
         if group and measure:
-            steps.append(("group_by", {"by": group, "value": measure}))
-        if measure:
-            steps.append(("outliers", {"column": measure}))
+            steps.append(("group_by", {"by": group, "value": measure, "agg": _default_agg(table, measure, q)}))
+        spread = [n for n in a.measures if not _binary(cols[n])]
+        if spread:
+            steps.append(("outliers", {"column": spread[0]}))
     plan, seen = [], set()
     for tool, args in steps:
         try:
@@ -414,7 +531,7 @@ def _dump(obj):
 
 
 def planner_prompt(question, table, done_steps, remaining, language="ja", *, error=None):
-    """Compact (<= 1500 chars) prompt for one JSON decision; content is shrunk, never cut mid-JSON."""
+    """Compact (<= PLANNER_LIMIT chars) prompt for one JSON decision; content is shrunk, never cut mid-JSON."""
     table = T.load_table(table)
     head = _PLANNER_HEAD.get(language, _PLANNER_HEAD["ja"])
     _, mentioned, _ = _mentions(question, table)
@@ -444,6 +561,11 @@ def planner_prompt(question, table, done_steps, remaining, language="ja", *, err
             return head + _dump(payload)
     return head + _dump({"question": q[:20], "columns": [], "tools": _BRIEF, "done": [],
                          "remaining": remaining})
+
+
+def generation_tokens(prompt):
+    """New tokens to reserve for a prompt this module built: short JSON for plans, prose for narration."""
+    return PLANNER_NEW_TOKENS if prompt.startswith(tuple(_PLANNER_HEAD.values())) else NARRATIVE_NEW_TOKENS
 
 
 def parse_plan_decision(raw, table):
@@ -541,6 +663,19 @@ def _unit(table, name):
         return None
 
 
+def _col(table, name):
+    try:
+        return table.column(name) if table is not None and name else None
+    except T.DataError:
+        return None
+
+
+def _points(x, ja, signed=False):
+    """A difference of two percentages: percentage points, never '%'."""
+    text = ("+" if signed and x > 0 else "") + fmt(x)
+    return text + ("ポイント" if ja else " percentage points")
+
+
 # ---------------------------------------------------------------- findings
 
 def _confidence(score, basis):
@@ -549,12 +684,20 @@ def _confidence(score, basis):
     return T.json_safe({"label": label, "score": score, "basis": basis, "apqb": T.apqb(2 * score - 1)})
 
 
-def _p_conf(p, n, ja):
+def _p_conf(p, n, ja, *, null=False):
+    """Significant results: 1 - p, shrunk towards 0.5 by min(1, 0.5 + n/60). Null results ("no
+    significant ...") are scored by sample size instead (0.5 + 0.4 x min(1, n/100), at most medium):
+    a large p is not evidence for the null, but a large n is."""
     if p is None:
         return _confidence(0.5, "検定できないため低い信頼度としています" if ja
                            else "No test was possible, so confidence is low")
+    n = n or 0
+    if null:
+        return _confidence(0.5 + 0.4 * min(1.0, n / 100),
+                           f"有意な結果がないため標本数に基づく（{_p(p)}、n={fmt(n)}）" if ja
+                           else f"No significant result, so based on the sample size ({_p(p)}, n={fmt(n)})")
     score = min(0.999, max(0.5, 1.0 - p))
-    score = 0.5 + (score - 0.5) * min(1.0, (n or 0) / 30)
+    score = 0.5 + (score - 0.5) * min(1.0, 0.5 + n / 60)
     return _confidence(score, f"p値と標本数に基づく（{_p(p)}、n={fmt(n)}）" if ja
                        else f"Based on the p-value and sample size ({_p(p)}, n={fmt(n)})")
 
@@ -593,8 +736,8 @@ def _f_describe(o, table, ja):
                 s = (f"{name} has a mean of {_v(c['mean'], unit)} and a median of {_v(c['median'], unit)} "
                      f"(min {_v(c['min'], unit)}, max {_v(c['max'], unit)}"
                      + (f", SD {fmt(std)}" if std is not None else "") + f", n={fmt(c['count'])}).")
-            skew = c.get("skew")
-            if skew is not None and abs(skew) >= 1:
+            skew, col = c.get("skew"), _col(table, name)
+            if skew is not None and abs(skew) >= 1 and not (col is not None and _binary(col)):
                 s += (f"分布は{'右' if skew > 0 else '左'}に裾が長く偏っています（歪度{fmt(skew)}）。" if ja else
                       f" The distribution is skewed to the {'right' if skew > 0 else 'left'} (skewness {fmt(skew)}).")
             evidence = {k: c.get(k) for k in ("count", "mean", "median", "std", "min", "max", "skew")}
@@ -620,22 +763,35 @@ def _f_correlate(o, table, ja):
     for p in pairs:
         if p.get("r") is None:
             continue
-        stats = f"r={fmt(p['r'])}、{_p(p['p_value'])}、n={fmt(p['n'])}" if ja else \
-            f"r={fmt(p['r'])}, {_p(p['p_value'])}, n={fmt(p['n'])}"
+        pv = p["p_value"]
+        weak = p.get("strength") == "negligible"
+        unsupported = not weak and pv is not None and pv >= 0.05     # |r| looks sizeable, data cannot back it
+        stats = f"r={fmt(p['r'])}、{_p(pv)}、n={fmt(p['n'])}" if ja else \
+            f"r={fmt(p['r'])}, {_p(pv)}, n={fmt(p['n'])}"
         if ja:
             kind = "（スピアマンの順位相関）" if method else ""
-            if p.get("strength") == "negligible":
+            if weak:
                 s = f"{p['x']}と{p['y']}にはほぼ相関がありません{kind}（{stats}）。"
+            elif unsupported:
+                s = (f"{p['x']}と{p['y']}の相関係数はr={fmt(p['r'])}ですが、統計的に有意ではありません{kind}"
+                     f"（{_p(pv)}、n={fmt(p['n'])}）。")
             else:
                 sign = {"positive": "正の", "negative": "負の"}.get(p.get("direction"), "")
                 s = f"{p['x']}と{p['y']}には{sign}{p['strength_ja']}があります{kind}（{stats}）。"
         else:
-            if p.get("strength") == "negligible":
+            if weak:
                 s = f"{p['x']} and {p['y']} are essentially uncorrelated{method} ({stats})."
+            elif unsupported:
+                s = (f"{p['x']} and {p['y']} have r={fmt(p['r'])}{method}, which is not statistically significant "
+                     f"({_p(pv)}, n={fmt(p['n'])}).")
             else:
                 s = f"{p['x']} and {p['y']} show a {p['strength']} {p['direction']} correlation{method} ({stats})."
         yield "correlation", s, {k: p.get(k) for k in ("x", "y", "r", "p_value", "n", "strength", "direction")}, \
-            _p_conf(p["p_value"], p["n"], ja)
+            _p_conf(pv, p["n"], ja, null=weak or unsupported)
+
+
+_COUNTED = ("mean", "median", "min", "max")    # aggregations whose ranking depends on group size
+SMALL_GROUP = 5
 
 
 def _f_group_by(o, table, ja):
@@ -644,21 +800,27 @@ def _f_group_by(o, table, ja):
         return
     unit = o.get("unit") if o.get("agg") != "count" else None
     by, value, agg = o["by"], o.get("value"), o.get("agg")
+    counted = agg in _COUNTED
 
     def item(g):
         share = g.get("share")
         text = _v(g["value"], unit)
         if share is not None:
             text += f"、構成比{_share(share)}" if ja else f", {_share(share)} of the total"
+        if counted:
+            text += f"、n={fmt(g['count'])}" if ja else f", n={fmt(g['count'])}"
         return text
 
     top, bottom = groups[0], groups[-1]
+    runners = groups[1:min(3, len(groups) - 1)]       # the ranking after the top, up to 3rd place
     if ja:
         subject = f"{by}別の{value}の{_AGG_JA[agg]}" if value else f"{by}別の件数"
         if len(groups) == 1:
             s = f"{subject}は「{_clip(top['key'])}」のみで{item(top)}です。"
         else:
-            s = (f"{subject}は「{_clip(top['key'])}」が最大（{item(top)}）、"
+            middle = "".join(f"、{'次いで' if i == 0 else ''}「{_clip(g['key'])}」（{item(g)}）"
+                             for i, g in enumerate(runners))
+            s = (f"{subject}は「{_clip(top['key'])}」が最大（{item(top)}）{middle}、"
                  f"「{_clip(bottom['key'])}」が最小（{item(bottom)}）です（{fmt(o['n_groups'])}グループ）。")
         if o.get("truncated"):
             s += "一部のグループは省略しています。"
@@ -667,13 +829,19 @@ def _f_group_by(o, table, ja):
         if len(groups) == 1:
             s = f"{subject} has a single group, \"{_clip(top['key'])}\" ({item(top)})."
         else:
-            s = (f"{subject} is highest for \"{_clip(top['key'])}\" ({item(top)}) and lowest for "
+            middle = (", followed by " + " and ".join(f"\"{_clip(g['key'])}\" ({item(g)})" for g in runners)
+                      if runners else "")
+            s = (f"{subject} is highest for \"{_clip(top['key'])}\" ({item(top)}){middle}, and lowest for "
                  f"\"{_clip(bottom['key'])}\" ({item(bottom)}) across {fmt(o['n_groups'])} groups.")
         if o.get("truncated"):
             s += " Some groups are omitted."
     evidence = {"by": by, "value": value, "agg": agg, "top": top, "bottom": bottom,
                 "n_groups": o.get("n_groups"), "total": o.get("total")}
-    yield "breakdown", s, evidence, _fact(ja)
+    smallest = min(top["count"], bottom["count"])
+    confidence = _confidence(0.6, f"上位・下位のグループのデータ数が少ない（n={fmt(smallest)}）" if ja else
+                             f"The top or bottom group has few rows (n={fmt(smallest)})") \
+        if counted and smallest < SMALL_GROUP else _fact(ja)
+    yield "breakdown", s, evidence, confidence
 
 
 def _period_text(label, kind, ja):
@@ -682,19 +850,50 @@ def _period_text(label, kind, ja):
     return str(label)
 
 
+def _previous(o, table, ja):
+    """'前月比' / 'from the previous month' from the series granularity (not always 前期比)."""
+    period, kind, step = o.get("period"), o.get("time_kind"), o.get("period_step") or 0
+    col = _col(table, o.get("time"))
+    if period == "month":
+        unit = "month"
+    elif period == "year" or (kind == "numeric" and col is not None and col.is_year):
+        unit = "year"
+    elif kind == "datetime":
+        unit = next((u for u, lo, hi in (("day", 0.5, 1.5), ("week", 6, 8), ("month", 28, 31),
+                                         ("quarter", 89, 92), ("year", 364, 366)) if lo <= step <= hi), None)
+    else:
+        unit = None
+    if ja:
+        return {"day": "前日比", "week": "前週比", "month": "前月比", "quarter": "前四半期比",
+                "year": "前年比"}.get(unit, "直前の時点比")
+    return f"from the previous {unit or 'point'}"
+
+
 def _f_trend(o, table, ja):
+    if o.get("partial_periods") and o.get("n", 0) < 2:      # say why there is no trend at all
+        unit = ("月" if o.get("period") == "month" else "年") if ja else o.get("period")
+        s = (f"{o['value']}は期間全体をカバーする{unit}が2つ未満のため、推移を判定できません。" if ja else
+             f"{o['value']} has fewer than two complete {unit}s, so the trend cannot be assessed.")
+        yield "trend", s, {k: o.get(k) for k in ("value", "time", "n", "partial_periods")}, \
+            _confidence(0.5, "判定できなかった結果" if ja else "Not assessable")
+        return
     if o.get("first") is None or o.get("n", 0) < 2:
         return
     unit, kind = _unit(table, o["value"]), o.get("time_kind")
     agg = o.get("agg", "sum")
+    pct = o.get("pct_change")
+    if unit == "%" and o.get("change") is not None:     # a change of a rate is in points; relative is labelled
+        change = _points(o["change"], ja, signed=True) + (
+            (f"（相対{_pct(pct)}）" if ja else f", relative {_pct(pct)}") if pct is not None else "")
+    else:
+        change = _pct(pct) if pct is not None else _v(o.get("change"), unit)
+    direction = o.get("direction")
     if ja:
         note = ("（月次の" + _AGG_JA[agg] + "）" if o.get("period") == "month" else "（年次の" + _AGG_JA[agg] + "）"
                 if o.get("period") == "year" else f"（{o['time']}ごとの{_AGG_JA[agg]}）"
                 if o.get("time") and o.get("rows_used", 0) > o["n"] else "")
-        change = _pct(o["pct_change"]) if o.get("pct_change") is not None else _v(o.get("change"), unit)
         s = (f"{o['value']}{note}は{_period_text(o['first_period'], kind, ja)}の{_v(o['first'], unit)}から"
              f"{_period_text(o['last_period'], kind, ja)}の{_v(o['last'], unit)}へ{change}変化しました。")
-        direction = o.get("direction")
         if direction in ("increasing", "decreasing"):
             s += (f"統計的に有意な{'増加' if direction == 'increasing' else '減少'}傾向です"
                   f"（{_p(o['p_value'])}、R²={fmt(o['r2'])}、n={fmt(o['n'])}）。")
@@ -708,10 +907,8 @@ def _f_trend(o, table, ja):
         note = (f" (monthly {_AGG_EN[agg]})" if o.get("period") == "month" else f" (yearly {_AGG_EN[agg]})"
                 if o.get("period") == "year" else f" ({_AGG_EN[agg]} per {o['time']})"
                 if o.get("time") and o.get("rows_used", 0) > o["n"] else "")
-        change = _pct(o["pct_change"]) if o.get("pct_change") is not None else _v(o.get("change"), unit)
         s = (f"{o['value']}{note} went from {_v(o['first'], unit)} in {_period_text(o['first_period'], kind, ja)} "
              f"to {_v(o['last'], unit)} in {_period_text(o['last_period'], kind, ja)} ({change}).")
-        direction = o.get("direction")
         if direction in ("increasing", "decreasing"):
             s += (f" The {'upward' if direction == 'increasing' else 'downward'} trend is statistically significant "
                   f"({_p(o['p_value'])}, R²={fmt(o['r2'])}, n={fmt(o['n'])}).")
@@ -723,26 +920,40 @@ def _f_trend(o, table, ja):
             s += f" The compound annual growth rate is {_pct(o['cagr_pct'])}."
     evidence = {k: o.get(k) for k in ("value", "time", "n", "first", "last", "first_period", "last_period",
                                       "pct_change", "slope", "p_value", "r2", "direction", "cagr_pct")}
-    yield "trend", s, evidence, _p_conf(o.get("p_value"), o["n"], ja)
+    yield "trend", s, evidence, _p_conf(o.get("p_value"), o["n"], ja, null=direction == "flat")
     recent = o.get("last_periods") or []
     peak = o.get("peak") or {}
-    if o["n"] >= 3 and recent and recent[-1].get("pct_change") is not None and peak.get("value") is not None:
-        last = recent[-1]
+    if o["n"] >= 3 and len(recent) >= 2 and recent[-1].get("pct_change") is not None \
+            and peak.get("value") is not None:
+        last, label = recent[-1], _previous(o, table, ja)
+        step = (_points(last["value"] - recent[-2]["value"], ja, signed=True) if unit == "%"
+                else _pct(last["pct_change"]))
         if ja:
-            s = (f"直近（{_period_text(last['period'], kind, ja)}）の{o['value']}は前期比{_pct(last['pct_change'])}で、"
+            s = (f"直近（{_period_text(last['period'], kind, ja)}）の{o['value']}は{label}{step}で、"
                  f"期間中の最大は{_period_text(peak['period'], kind, ja)}の{_v(peak['value'], unit)}です。")
         else:
             s = (f"The latest {o['value']} ({_period_text(last['period'], kind, ja)}) changed "
-                 f"{_pct(last['pct_change'])} from the previous period; the peak was "
+                 f"{step} {label}; the peak was "
                  f"{_v(peak['value'], unit)} in {_period_text(peak['period'], kind, ja)}.")
         yield "recent", s, {"last": last, "peak": peak, "trough": o.get("trough")}, _fact(ja)
 
 
 def _f_outliers(o, table, ja):
-    if o.get("count") is None:
-        return
     unit = _unit(table, o["column"])
     k = fmt(o["threshold"])
+    evidence = {key: o.get(key) for key in ("column", "method", "threshold", "count", "share", "bounds")}
+    if o.get("count") is None:       # say why instead of staying silent (or claiming "no outliers")
+        if o["method"] == "zscore" and o.get("std"):
+            s = (f"{o['column']}はデータ数（n={fmt(o['n'])}）が少ないため、zスコア法（|z|>{k}）では外れ値を判定できません。"
+                 if ja else f"With only n={fmt(o['n'])} values, the z-score method (|z|>{k}) cannot flag outliers in "
+                 f"{o['column']}.")
+        elif o["method"] == "iqr" and o.get("iqr") == 0:
+            s = (f"{o['column']}は四分位範囲が0のため、IQR法では外れ値を判定できません。" if ja else
+                 f"The interquartile range of {o['column']} is 0, so the IQR method cannot flag outliers.")
+        else:
+            return
+        yield "outlier", s, evidence, _confidence(0.5, "判定できなかった結果" if ja else "Not assessable")
+        return
     if ja:
         method = f"IQR法（k={k}）" if o["method"] == "iqr" else f"zスコア法（|z|>{k}）"
     else:
@@ -761,7 +972,6 @@ def _f_outliers(o, table, ja):
     else:
         s = (f"{o['column']}に外れ値は見つかりませんでした（{method}）。" if ja else
              f"No outliers were found in {o['column']} ({method}).")
-    evidence = {k: o.get(k) for k in ("column", "method", "threshold", "count", "share", "bounds")}
     evidence["rows"] = rows[:5]
     yield "outlier", s, evidence, _fact(ja)
 
@@ -770,34 +980,52 @@ def _f_compare(o, table, ja):
     a, b = o.get("a"), o.get("b")
     if not a or not b or a.get("mean") is None or b.get("mean") is None or o.get("diff") is None:
         return
-    unit, diff = o.get("unit"), o["diff"]
-    gap = _v(abs(diff), unit) + (f"（{fmt(abs(o['pct_diff']))}%）" if ja and o.get("pct_diff") is not None else
-                                 f" ({fmt(abs(o['pct_diff']))}%)" if o.get("pct_diff") is not None else "")
+    unit, diff, rel = o.get("unit"), o["diff"], o.get("pct_diff")
+    col = _col(table, o["value"])
+    binary = col is not None and _binary(col)
+    if binary or unit == "%":       # differences of rates are percentage points; the relative one is labelled
+        gap = _points(abs(diff) * (100 if binary else 1), ja) + (
+            (f"（相対{fmt(abs(rel))}%）" if ja else f" (relative {fmt(abs(rel))}%)") if rel is not None else "")
+    else:
+        gap = _v(abs(diff), unit) + (f"（{fmt(abs(rel))}%）" if ja and rel is not None else
+                                     f" ({fmt(abs(rel))}%)" if rel is not None else "")
+
+    def mean(g):
+        return _v(g["mean"] * 100, "%") if binary else _v(g["mean"], unit)
+
     la, lb = _clip(a["label"]), _clip(b["label"])
     p, d = o.get("p_value"), o.get("cohen_d")
+    what = ("の割合" if binary else "平均") if ja else ("rate" if binary else "mean")
     if ja:
         relation = "同じ" if diff == 0 else f"{gap}{'高い' if diff > 0 else '低い'}"
-        s = (f"{o['by']}が「{la}」の{o['value']}平均（{_v(a['mean'], unit)}、n={fmt(a['n'])}）は"
-             f"「{lb}」（{_v(b['mean'], unit)}、n={fmt(b['n'])}）より{relation}です。")
+        s = (f"{o['by']}が「{la}」の{o['value']}{what}（{mean(a)}、n={fmt(a['n'])}）は"
+             f"「{lb}」（{mean(b)}、n={fmt(b['n'])}）より{relation}です。")
+        effect = "" if binary else f"、効果量{o.get('effect_ja')}"
         if p is None:
             s += "検定はできませんでした。"
         elif o.get("significant"):
-            s += f"この差は統計的に有意です（{_p(p)}、効果量{o.get('effect_ja')}：d={fmt(d)}）。"
+            s += f"この差は統計的に有意です（{_p(p)}{effect}" + ("）。" if binary else f"：d={fmt(d)}）。")
         else:
-            s += f"統計的に有意な差とはいえません（{_p(p)}、効果量{o.get('effect_ja')}）。"
+            s += f"統計的に有意な差とはいえません（{_p(p)}{effect}）。"
+        if o.get("defaulted") and (o.get("n_groups") or 0) > 2:
+            s += f"{fmt(o['n_groups'])}グループのうち件数の多い2グループを比較しています。"
     else:
         relation = "the same as" if diff == 0 else f"{gap} {'higher' if diff > 0 else 'lower'} than"
-        s = (f"The mean {o['value']} for {o['by']} = \"{la}\" ({_v(a['mean'], unit)}, n={fmt(a['n'])}) is "
-             f"{relation} \"{lb}\" ({_v(b['mean'], unit)}, n={fmt(b['n'])}).")
+        s = (f"The {what} {o['value']} for {o['by']} = \"{la}\" ({mean(a)}, n={fmt(a['n'])}) is "
+             f"{relation} \"{lb}\" ({mean(b)}, n={fmt(b['n'])}).")
+        effect = "" if binary else f", {o.get('effect')} effect"
         if p is None:
             s += " No test was possible."
         elif o.get("significant"):
-            s += f" The difference is statistically significant ({_p(p)}, {o.get('effect')} effect, d={fmt(d)})."
+            s += f" The difference is statistically significant ({_p(p)}{effect}" + (
+                ")." if binary else f", d={fmt(d)}).")
         else:
-            s += f" The difference is not statistically significant ({_p(p)}, {o.get('effect')} effect)."
+            s += f" The difference is not statistically significant ({_p(p)}{effect})."
+        if o.get("defaulted") and (o.get("n_groups") or 0) > 2:
+            s += f" Only the 2 largest of {fmt(o['n_groups'])} groups were compared."
     evidence = {"a": a, "b": b, **{k: o.get(k) for k in ("diff", "pct_diff", "t", "df", "p_value", "cohen_d",
                                                           "effect", "significant")}}
-    yield "comparison", s, evidence, _p_conf(p, a["n"] + b["n"], ja)
+    yield "comparison", s, evidence, _p_conf(p, a["n"] + b["n"], ja, null=o.get("significant") is False)
 
 
 def _f_crosstab(o, table, ja):
@@ -825,7 +1053,7 @@ def _f_crosstab(o, table, ja):
             s += (f" The most common combination is \"{_clip(tab['rows'][best[1]])} × "
                   f"{_clip(tab['cols'][best[2]])}\" ({fmt(best[0])} rows).")
     evidence = {k: o.get(k) for k in ("row", "col", "n", "chi2", "dof", "p_value", "cramers_v")}
-    yield "association", s, evidence, _p_conf(p, o.get("n"), ja)
+    yield "association", s, evidence, _p_conf(p, o.get("n"), ja, null=p >= 0.05)
 
 
 def _f_top_n(o, table, ja):
@@ -947,15 +1175,56 @@ def _used_columns(steps, table):
     return result
 
 
-def build_caveats(steps, table, *, language="ja"):
+def _question_caveats(question, table, done, ja):
+    """What the question asked for but the plan could not honour (unreadable or unnamed measure,
+    per-group trends)."""
+    a = _analyse(question, table)
+    out = []
+    for name in a.blocked:
+        bad = _mostly_numeric(table.column(name))
+        count = sum(v in bad for v in table.column(name).present())
+        out.append(f"「{name}」は数値として解釈できないセルが{fmt(count)}件あるため、数値列として扱えませんでした"
+                   f"（例: {_clip(bad[0], 20)}）。" if ja else
+                   f"\"{name}\" has {fmt(count)} cells that are not numbers (e.g. {_clip(bad[0], 20)}), so it could "
+                   "not be analysed as a numeric column.")
+    used = {v for s in done for k, v in (s.get("arguments") or {}).items() if k in ("value", "column", "x", "y")}
+    if a.intents and not a.num and not a.blocked and a.measure in used:
+        out.append(f"質問から対象の数値列を特定できなかったため「{a.measure}」を分析しました。" if ja else
+                   f"No numeric column was named in the question, so {a.measure} was analysed.")
+    if "trend" in a.intents and a.keys and any(s["tool"] == "trend" for s in done):
+        key = a.keys[0]
+        out.append(f"推移は{key}をまとめた全体について計算しています。{key}ごとの推移は計算していません。" if ja else
+                   f"The trend is for the overall series; per-{key} trends were not computed.")
+    return out
+
+
+def build_caveats(steps, table, *, language="ja", question=None):
     """Deterministic limitations of what ran (small n, missing data, causality, extrapolation...)."""
     ja = language != "en"
     done = _completed(steps)
     tools = [s["tool"] for s in done]
-    caveats = []
+    caveats = _question_caveats(question, table, done, ja) if question and table is not None else []
+    partial = list(dict.fromkeys(label for s in done if s["tool"] in ("trend", "forecast")
+                                 for label in s["output"].get("partial_periods") or []))
+    if partial:
+        listed = "、".join(map(str, partial[:4])) if ja else ", ".join(map(str, partial[:4]))
+        caveats.append(f"データが期間の一部しかない {listed} は月次・年次の集計から除外しました。" if ja else
+                       f"{listed} cover only part of the period and were left out of the monthly/yearly totals.")
+    if any(s["tool"] == "trend" and s["output"].get("uneven_periods") for s in done):
+        caveats.append("期間ごとのデータ件数が異なるため、合計は件数の影響を受けます。" if ja else
+                       "The number of rows differs between periods, so the totals partly reflect row counts.")
     ns, p_values = [], 0
     for step in done:
         o, tool = step["output"], step["tool"]
+        valued = [g for g in o.get("groups") or [] if g.get("value") is not None]
+        if tool == "group_by" and o.get("agg") in _COUNTED and valued:
+            fewest = min(valued, key=lambda g: g.get("count") or 0)
+            ns.append(min(valued[0]["count"], valued[-1]["count"]))
+            if fewest.get("count") is not None and fewest["count"] < SMALL_GROUP:
+                caveats.append(f"「{_clip(fewest['key'])}」などデータ数の少ないグループがあります（最小n={fmt(fewest['count'])}）。"
+                               "グループ間の順位は参考値として扱ってください。" if ja else
+                               f"Some groups such as \"{_clip(fewest['key'])}\" have few rows (as few as "
+                               f"n={fmt(fewest['count'])}); treat the group ranking as indicative.")
         if tool == "correlate":
             pairs = [o] if o.get("mode") == "pair" else o.get("pairs") or []
             ns += [p.get("n") for p in pairs if p.get("r") is not None]
@@ -985,9 +1254,9 @@ def build_caveats(steps, table, *, language="ja"):
                            "treated as missing.")
         for col in used:
             if col.unit == "%":
-                caveats.append(f"列「{col.name}」は%単位の値です。変化率は%ポイントではなく相対的な変化です。" if ja else
-                               f"{col.name} is in percent units; percentage changes are relative, not "
-                               "percentage points.")
+                caveats.append(f"列「{col.name}」は%単位の値です。差は%ポイント、「相対」と書いた変化率は相対的な変化です。"
+                               if ja else f"{col.name} is in percent units; differences are in percentage points, "
+                               "and figures marked relative are relative changes.")
     if "correlate" in tools:
         caveats.append("相関は因果関係を示すものではありません。" if ja else "Correlation does not imply causation.")
     if p_values >= 3:
@@ -1029,7 +1298,8 @@ def next_questions(steps, table, *, language="ja"):
         o = step["output"]
         if step["tool"] == "correlate":
             pairs = [o] if o.get("mode") == "pair" else o.get("pairs") or []
-            strong = next((p for p in pairs if p.get("strength") in ("strong", "moderate")), None)
+            strong = next((p for p in pairs if p.get("strength") in ("strong", "moderate")
+                           and p.get("p_value") is not None and p["p_value"] < 0.05), None)
             if strong and groups:
                 out.append(f"{strong['x']}と{strong['y']}の関係が{groups[0]}によって違うか確認しますか？" if ja else
                            f"Does the relationship between {strong['x']} and {strong['y']} differ by {groups[0]}?")
@@ -1071,15 +1341,14 @@ _SUPPORTING = {"recent": 1, "distribution": 1, "overview": 2}
 
 
 def _ranked(findings):
-    """Answers first, then supporting facts, then the data overview; by confidence within each tier."""
-    order = {"high": 0, "medium": 1, "low": 2}
+    """Answers first, then supporting facts, then the data overview; plan order within each tier (the
+    rule planner orders steps by the question's intents, so the asked-for result leads)."""
     return [f for _, f in sorted(enumerate(findings or []), key=lambda item: (
-        _SUPPORTING.get(item[1].get("kind"), 0), order.get(item[1].get("confidence", {}).get("label"), 3),
-        item[0]))]
+        _SUPPORTING.get(item[1].get("kind"), 0), item[0]))]
 
 
 def template_narrative(question, findings, caveats, dataset, language="ja"):
-    """Deterministic summary; every number in it comes from findings or step outputs."""
+    """Deterministic summary; every number in it comes from findings, caveats or the dataset summary."""
     ja = language != "en"
     dataset = dataset or {}
     lines = []
@@ -1112,7 +1381,9 @@ _NARRATIVE_HEAD = {
 
 
 def narrative_prompt(question, findings, caveats, language="ja"):
-    """Compact (<= 1800 chars) narration prompt: question, top findings, caveats; whole lines only."""
+    """Compact (<= NARRATIVE_LIMIT chars) narration prompt: question, top findings, caveats; whole lines only.
+
+    The numeric guard checks a model narrative against exactly this text."""
     ja = language != "en"
     head = _NARRATIVE_HEAD["ja" if ja else "en"]
     lines = []
@@ -1155,10 +1426,13 @@ def _greedy(size, items, limit):
 _SCALES = {"千": 1e3, "万": 1e4, "億": 1e8, "兆": 1e12, "k": 1e3, "K": 1e3, "M": 1e6, "B": 1e9,
            "thousand": 1e3, "million": 1e6, "billion": 1e9, "trillion": 1e12}
 _NUMBER = re.compile(
+    r"(?P<sign>(?<![0-9A-Za-z.,])[-−▲△+])?"          # "2024-12" and "3.07e-12" stay unsigned
     r"(?P<num>\d{1,3}(?:,\d{3})+(?!\d)(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
     r"(?P<exp>[eE][+-]?\d+)?"
     r"(?P<scale>\s?[千万億兆]|[kKMB](?![A-Za-z])|\s(?:thousand|million|billion|trillion)\b)?"
-    r"(?P<pct>\s?(?:%|パーセント|ポイント|percent\b|pct\b|pts?\b|percentage points?\b))?")
+    r"(?P<pct>\s?(?:%|パーセント|ポイント|percent\b|pct\b|pts?\b|percentage points?\b|倍|times\b|割))?")
+_NEG = re.compile(r"\s?の?(?:減少|減|低下|下落|マイナス)")
+_POS = re.compile(r"\s?の?(?:増加|増|上昇|伸び|プラス)")
 _ORDINAL = re.compile(r"^(\s*(?:#+\s*)?(?:[-*・•]\s*)?)(?:\(\d{1,2}\)|\d{1,2}[.)](?!\d))")
 _NOTATION = str.maketrans("", "", "⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉")   # R², χ², m² are notation, not values
 _CIRCLED = re.compile(r"^(\s*)[①-⓿❶-➓㉑-㉟㊱-㊿]")
@@ -1182,11 +1456,16 @@ def _plain(digits):
         return float(digits), 10.0 ** -len(frac)
     core = whole.lstrip("0")
     trimmed = core.rstrip("0")
-    return float(digits or 0), (10.0 ** (len(core) - len(trimmed)) if len(trimmed) >= 2 else 0.0)
+    zeros = len(core) - len(trimmed)      # 309+ trailing zeros: the value is inf anyway, never 10.0**309
+    return float(digits or 0), ((10.0 ** zeros if zeros <= 300 else math.inf) if len(trimmed) >= 2 else 0.0)
 
 
 def _tokens(line):
-    """(text, value, display step, percent?, year-like?) for each unsigned number in an NFKC line."""
+    """(text, value, display step, kind, sign, year-like?) for each number in an NFKC line.
+
+    kind is "pct" (%, ポイント, N割 as N×10%), "times" (倍) or "plain"; sign is -1/+1 for an explicit
+    -/−/▲/+ prefix or an attached 減少/増加 word, else None.
+    """
     for m in _NUMBER.finditer(line):
         num, exp, scale, pct = m.group("num"), m.group("exp"), m.group("scale"), m.group("pct")
         digits = num.replace(",", "")
@@ -1194,52 +1473,88 @@ def _tokens(line):
         power = int(exp[1:]) if exp and len(exp) <= 5 else None
         if exp and (power is None or abs(power) > 300 or not math.isfinite(value * 10.0 ** power)):
             # an out-of-range exponent is read as two plain numbers, as number_tokens does
-            yield num, value, step, False, False
-            yield exp, *_plain(exp.lstrip("eE+-") or "0"), False, False
+            yield num, value, step, "plain", None, False
+            yield exp, *_plain(exp.lstrip("eE+-") or "0"), "plain", None, False
             continue
         mult = (_SCALES.get(scale.strip(), 1.0) if scale else 1.0) * (10.0 ** power if exp else 1.0)
-        year = not (exp or scale or pct or "," in num or "." in num) and 1900 <= value <= 2100
-        yield m.group().strip(), value * mult, step * mult, bool(pct), year
+        unit = (pct or "").strip()
+        kind = "times" if unit in ("倍", "times") else "pct" if unit else "plain"
+        if unit == "割":
+            mult, step = mult * 10, max(step, 1.0)
+        prefix = m.group("sign")
+        sign = (-1 if prefix and prefix in "-−▲△" else 1 if prefix else
+                -1 if _NEG.match(line, m.end()) else 1 if _POS.match(line, m.end()) else None)
+        year = (kind == "plain" and sign is None and not (exp or scale or "," in num or "." in num)
+                and 1900 <= value <= 2100)
+        yield m.group().strip(), value * mult, step * mult, kind, sign, year
 
 
 def _source_values(sources):
-    """Every finite number in sources: number_tokens plus strings read with the narrative tokenizer."""
-    values = {abs(x) for x in T.number_tokens(list(sources))}
+    """{(kind, sign): sorted values} of every finite number in sources, read with the narrative tokenizer
+    (numbers inside strings keep their % / 倍 kind and explicit sign; plain numbers are unsigned)."""
+    pool = {}
+
+    def add(kind, sign, value):
+        if math.isfinite(value):
+            pool.setdefault((kind, sign), set()).add(abs(value))
 
     def walk(obj, depth):
-        if depth > 64:
+        if depth > 64 or obj is None or isinstance(obj, bool):
             return
-        if isinstance(obj, str):
-            values.update(abs(t[1]) for t in _tokens(unicodedata.normalize("NFKC", obj)) if math.isfinite(t[1]))
+        if isinstance(obj, (int, float)):
+            value = T._as_float(obj)
+            if value is not None:
+                add("plain", None, value)
+        elif isinstance(obj, str):
+            for _, value, _, kind, sign, _ in _tokens(unicodedata.normalize("NFKC", obj)):
+                add(kind, sign, value)
+        elif isinstance(obj, datetime.date):
+            walk(obj.isoformat(), depth)
         elif isinstance(obj, dict):
             for value in obj.values():
                 walk(value, depth + 1)
-        elif isinstance(obj, (list, tuple)):
+        elif isinstance(obj, (list, tuple, set, frozenset)):
             for value in obj:
                 walk(value, depth + 1)
 
     walk(list(sources), 0)
-    return sorted(values)
+    return {key: sorted(values) for key, values in pool.items()}
 
 
 def verify_numbers(text, *sources):
-    """Numbers in text that cannot be matched to any number in sources (tolerant rounding)."""
+    """Numbers in text that cannot be matched to any number in sources (tolerant rounding).
+
+    The controller passes the exact narration prompt as the only source: a number the model was
+    never shown cannot be grounded by coincidence. A % token matches a % source as written or a
+    plain one ÷100; 倍 multipliers only a 倍 source (the results contain none); an explicitly
+    signed token (−, ▲, +, 減少, 増加) only a source of the same or no sign.
+    """
     if not isinstance(text, str):
         return []
-    values = _source_values(sources)
-    exact = set(values)
+    pool = _source_values(sources)
+    exact = set().union(*pool.values()) if pool else set()
+
+    def found(kinds, signs, value, tol):
+        return any(_found(pool.get((k, s), ()), value, tol) for k in kinds for s in signs)
+
     bad = []
     for raw_line in text.splitlines():
         line = unicodedata.normalize("NFKC", _CIRCLED.sub(r"\1", raw_line).translate(_NOTATION))
-        for token, value, step, pct, year in _tokens(_ORDINAL.sub(r"\1", line)):
+        for token, value, step, kind, sign, year in _tokens(_ORDINAL.sub(r"\1", line)):
+            signs = (None, 1, -1) if sign is None else (None, sign)
+            tol = step / 2
             if year:
                 ok = value in exact          # years must appear verbatim in the sources
+            elif not math.isfinite(value):
+                ok = False
+            elif kind == "times":
+                ok = found(("times",), signs, value, tol)
+            elif kind == "pct":
+                ok = found(("pct",), signs, value, tol) or found(("plain",), signs, value / 100, tol / 100)
             else:
-                tol = step / 2
-                candidates = [(value, tol)] + ([(value / 100, tol / 100), (value * 100, tol * 100)] if pct else [])
-                ok = math.isfinite(value) and any(_found(values, c, t) for c, t in candidates)
+                ok = found(("plain", "pct"), signs, value, tol)
             if not ok:
-                bad.append(token)
+                bad.append(token[:40])
     return list(dict.fromkeys(bad))[:20]
 
 
@@ -1305,13 +1620,14 @@ class AnalystController:
 
     def infer(self, prompt):
         self.check()
-        self.inferences += 1
         try:
             output = self.generate(prompt)
-        except ValueError:
+        except ValueError:          # refused before inference (prompt + reply exceed the context)
             raise ModelUnavailable("context") from None
         except Exception:
+            self.inferences += 1
             raise ModelUnavailable("error") from None
+        self.inferences += 1
         self.check()
         if not isinstance(output, str):
             raise ModelUnavailable("type")
@@ -1347,10 +1663,12 @@ class AnalystController:
         for item in self.params["plan"]:
             try:
                 args = T.validate_args(self.table, item["tool"], item["arguments"])
-            except T.DataError as exc:
+            except Exception as exc:    # one bad caller step never aborts the run
+                message = _clip(str(exc), 200) if isinstance(exc, T.DataError) else self.t(
+                    "手順の引数が不正です。", "Invalid step arguments.")
                 self.steps.append({"call_id": f"call_{len(self.steps) + 1}", "tool": _clip(item["tool"], 40),
                                    "arguments": {}, "source": "caller", "status": "failed",
-                                   "output": {"error": _clip(str(exc), 200)}})
+                                   "output": {"error": message}})
                 self.warnings.append(self.t("指定された手順の一部が不正なため実行しませんでした。",
                                             "Some requested plan steps were invalid and were not run."))
                 continue
@@ -1384,7 +1702,7 @@ class AnalystController:
                 return
             try:
                 status, tool, args = parse_plan_decision(raw, self.table)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, ArithmeticError):
                 if not repaired:
                     repaired = True
                     error = ("JSON形式・ツール名・引数のいずれかが不正です。形式どおりにJSONを1つだけ返してください。"
@@ -1460,7 +1778,7 @@ class AnalystController:
     def finish(self):
         lang = self.language
         findings = build_findings(self.steps, self.table, language=lang)
-        caveats = build_caveats(self.steps, self.table, language=lang)
+        caveats = build_caveats(self.steps, self.table, language=lang, question=self.question)
         dataset = dataset_summary(self.table)
         narrative = template_narrative(self.question, findings, caveats, dataset, lang)
         source, unverified = "template", []
@@ -1468,19 +1786,25 @@ class AnalystController:
             narrative = self.stop_note() + "\n" + narrative
         self.emit("narrative", label=self.t("レポートを作成中", "Writing the report"))
         if self.use_model and self.status == "completed":
+            prompt = narrative_prompt(self.question, findings, caveats, lang)
             try:
-                text = self.infer(narrative_prompt(self.question, findings, caveats, lang)).strip()
+                text = self.infer(prompt).strip()
             except AnalystStopped:
                 self.status = "limited"
                 self.warnings.append(self.stop_note())
                 narrative = self.stop_note() + "\n" + narrative
-            except ModelUnavailable:
-                self.warnings.append(self.t("モデルの文章生成に失敗したため、テンプレートの要約を使用しました。",
-                                            "The model could not write the summary; the template was used."))
+            except ModelUnavailable as exc:
+                self.warnings.append(self.t(
+                    "モデルの入力上限を超えたため、テンプレートの要約を使用しました。" if exc.args[0] == "context"
+                    else "モデルの文章生成に失敗したため、テンプレートの要約を使用しました。",
+                    "The narrative prompt exceeded the model context; the template was used."
+                    if exc.args[0] == "context" else "The model could not write the summary; the template was used."))
             else:
                 problem = _narrative_problem(text)
-                outputs = [s["output"] for s in _completed(self.steps)]
-                unverified = [] if problem else verify_numbers(text, findings, caveats, outputs, dataset)
+                try:    # only numbers the model was shown can ground its text; a guard failure is "unverified"
+                    unverified = [] if problem else verify_numbers(text, prompt)
+                except Exception:
+                    unverified = [self.t("（照合できませんでした）", "(could not verify)")]
                 if problem:
                     self.warnings.append(self.t("モデルの文章が空・長すぎる・不正な形式のため、テンプレートの要約を使用しました。",
                                                 "The model summary was empty, too long or malformed; the template was used."))
@@ -1525,11 +1849,16 @@ def run_analyst(data, generate=None, *, on_event=None, cancelled=None, clock=Non
 def _read_input(path):
     from pathlib import Path
     file = Path(path)
-    if file.stat().st_size > T.LIMITS["max_chars"] * 4:
+    limit = T.LIMITS["max_chars"] * 4
+    with file.open("rb") as handle:      # bounded even when st_size is 0 (pipes, /dev/*)
+        blob = handle.read(limit + 1)
+    if len(blob) > limit:
         raise ValueError("入力ファイルが大きすぎます")
-    blob = file.read_bytes()
     if file.suffix.lower() == ".json":
-        return json.loads(blob.decode("utf-8-sig")), file.stem
+        try:
+            return json.loads(blob.decode("utf-8-sig")), file.stem
+        except (ValueError, RecursionError):
+            raise ValueError("JSONを解析できません") from None
     for encoding in ("utf-8-sig", "cp932"):
         try:
             return blob.decode(encoding), file.stem

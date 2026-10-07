@@ -11,8 +11,9 @@ from unittest.mock import Mock
 import pytest
 
 import neuroquantum_agent_progress
+import qubit_analyst
 from neuroquantum_agent_progress import dispatch_job
-from qubit_analyst import run_analyst
+from qubit_analyst import generation_tokens, run_analyst
 
 ROOT = Path(__file__).parents[1]
 HANDLER_TREE = ast.parse((ROOT / "handler.py").read_text(encoding="utf-8"))
@@ -20,7 +21,7 @@ ENDPOINT = next(n for n in HANDLER_TREE.body if isinstance(n, ast.ClassDef) and 
 CSV = "month,region,sales,cost\n" + "\n".join(
     f"2024-{m:02d}-01,{'東' if m % 2 else '西'},{100 + m * 10 + (m % 3) * 4},{60 + m * 3}" for m in range(1, 13))
 NARRATIVE = "売上は増加傾向です。詳細は所見を参照してください。"
-SAFE_DECODING = {"temperature": 0.2, "max_new_tokens": 320, "repetition_penalty": 1.0,
+SAFE_DECODING = {"temperature": 0.2, "repetition_penalty": 1.0,
                  "no_repeat_ngram_size": 0, "presence_penalty": 0, "frequency_penalty": 0,
                  "repeat_span_blocking": False, "deduplicate_output": False, "min_new_tokens": 0}
 
@@ -47,7 +48,8 @@ def model_reply(prompt):
     return '{"status":"complete"}' if '"remaining"' in prompt else NARRATIVE
 
 
-def endpoint(reply=model_reply, *, max_seq_len=1024, tokens=lambda text: len(text) // 4):
+def endpoint(reply=model_reply, *, max_seq_len=1024, tokens=lambda text: len(text) * 7 // 10):
+    # ~0.7 tokens/char: the repo tokenizer spends 0.6-0.68 tokens/char on analyst prompts
     ep = FakeEndpoint(routed=[], config={"max_seq_len": max_seq_len})
     ep.tokenizer = SimpleNamespace(encode=Mock(side_effect=lambda text, add_special=True: [7] * tokens(text)))
     ep._handle_inference = Mock(side_effect=lambda data: [{"generated_text": reply(data["inputs"])}])
@@ -75,23 +77,31 @@ def test_model_calls_go_straight_to_inference_with_analyst_safe_decoding():
     assert result["generated_text"] == NARRATIVE
     assert ep.routed == []
     assert ep._handle_inference.call_count == report["inference_count"] == 2
+    lengths = []
     for call, encoded in zip(ep._handle_inference.call_args_list, ep.tokenizer.encode.call_args_list):
         payload = call.args[0]
         assert set(payload) == {"inputs", "parameters"}
+        lengths.append(payload["parameters"].pop("max_new_tokens"))
         assert payload["parameters"] == SAFE_DECODING
         assert not payload["inputs"].startswith("質問:")
         assert encoded.args == (f"質問: {payload['inputs']}\n回答:",)
         assert encoded.kwargs == {"add_special": False}
+    assert lengths == [qubit_analyst.PLANNER_NEW_TOKENS, qubit_analyst.NARRATIVE_NEW_TOKENS] == [96, 320]
     assert events == report["events"]
 
 
-@pytest.mark.parametrize("max_seq_len,fits", [(422, True), (421, False)])
-def test_token_budget_reserves_max_new_tokens(max_seq_len, fits):
-    # 100 prompt tokens + BOF/BOS + 320 new tokens must fit in the context window.
+@pytest.mark.parametrize("max_seq_len,calls", [(422, 2), (421, 1), (198, 1), (197, 0)])
+def test_token_budget_reserves_max_new_tokens_per_stage(max_seq_len, calls):
+    # 100 prompt tokens + BOF/BOS + 96 new tokens for a plan decision, + 320 for the narrative.
     ep = endpoint(max_seq_len=max_seq_len, tokens=lambda text: 100)
     [result] = ep._handle_analyst(request())
-    assert ep._handle_inference.call_count == (2 if fits else 0)
-    assert result["analyst"]["narrative_source"] == ("model" if fits else "template")
+    report = result["analyst"]
+    assert ep._handle_inference.call_count == report["inference_count"] == calls
+    assert report["planner_stop"] == ("complete" if calls else "context_overflow")
+    assert report["narrative_source"] == ("model" if calls == 2 else "template")
+    if calls == 1:       # a refused narrative is reported as a context overflow, not a model failure
+        assert any("入力上限" in w for w in report["warnings"])
+        assert not any("失敗" in w for w in report["warnings"])
 
 
 def test_context_overflow_still_completes_with_the_template_narrative():
@@ -132,6 +142,56 @@ def test_invalid_request_is_an_error_without_model_calls():
     [result] = ep._handle_analyst({"action": "analyst", "inputs": "推移は？", "parameters": {}})
     assert set(result) == {"error"} and "parameters.data" in result["error"]
     ep._handle_inference.assert_not_called()
+    # a 400-digit JSON integer used to raise OverflowError past the ValueError handler
+    huge = json.loads('{"inputs":"概要","parameters":{"data":"a,b\\n1,2","max_seconds":' + "1" * 400 + "}}")
+    assert ep._handle_analyst(huge) == [{"error": "max_seconds must be between 1 and 240"}]
+
+
+def test_unexpected_exception_never_reaches_runpod_as_a_traceback(monkeypatch):
+    monkeypatch.setattr(qubit_analyst, "run_analyst", Mock(side_effect=RuntimeError("/secret/path worker-7")))
+    assert endpoint()._handle_analyst(request()) == [{"error": "analyst request failed"}]
+
+
+def real_tokenizer(tmp_path):
+    spm = pytest.importorskip("sentencepiece")
+    pytest.importorskip("google.protobuf")
+    from build_tokenizer_from_vocab import build_tokenizer_model
+    build_tokenizer_model(ROOT / "neuroq_tokenizer.vocab", tmp_path / "tokenizer.model")
+    processor = spm.SentencePieceProcessor(model_file=str(tmp_path / "tokenizer.model"))
+    return lambda text: len(processor.EncodeAsIds(text))
+
+
+def wide_csv(columns, language):
+    import random
+    rng = random.Random(columns)
+    names = (["日付", "地域", "店舗"] + [f"指標{i}_売上高" for i in range(columns)] if language == "ja" else
+             ["date", "region", "store"] + [f"metric_{i}_revenue" for i in range(columns)])[:columns]
+    lines = [",".join(names)]
+    for d in range(40):
+        lines.append(",".join([f"2024-{1 + d // 28:02d}-{1 + d % 28:02d}", rng.choice("AB"), rng.choice("XYZ")]
+                              + [str(rng.randint(100, 9999)) for _ in names[3:]]))
+    return "\n".join(lines)
+
+
+def test_real_tokenizer_prompts_fit_the_serving_budget(tmp_path):
+    count = real_tokenizer(tmp_path)
+    docs = ("月,地域,売上,広告費\n" + "\n".join(f"2025-{m:02d},{r},{1000 + 37 * m + 200 * i},{150 + 9 * m}"
+                                             for m in range(1, 9) for i, r in enumerate(("東日本", "西日本"))))
+    cases = [(docs, q, "ja") for q in ("地域別の売上と、売上と広告費の相関を教えて", "このデータから何が言える？",
+                                       "売上の推移は？")]
+    cases += [(wide_csv(n, lang), q, lang) for n in (4, 8, 12, 20)
+              for lang, q in (("ja", "このデータから何が言える？"), ("en", "What can you tell from this data?"))]
+    for data, question, language in cases:
+        prompts = []
+
+        def generate(prompt):
+            prompts.append(prompt)
+            return '{"status":"complete"}' if generation_tokens(prompt) == 96 else NARRATIVE
+        report = run_analyst({"inputs": question, "parameters": {"data": data, "language": language}},
+                             generate)["analyst"]
+        assert len(prompts) == 2 and report["planner_stop"] == "complete"
+        for prompt in prompts:    # the handler's refusal rule with the tokenizer the Dockerfile builds
+            assert count(f"質問: {prompt}\n回答:") + 2 + generation_tokens(prompt) <= 1024, (question, prompt[:80])
 
 
 # ---------------------------------------------------------------- RunPod progress
@@ -271,3 +331,12 @@ def test_action_lists_document_analyst():
     docs = [ast.get_docstring(HANDLER_TREE), ast.get_docstring(ENDPOINT), ast.get_docstring(call),
             ast.get_docstring(functions["_runpod_handler"]), ast.get_docstring(functions["run_handler"])]
     assert all("analyst" in doc for doc in docs)
+
+
+def test_runpod_image_contains_the_analyst_trainer_and_its_imports():
+    copied = {name for line in (ROOT / "Dockerfile").read_text(encoding="utf-8").splitlines()
+              if line.startswith("COPY ") for name in line.split()[1:-1]}
+    tree = ast.parse((ROOT / "train_analyst.py").read_text(encoding="utf-8"))
+    local = {f"{n.names[0].name if isinstance(n, ast.Import) else n.module}.py" for n in ast.walk(tree)
+             if isinstance(n, (ast.Import, ast.ImportFrom))} & {p.name for p in ROOT.glob("*.py")}
+    assert "train_analyst.py" in copied and local <= copied
