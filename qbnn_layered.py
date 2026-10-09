@@ -3,7 +3,12 @@
 Entangled Quantum Bit Neural Network (E-QBNN)
 層間エンタングルメントを持つ量子ビットニューラルネットワーク
 
-論文 + フィードバックに基づく実装:
+旧稿の加算型・層間補正版（比較用の設計候補）。改訂版論文（2026-10-09）
+Sec.1/5.1 の主仕様は apqb_qbnn_v2.QBNNLayerV2 の乗算型相関ゲート（式(13)-(14)）。
+ここでの「エンタングルメント」は学習可能な古典的特徴間相互作用であり、
+物理的な量子もつれではない。
+
+旧稿 + フィードバックに基づく実装:
 1. 各層に量子状態 |ψ^(l)⟩ を持たせる
 2. 層間のエンタングル演算 U を定義
 3. もつれ項: e^(l) = f_entangle(q^(l), q^(l-1))
@@ -172,8 +177,8 @@ class EQBNNLayer(nn.Module):
     h^(l+1) = σ(W^(l) h^(l) + B^(l) + G(e^(l)))
     
     - 通常の線形変換
-    - 量子もつれからの補正
-    - 幾何学的制約の正則化
+    - 層間相互作用からの補正（古典的。物理的な量子もつれではない）
+    - 幾何学的制約 r²+T²=1 は同一 θ から計算するため恒等的に成立（数値検査用）
     """
     
     def __init__(self, input_dim, output_dim, prev_output_dim=None, entangle_strength=0.5):
@@ -230,7 +235,9 @@ class EQBNNLayer(nn.Module):
         return h_out, self.q
     
     def get_constraint_loss(self):
-        """幾何学的制約 r² + T² = 1 の損失"""
+        """幾何学的制約 r² + T² = 1 の損失。
+        r と T を同一 θ から計算するため式(2)の恒等式により常に ≈0 で、
+        勾配もない（正則化効果はなく数値検査用。互換性のため残置）。"""
         if self.theta is None:
             return 0
         constraint = APQB.constraint(self.theta)
@@ -377,7 +384,8 @@ class EQBNNGenerativeModel(nn.Module):
                 for prev_token in set(generated_tokens[-20:]):  # 直近20トークン
                     next_logits[prev_token] /= repetition_penalty
             
-            # 量子サンプリング
+            # 生成時の古典ノイズ（|sin2θ| はコヒーレンス座標で温度ではない。
+            # 量子測定ノイズでもない。温度を使う場合は式(18)で校正する）
             if use_quantum_sampling and len(self.layers) > 0:
                 last_layer = self.layers[-1]
                 if last_layer.theta is not None:
@@ -845,7 +853,7 @@ def visualize_entanglement(ai, save_path=None):
     x = np.arange(len(layers))
     width = 0.35
     ax.bar(x - width/2, r_values, width, label='r (correlation)', color='blue', alpha=0.7)
-    ax.bar(x + width/2, T_values, width, label='T (temperature)', color='red', alpha=0.7)
+    ax.bar(x + width/2, T_values, width, label='|sin2θ| (coherence; legacy T, not temperature)', color='red', alpha=0.7)
     ax.set_xlabel('Layer')
     ax.set_ylabel('Value')
     ax.set_title('APQB Parameters per Layer')
@@ -889,7 +897,7 @@ def visualize_entanglement(ai, save_path=None):
                    label=f'Layer {s["layer"]}', zorder=5, edgecolors='black')
     
     ax.set_xlabel('r (Correlation)')
-    ax.set_ylabel('T (Temperature)')
+    ax.set_ylabel('|sin2θ| (coherence; legacy T)')
     ax.set_title('Layer States on r-T Plane')
     ax.legend()
     ax.set_xlim(-1.2, 1.2)
@@ -976,7 +984,7 @@ def main(lang='en', num_neurons: int = 4096):
     
     # 7. 論文との対応
     print("\n" + "=" * 70)
-    print("📚 論文との対応（層間エンタングルメント版）")
+    print("📚 旧稿の加算型設計との対応（比較用。主仕様は apqb_qbnn_v2）")
     print("=" * 70)
     print("""
     ┌─────────────────────────────────────────────────────────────────┐
@@ -997,14 +1005,14 @@ def main(lang='en', num_neurons: int = 4096):
     │     - 通常の線形変換 + エンタングル補正                        │
     │                                                                 │
     │  4. 幾何学的制約                                               │
-    │     r² + T² = 1 を損失関数に追加                               │
+    │     r² + T² ≡ 1（同一θから計算するため恒等的に成立。損失は≈0）│
     │                                                                 │
-    │  5. 量子サンプリング                                           │
-    │     生成時に T（温度）で量子ノイズを追加                       │
+    │  5. 生成時サンプリングの古典ノイズ                             │
+    │     logits に N(0,1)×mean|sin2θ|×0.3 を加算                    │
+    │     （温度でも量子ノイズでもない。温度は式(18)で校正）         │
     │                                                                 │
     │  利点:                                                          │
     │     - 深い依存関係を表現                                       │
-    │     - 自然な正則化（幾何学的制約）                             │
     │     - エンタングルメント強度 λ で制御可能                      │
     │                                                                 │
     └─────────────────────────────────────────────────────────────────┘

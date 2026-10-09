@@ -42,7 +42,7 @@ class SimpleQuantumFrontal:
         """判断を実行"""
         # APQB量子ビット計算
         r = math.cos(2 * self.theta)  # 相関係数
-        T = abs(math.sin(2 * self.theta))  # 温度
+        T = abs(math.sin(2 * self.theta))  # コヒーレンス座標 q（旧稿の T。AI温度ではない）
 
         # スコア計算
         base_score = self.apqb_judgment(context, question)

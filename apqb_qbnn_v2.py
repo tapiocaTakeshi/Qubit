@@ -30,6 +30,7 @@ corresponding equations/sections/propositions in the revised paper.
 """
 
 import math
+import operator
 from itertools import combinations, product
 
 import torch
@@ -247,9 +248,9 @@ def three_tangle(state):
 # Section 4: Boolean expansion, harmonic basis, subset products (Eq. 10-12)
 # ===========================================================================
 
-def boolean_cube(d, dtype=torch.float64):
+def boolean_cube(d, dtype=torch.float64, device=None):
     """All 2^d points x in {-1,+1}^d, shape [2^d, d]."""
-    return torch.tensor(list(product((-1.0, 1.0), repeat=d)), dtype=dtype)
+    return torch.tensor(list(product((-1.0, 1.0), repeat=d)), dtype=dtype, device=device)
 
 
 def boolean_characters(x, subsets=None):
@@ -269,7 +270,7 @@ def boolean_fourier_coefficients(f_values, d):
     orthonormal basis, so the expansion is unique. This concerns Boolean
     inputs only; it says nothing about general NN parameter counts.
     Returns (subsets, coeffs [2^d])."""
-    x = boolean_cube(d, dtype=f_values.dtype)
+    x = boolean_cube(d, dtype=f_values.dtype, device=f_values.device)
     subsets, chi = boolean_characters(x)
     return subsets, chi.transpose(0, 1) @ f_values / (2 ** d)
 
@@ -277,7 +278,10 @@ def boolean_fourier_coefficients(f_values, d):
 def boolean_fourier_eval(subsets, coeffs, x):
     """Evaluate f(x) = sum_S f_hat(S) chi_S(x) (Eq. 10)."""
     _, chi = boolean_characters(x, subsets)
-    return chi @ coeffs.to(chi.dtype)
+    # Promote rather than cast to chi's dtype: integer +-1 inputs must not
+    # truncate the (generally fractional) coefficients.
+    dt = torch.promote_types(chi.dtype, coeffs.dtype)
+    return chi.to(dt) @ coeffs.to(device=chi.device, dtype=dt)
 
 
 def chebyshev_features(r, q, K):
@@ -610,11 +614,18 @@ class ThresholdCircuitCalculator:
     partial products; division is restoring division whose trial-subtract
     borrow, inverted, gives each quotient bit and the select signal.
 
-    Only unsigned `width`-bit integers are specified. Signed numbers,
-    fractions, arbitrary precision and expression parsing are out of scope.
+    Only unsigned `width`-bit integers are specified (1 <= width <= 31, so
+    the 2*width-bit product fits in int64). Signed numbers, fractions,
+    arbitrary precision and expression parsing are out of scope, and
+    non-integer or out-of-range operands are rejected, not truncated.
     """
 
     def __init__(self, width=4):
+        if isinstance(width, bool):
+            raise TypeError("width must be an int")
+        width = operator.index(width)
+        if not 1 <= width <= 31:
+            raise ValueError("width must be in 1..31 (mul returns 2*width bits packed into int64)")
         self.width = width
         self.gate = nand_qbnn_layer()
         self.nand_count = 0
@@ -623,7 +634,8 @@ class ThresholdCircuitCalculator:
     def NAND(self, x, y):
         self.nand_count += 1
         with torch.no_grad():
-            return self.gate(torch.stack([x, y], dim=-1)).squeeze(-1)
+            h = torch.stack([x, y], dim=-1).to(self.gate.W.weight.device)
+            return self.gate(h).squeeze(-1).to(x.device)
 
     def NOT(self, x):
         return self.NAND(x, x)
@@ -665,27 +677,36 @@ class ThresholdCircuitCalculator:
         return diff, self.NOT(carry)
 
     # ---- integer API -----------------------------------------------------
-    def _bits(self, x, width=None):
-        x = torch.as_tensor(x, dtype=torch.int64)
-        if (x < 0).any() or (x >= 2 ** self.width).any():
-            raise ValueError(f"inputs must be unsigned {self.width}-bit integers")
-        return int_to_bits(x, width or self.width)
+    def _operands(self, a, b):
+        """Validate two unsigned `width`-bit integer operands, broadcast them
+        to a common shape, and return their bit lists (LSB first)."""
+        xs = []
+        for x in (a, b):
+            x = torch.as_tensor(x)
+            if x.is_floating_point() or x.is_complex() or x.dtype == torch.bool:
+                raise TypeError("operands must be integer tensors or ints")
+            x = x.to(torch.int64)
+            if (x < 0).any() or ((x >> self.width) != 0).any():
+                raise ValueError(f"inputs must be unsigned {self.width}-bit integers")
+            xs.append(x)
+        a, b = torch.broadcast_tensors(*xs)
+        return int_to_bits(a, self.width), int_to_bits(b, self.width)
 
     def add(self, a, b):
         """Returns (A + B) as a (width+1)-bit integer (sum with carry)."""
-        A = self._bits(a)
-        s, c = self._add_bits(A, self._bits(b), torch.zeros_like(A[0]))
+        A, B = self._operands(a, b)
+        s, c = self._add_bits(A, B, torch.zeros_like(A[0]))
         return bits_to_int(s + [c])
 
     def sub(self, a, b):
         """Returns ((A - B) mod 2^width, borrow)."""
-        d, borrow = self._sub_bits(self._bits(a), self._bits(b))
+        d, borrow = self._sub_bits(*self._operands(a, b))
         return bits_to_int(d), bits_to_int([borrow])
 
     def mul(self, a, b):
         """Returns A * B as a (2*width)-bit integer."""
         n = self.width
-        A, B = self._bits(a), self._bits(b)
+        A, B = self._operands(a, b)
         zero = torch.zeros_like(A[0])
         acc = [zero] * (2 * n)
         for i, b_i in enumerate(B):
@@ -698,7 +719,7 @@ class ThresholdCircuitCalculator:
         """Restoring division. Returns (quotient, remainder, div_by_zero).
         For B = 0 the flag is 1 and quotient/remainder are not meaningful."""
         n = self.width
-        A, B = self._bits(a), self._bits(b)
+        A, B = self._operands(a, b)
         zero = torch.zeros_like(A[0])
         B_ext = B + [zero]                      # (n+1)-bit divisor
         R = [zero] * (n + 1)                    # (n+1)-bit remainder

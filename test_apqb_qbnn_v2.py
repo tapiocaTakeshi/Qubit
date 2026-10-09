@@ -78,8 +78,8 @@ def test_entropy_and_coherence_endpoints():
     check("Eq.4: coherence C_l1 == q", torch.allclose(coherence, APQBv2.q_from_r(torch.tensor([0.6]))))
 
 
-def test_prop2_chebyshev_relation():
-    r = torch.tensor(np.random.uniform(-0.99, 0.99, size=20), dtype=torch.float64)
+def test_eq11_chebyshev_relation():
+    r = torch.tensor(np.random.default_rng(0).uniform(-0.99, 0.99, size=20), dtype=torch.float64)
     q = APQBv2.q_from_r(r)
     K = 6
     reals, imags = chebyshev_features(r, q, K)
@@ -114,11 +114,11 @@ def test_single_z_is_not_2n_degrees_of_freedom():
     r = torch.rand(3)
     q = APQBv2.q_from_r(r)
     reals, imags = chebyshev_features(r, q, K)
-    check("Sec.4.2: single-z expansion has K coefficients, not 2^d",
+    check("Sec.4.2: K harmonics (K+1 coefficients incl. constant), not 2^d",
           reals.shape[-1] == K and reals.shape[-1] != 2 ** 4)
 
 
-def test_prop3_subset_product_count():
+def test_eq12_subset_product_count():
     d = 4
     rs = [torch.rand(5) * 2 - 1 for _ in range(d)]
     qs = [APQBv2.q_from_r(r) for r in rs]
@@ -143,6 +143,10 @@ def test_prop3_subset_product_count():
 def test_qbnn_layer_reduces_to_plain_layer_at_lambda_zero():
     torch.manual_seed(1)
     layer = QBNNLayerV2(8, 16, lambda_r_init=0.0, lambda_q_init=0.0)
+    # Nonzero J so the check exercises the lambda=0 branch, not J=0.
+    with torch.no_grad():
+        layer.J_r.normal_()
+        layer.J_q.normal_()
     h = torch.randn(4, 8)
     out = layer(h)
     expected = torch.tanh(layer.W(h))
@@ -223,9 +227,9 @@ def main():
         test_bloch_constraint,
         test_stable_latent_parameterization,
         test_entropy_and_coherence_endpoints,
-        test_prop2_chebyshev_relation,
+        test_eq11_chebyshev_relation,
         test_single_z_is_not_2n_degrees_of_freedom,
-        test_prop3_subset_product_count,
+        test_eq12_subset_product_count,
         test_qbnn_layer_reduces_to_plain_layer_at_lambda_zero,
         test_qbnn_layer_low_rank_matches_shapes,
         test_stochastic_layer_noise_only_in_training,
