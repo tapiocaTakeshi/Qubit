@@ -347,7 +347,7 @@ Qubit AI uses quantum-inspired algorithms from neuroquantum_layered.py:
 ```
 θ(t) = quantum phase at step t
 r = cos(2θ)   (correlation component)
-T = |sin(2θ)| (entanglement component)
+q = |sin(2θ)| (coherence coordinate; not an entanglement measure or temperature)
 ```
 
 Temperature evolves dynamically:

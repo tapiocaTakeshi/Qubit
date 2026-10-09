@@ -15,6 +15,8 @@ from apqb_qbnn_v2 import (
     concurrence_pure,
     ghz_state,
     nand_qbnn_layer,
+    QBNNLayerV2,
+    ThresholdCircuitCalculator,
     qbnn_mac_counts,
     reduced_purity,
     subset_product_features,
@@ -24,8 +26,15 @@ from apqb_qbnn_v2 import (
     zz_correlation,
 )
 
-TOL = 1e-12
+TOL = 1e-12  # Appendix B: pass threshold is max absolute error < 1e-12
 R_GRID = torch.linspace(-1.0, 1.0, 1001, dtype=torch.float64)
+
+
+def assert_max_abs(a, b, tol=TOL):
+    """Table 2 / Appendix B criterion: max |a - b| < tol (no relative slack)."""
+    a, b = torch.as_tensor(a), torch.as_tensor(b)
+    err = (a - b).abs().max().item()
+    assert err < tol, f"max abs error {err:.3e} >= {tol:.0e}"
 
 
 def test_prop1_z_component_is_cos_2theta_with_exact_endpoints():
@@ -33,12 +42,12 @@ def test_prop1_z_component_is_cos_2theta_with_exact_endpoints():
     state = APQBv2.theta_to_state(theta)
     q = APQBv2.q_from_r(R_GRID)
     p0, p1 = APQBv2.probabilities(R_GRID)
-    assert torch.allclose((state ** 2).sum(-1), torch.ones_like(R_GRID), atol=TOL)
-    assert torch.allclose(state[..., 0] ** 2, p0, atol=TOL)
-    assert torch.allclose(state[..., 1] ** 2, p1, atol=TOL)
-    assert torch.allclose(APQBv2.theta_to_r(theta), R_GRID, atol=TOL)
-    assert torch.allclose(APQBv2.theta_to_q(theta), q, atol=1e-7)
-    assert torch.allclose(R_GRID ** 2 + q ** 2, torch.ones_like(R_GRID), atol=TOL)
+    assert_max_abs((state ** 2).sum(-1), torch.ones_like(R_GRID))
+    assert_max_abs(state[..., 0] ** 2, p0)
+    assert_max_abs(state[..., 1] ** 2, p1)
+    assert_max_abs(APQBv2.theta_to_r(theta), R_GRID)
+    assert_max_abs(APQBv2.theta_to_q(theta), q)
+    assert_max_abs(R_GRID ** 2 + q ** 2, torch.ones_like(R_GRID))
     # Endpoints are exact unless a numerical guard is requested explicitly.
     assert APQBv2.r_to_theta(torch.tensor(1.0, dtype=torch.float64)) == 0
     assert APQBv2.r_to_theta(torch.tensor(-1.0, dtype=torch.float64)) == pytest.approx(math.pi / 2)
@@ -53,35 +62,35 @@ def test_eq3_joint_distribution_has_pearson_r():
     s = torch.tensor([1.0, 1.0, -1.0, -1.0], dtype=torch.float64)
     t = torch.tensor([1.0, -1.0, 1.0, -1.0], dtype=torch.float64)
     assert (P >= 0).all()
-    assert torch.allclose(P.sum(-1), torch.ones_like(r), atol=TOL)
-    assert torch.allclose(P @ s, torch.zeros_like(r), atol=TOL)
-    assert torch.allclose(P @ t, torch.zeros_like(r), atol=TOL)
-    assert torch.allclose(P @ (s * t), r, atol=TOL)
+    assert_max_abs(P.sum(-1), torch.ones_like(r))
+    assert_max_abs(P @ s, torch.zeros_like(r))
+    assert_max_abs(P @ t, torch.zeros_like(r))
+    assert_max_abs(P @ (s * t), r)
 
 
 def test_eq4_density_matrix_is_pure_with_coherence_q():
     rho00, rho01, rho11 = APQBv2.density_matrix(R_GRID)
     rho = torch.stack([torch.stack([rho00, rho01], -1), torch.stack([rho01, rho11], -1)], -2)
-    assert torch.allclose(rho @ rho, rho, atol=TOL)
-    assert torch.allclose(APQBv2.coherence_l1(R_GRID), APQBv2.q_from_r(R_GRID))
+    assert_max_abs(rho @ rho, rho)
+    assert_max_abs(APQBv2.coherence_l1(R_GRID), APQBv2.q_from_r(R_GRID))
 
 
 def test_eq5_latent_constraint_is_finite_and_exact():
     a = torch.tensor([-1000, -100, -4, -1, 0, 1, 4, 100, 1000], dtype=torch.float64)
     r, q, theta = APQBv2.from_latent(a)
     assert torch.isfinite(r).all() and torch.isfinite(q).all() and torch.isfinite(theta).all()
-    assert torch.allclose(r ** 2 + q ** 2, torch.ones_like(a), atol=TOL)
+    assert_max_abs(r ** 2 + q ** 2, torch.ones_like(a))
 
 
 def test_prop2_two_qubit_family_concurrence_is_abs_r():
     psi = two_qubit_correlated_state(R_GRID)
     q = APQBv2.q_from_r(R_GRID)
-    assert torch.allclose((psi ** 2).sum(-1), torch.ones_like(R_GRID), atol=TOL)
-    assert torch.allclose(zz_correlation(psi), R_GRID, atol=TOL)
+    assert_max_abs((psi ** 2).sum(-1), torch.ones_like(R_GRID))
+    assert_max_abs(zz_correlation(psi), R_GRID)
     C2 = concurrence_pure(psi)
-    assert torch.allclose(C2, R_GRID.abs(), atol=TOL)
-    assert torch.allclose(C2 ** 2 + q ** 2, torch.ones_like(R_GRID), atol=TOL)
-    assert torch.allclose(reduced_purity(psi), (1 + q ** 2) / 2, atol=TOL)
+    assert_max_abs(C2, R_GRID.abs())
+    assert_max_abs(C2 ** 2 + q ** 2, torch.ones_like(R_GRID))
+    assert_max_abs(reduced_purity(psi), (1 + q ** 2) / 2)
 
 
 def test_sec31_counterexample_r_does_not_determine_concurrence():
@@ -98,8 +107,8 @@ def test_eq8_ghz_three_tangle_is_q_squared():
     G = ghz_state(theta)
     q = APQBv2.q_from_r(R_GRID)
     tau3 = three_tangle(G)
-    assert torch.allclose(tau3, q ** 2, atol=1e-11)
-    assert torch.allclose(R_GRID ** 2 + tau3, torch.ones_like(R_GRID), atol=1e-11)
+    assert_max_abs(tau3, q ** 2)
+    assert_max_abs(R_GRID ** 2 + tau3, torch.ones_like(R_GRID))
     assert (tau3 >= 0).all()
     # W state has zero three-tangle (CKW).
     W = torch.zeros(8, dtype=torch.float64)
@@ -114,7 +123,9 @@ def test_prop3_boolean_expansion_is_unique_and_reconstructs():
     subsets, coeffs = boolean_fourier_coefficients(f, d)
     assert len(subsets) == 2 ** d
     x = boolean_cube(d)
-    assert torch.allclose(boolean_fourier_eval(subsets, coeffs, x), f, atol=TOL)
+    assert_max_abs(boolean_fourier_eval(subsets, coeffs, x), f)
+    # Integer +-1 inputs must not truncate the fractional coefficients.
+    assert_max_abs(boolean_fourier_eval(subsets, coeffs, x.long()), f)
 
 
 def test_sec43_subset_products_match_boolean_characters_at_endpoints():
@@ -125,16 +136,17 @@ def test_sec43_subset_products_match_boolean_characters_at_endpoints():
     subsets, _ = boolean_fourier_coefficients(torch.zeros(2 ** d, dtype=torch.float64), d)
     for S in subsets:
         expected = x[:, list(S)].prod(-1) if S else torch.ones(2 ** d, dtype=torch.float64)
-        assert torch.allclose(feats[S].real, expected) and torch.all(feats[S].imag == 0)
+        assert_max_abs(feats[S].real, expected)
+        assert torch.all(feats[S].imag == 0)
 
 
-def test_eq11_chebyshev_near_endpoints():
-    r = torch.tensor([-1.0, -0.5, 0.0, 0.5, 1.0], dtype=torch.float64)
+def test_eq11_chebyshev_on_grid_including_endpoints():
+    r = R_GRID
     reals, imags = chebyshev_features(r, APQBv2.q_from_r(r), 6)
     two_theta = torch.acos(r)
     for k in range(1, 7):
-        assert torch.allclose(reals[:, k - 1], torch.cos(k * two_theta), atol=1e-12)
-        assert torch.allclose(imags[:, k - 1], torch.sin(k * two_theta), atol=1e-12)
+        assert_max_abs(reals[:, k - 1], torch.cos(k * two_theta))
+        assert_max_abs(imags[:, k - 1], torch.sin(k * two_theta))
 
 
 def test_eq16_mac_counts():
@@ -161,3 +173,43 @@ def test_table3_four_bit_threshold_circuit():
         "div": (240, 0),
         "div_zero_flags": (16, 0),
     }
+
+
+def test_prop4_lambda_zero_with_nonzero_J_is_plain_layer():
+    torch.manual_seed(0)
+    layer = QBNNLayerV2(5, 7, lambda_r_init=0.0, lambda_q_init=0.0).double()
+    with torch.no_grad():
+        layer.J_r.normal_()
+        layer.J_q.normal_()
+    h = torch.randn(3, 5, dtype=torch.float64)
+    assert torch.equal(layer(h), torch.tanh(layer.W(h)))
+
+
+def test_eq15_J_gradient_and_zero_P_gradient_at_init():
+    torch.manual_seed(0)
+    layer = QBNNLayerV2(5, 7).double()  # J = 0, lambda = 0.1 (Sec. 5.2)
+    h = torch.randn(3, 5, dtype=torch.float64)
+    out = layer(h)
+    assert torch.equal(out, torch.tanh(layer.W(h)))  # Prop. 4 with J = 0
+    g = torch.randn_like(out)  # dL/dh'
+    (out * g).sum().backward()
+    u = layer.W(h).detach()
+    upstream = u * (1 - torch.tanh(u) ** 2) * g  # u_j sigma'(u_j) dL/dh'_j
+    r, q = layer.last_r.detach(), layer.last_q.detach()
+    assert_max_abs(layer.J_r.grad, layer.lambda_r.detach() * torch.einsum("bi,bj->ij", r, upstream))
+    assert_max_abs(layer.J_q.grad, layer.lambda_q.detach() * torch.einsum("bi,bj->ij", q, upstream))
+    # While J = 0 the correlation path gives P no task gradient.
+    assert torch.count_nonzero(layer.P.weight.grad) == 0
+    assert torch.count_nonzero(layer.P.bias.grad) == 0
+
+
+def test_calculator_rejects_invalid_operands_and_widths():
+    calc = ThresholdCircuitCalculator(4)
+    assert calc.add(3, torch.arange(4)).tolist() == [3, 4, 5, 6]
+    for a, b in [(3.7, 1), (-1, 1), (16, 0)]:
+        with pytest.raises((TypeError, ValueError)):
+            calc.add(a, b)
+    for width in (0, 32, True, 2.0):
+        with pytest.raises((TypeError, ValueError)):
+            ThresholdCircuitCalculator(width)
+    assert ThresholdCircuitCalculator(31).mul(2 ** 31 - 1, 2 ** 31 - 1).item() == (2 ** 31 - 1) ** 2
