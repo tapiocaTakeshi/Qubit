@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Tests for apqb_qbnn_v2.py against the propositions and equations of the
-APQB/QBNN v2 research draft (Appendix A proofs, Eq. 4-26).
+revised APQB/QBNN paper (2026-10-09), Eq. 1-18.
 """
 
 import math
@@ -48,13 +48,13 @@ def test_prop1_normalization_and_recovery():
 def test_bloch_constraint():
     r = torch.linspace(-1, 1, 50)
     q = APQBv2.q_from_r(r)
-    check("Sec.3.3: r^2+q^2 == 1 (endpoint embedding)", torch.allclose(r ** 2 + q ** 2, torch.ones_like(r), atol=1e-6))
+    check("Eq.2: r^2+q^2 == 1 (endpoint embedding)", torch.allclose(r ** 2 + q ** 2, torch.ones_like(r), atol=1e-6))
 
 
 def test_stable_latent_parameterization():
     a = torch.linspace(-5, 5, 200)
     r, q, theta = APQBv2.from_latent(a)
-    check("Eq.12: tanh^2(a)+sech^2(a) == 1", torch.allclose(r ** 2 + q ** 2, torch.ones_like(a), atol=1e-6))
+    check("Eq.5: tanh^2(a)+sech^2(a) == 1", torch.allclose(r ** 2 + q ** 2, torch.ones_like(a), atol=1e-6))
 
     # dr/da = q^2, dq/da = -rq
     a_grad = a.clone().requires_grad_(True)
@@ -62,8 +62,8 @@ def test_stable_latent_parameterization():
     q_g = 1.0 / torch.cosh(a_grad)
     dr_da = torch.autograd.grad(r_g.sum(), a_grad, retain_graph=True)[0]
     dq_da = torch.autograd.grad(q_g.sum(), a_grad)[0]
-    check("Eq.12: dr/da == q^2", torch.allclose(dr_da, q_g ** 2, atol=1e-4))
-    check("Eq.12: dq/da == -r*q", torch.allclose(dq_da, -r_g * q_g, atol=1e-4))
+    check("Eq.5: dr/da == q^2", torch.allclose(dr_da, q_g ** 2, atol=1e-4))
+    check("Eq.5: dq/da == -r*q", torch.allclose(dq_da, -r_g * q_g, atol=1e-4))
 
 
 def test_entropy_and_coherence_endpoints():
@@ -71,11 +71,11 @@ def test_entropy_and_coherence_endpoints():
     r_edge = torch.tensor([1.0 - 1e-6])
     H_center = APQBv2.entropy_z(r_center)
     H_edge = APQBv2.entropy_z(r_edge)
-    check("Eq.10: H_Z(0) ~ 1 bit", torch.allclose(H_center, torch.ones_like(H_center), atol=1e-3))
-    check("Eq.10: H_Z(r->1) ~ 0", H_edge.item() < 1e-3)
+    check("Sec.2.3: H_Z(0) ~ 1 bit", torch.allclose(H_center, torch.ones_like(H_center), atol=1e-3))
+    check("Sec.2.3: H_Z(r->1) ~ 0", H_edge.item() < 1e-3)
 
     coherence = APQBv2.coherence_l1(torch.tensor([0.6]))
-    check("Sec.3.4: coherence C_l1 == q", torch.allclose(coherence, APQBv2.q_from_r(torch.tensor([0.6]))))
+    check("Eq.4: coherence C_l1 == q", torch.allclose(coherence, APQBv2.q_from_r(torch.tensor([0.6]))))
 
 
 def test_prop2_chebyshev_relation():
@@ -103,18 +103,18 @@ def test_prop2_chebyshev_relation():
             if not np.allclose(imags[:, k - 1].numpy(), expected_imag, atol=1e-6):
                 ok_imag = False
 
-    check("Prop.2: Re(z^k) == T_k(r)", ok_real)
-    check("Prop.2: Im(z^k) == q*U_{k-1}(r)", ok_imag)
+    check("Eq.11: Re(z^k) == T_k(r)", ok_real)
+    check("Eq.11: Im(z^k) == q*U_{k-1}(r)", ok_imag)
 
 
 def test_single_z_is_not_2n_degrees_of_freedom():
-    # Sec. 4.3: a degree-K single-variable expansion has K+1 complex
+    # Sec. 4.2: a degree-K single-variable expansion has K+1 complex
     # coefficients, not 2^n for any n > 1 relevant here.
     K = 5
     r = torch.rand(3)
     q = APQBv2.q_from_r(r)
     reals, imags = chebyshev_features(r, q, K)
-    check("Sec.4.3: single-z expansion has K coefficients, not 2^d",
+    check("Sec.4.2: single-z expansion has K coefficients, not 2^d",
           reals.shape[-1] == K and reals.shape[-1] != 2 ** 4)
 
 
@@ -125,13 +125,13 @@ def test_prop3_subset_product_count():
     zs = [APQBv2.z_from_r_q(r, q) for r, q in zip(rs, qs)]
 
     feats_full = subset_product_features(zs)
-    check("Prop.3: full subset count == 2^d", len(feats_full) == 2 ** d == num_subset_terms(d, d))
-    check("Prop.3: empty set Phi_{} == 1", torch.allclose(feats_full[()].real, torch.ones(5)) and
+    check("Eq.12: full subset count == 2^d", len(feats_full) == 2 ** d == num_subset_terms(d, d))
+    check("Eq.12: empty set Phi_{} == 1", torch.allclose(feats_full[()].real, torch.ones(5)) and
           torch.allclose(feats_full[()].imag, torch.zeros(5)))
 
     feats_k2 = subset_product_features(zs, max_degree=2)
     expected_k2 = sum(math.comb(d, k) for k in range(3))
-    check("Sec.4.5: degree-limited count == sum_{k<=K} C(d,k)", len(feats_k2) == expected_k2 == num_subset_terms(d, 2))
+    check("Eq.12: degree-limited count == sum_{k<=K} C(d,k)", len(feats_k2) == expected_k2 == num_subset_terms(d, 2))
 
     # spot-check one product against direct multiplication
     S = (0, 2)
@@ -146,7 +146,7 @@ def test_qbnn_layer_reduces_to_plain_layer_at_lambda_zero():
     h = torch.randn(4, 8)
     out = layer(h)
     expected = torch.tanh(layer.W(h))
-    check("Sec.6.1(i): lambda_r=lambda_q=0 reduces to plain affine+activation",
+    check("Prop.4: lambda_r=lambda_q=0 reduces to plain affine+activation",
           torch.allclose(out, expected, atol=1e-6))
 
     # r,q recorded and satisfy the constraint
@@ -188,14 +188,14 @@ def test_regularization_loss_terms():
     r_target = torch.zeros_like(layer.last_r)
     reg = qbnn_regularization_loss(layer, r_target=r_target, alpha=1.0, beta_J=0.0, gamma=0.0)
     manual = torch.nn.functional.mse_loss(layer.last_r, r_target)
-    check("Eq.25: L_corr term matches manual MSE", torch.allclose(reg, manual, atol=1e-6))
+    check("Supp.: L_corr term matches manual MSE", torch.allclose(reg, manual, atol=1e-6))
 
 
 def test_correlation_bank_and_nearest_correlation_matrix():
     R = torch.tensor([[1.0, 0.9, -0.9], [0.9, 1.0, 0.9], [-0.9, 0.9, 1.0]])
     r, q = apqb_correlation_bank(R)
-    check("Sec.5.2: r bank == R", torch.allclose(r, R))
-    check("Sec.5.2: q bank == sqrt(1-R^2)", torch.allclose(q, torch.sqrt(1 - R ** 2)))
+    check("Sec.3.3: r bank == R", torch.allclose(r, R))
+    check("Sec.3.3: q bank == sqrt(1-R^2)", torch.allclose(q, torch.sqrt(1 - R ** 2)))
 
     # R above is not PSD (check), nearest_correlation_matrix should fix it
     eigvals = torch.linalg.eigvalsh(R)
@@ -212,9 +212,9 @@ def test_correlation_bank_and_nearest_correlation_matrix():
 def test_calibrated_temperature_mapping():
     q = torch.tensor([0.0, 0.5, 1.0])
     tau = calibrated_temperature(q, tau_min=0.3, tau_max=1.5, gamma=1.0)
-    check("Eq.26: tau(q=0) == tau_min", math.isclose(tau[0].item(), 0.3, abs_tol=1e-6))
-    check("Eq.26: tau(q=1) == tau_max", math.isclose(tau[2].item(), 1.5, abs_tol=1e-6))
-    check("Eq.26: tau is monotonic in q", tau[0] < tau[1] < tau[2])
+    check("Eq.18: tau(q=0) == tau_min", math.isclose(tau[0].item(), 0.3, abs_tol=1e-6))
+    check("Eq.18: tau(q=1) == tau_max", math.isclose(tau[2].item(), 1.5, abs_tol=1e-6))
+    check("Eq.18: tau is monotonic in q", tau[0] < tau[1] < tau[2])
 
 
 def main():
