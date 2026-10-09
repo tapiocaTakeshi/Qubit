@@ -263,30 +263,41 @@ class QBNNMul(nn.Module):
 class QBNNDiv(nn.Module):
     """Newton-Raphson 逆数 (乗算セルを 2n 段積む) + 最後の乗算.
 
-    d' = d / d_max ∈ (0, 1],  r_0 = 1,  r_{k+1} = r_k (2 - d' r_k)
-    → 1/d = r / d_max。 収束に必要な段数 n ≈ log2(40 d_max).
+    負の除数は tanh 符号ニューロン s = sign(d) で 1/d = s / |d| に帰着する。
+    d' = |d| / d_max ∈ (0, 1],  r_0 = 1,  r_{k+1} = r_k (2 - d' r_k)
+    → 1/d = r / d_max。 収束に必要な段数 n ≈ log2(40 d_max / d_min).
     """
 
-    def __init__(self, d_max, a_max, iters=None):
+    def __init__(self, d_max, a_max, d_min=1e-3, iters=None):
         super().__init__()
         self.d_max = float(d_max)
-        self.iters = iters or int(math.ceil(math.log2(40 * d_max))) + 1
+        # (1 - d_min/d_max)^(2^n) < 1e-16 となる段数 (d_min <= |d| <= d_max で収束)
+        self.iters = iters or int(math.ceil(math.log2(40 * d_max / d_min))) + 1
+        # 符号ニューロン: s = tanh(K d) = ±1 (|d| >= 1e-9 で厳密に ±1、勾配 0)
+        self.sign = QBNNLayerV2(1, 1, activation=torch.tanh).to(DTYPE)
+        self.sign.requires_grad_(False)
+        with torch.no_grad():
+            for p in self.sign.parameters():
+                p.zero_()
+            self.sign.W.weight.fill_(1e12)
+        self.mul_s = QBNNMul(y_max=1.0)          # |d| = d * s,  r * s
         self.mul_d = QBNNMul(y_max=1.0)          # d' * r   (d' <= 1)
         self.mul_r = QBNNMul(y_max=2.0)          # r * (2 - d' r)  (0 < . <= 2)
         self.mul_a = QBNNMul(y_max=float(a_max))  # (r/d_max) * a
         self.sub = QBNNAddSub(-1)
 
     def forward(self, a, d):
-        ds = d / self.d_max
+        s = self.sign(d.unsqueeze(-1)).squeeze(-1)
+        ds = self.mul_s(d, s) / self.d_max       # |d| / d_max ∈ (0, 1]
         r = torch.ones_like(d)
         two = torch.full_like(d, 2.0)
         for _ in range(self.iters):
             r = self.mul_r(r, self.sub(two, self.mul_d(r, ds)))
-        return self.mul_a(r / self.d_max, a)
+        return self.mul_a(self.mul_s(r, s) / self.d_max, a)
 
     @property
     def n_layers(self):
-        return 3 * self.iters + 1
+        return 3 * self.iters + 4
 
 
 class ConstructedQBNNCalculator:
