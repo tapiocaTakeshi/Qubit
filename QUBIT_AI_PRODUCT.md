@@ -60,10 +60,10 @@ Qubit.ai is built on the **Adjustable Pseudo Quantum Bit (APQB)** model, which:
 1. **Unifies Statistics, Quantum Theory, and AI**
    - Uses a single parameter θ to control state
    - Maps to correlation coefficient r = cos(2θ)
-   - Coherence coordinate q = sin(2θ) = √(1−r²) ≥ 0 (written "T" in earlier drafts). It is not randomness or a sampling temperature; any temperature is a separately calibrated map of q (revised APQB paper, 2026-10-09, Eq. 18)
+   - Coherence coordinate q = sin(2θ) = √(1−r²) ≥ 0 (written "T" in earlier drafts). It is not randomness or a sampling temperature; the paper defines any temperature as a separately calibrated map of q (revised APQB paper, 2026-10-09, Eq. 18)
 
 2. **Limited, proven correspondence to neural-network features**
-   - Boolean multilinear (Fourier) expansion on x∈{−1,+1}^d (Eq. 10) and subset products of independent APQB coordinates z_i = r_i + i·q_i (Eq. 12)
+   - Subset products Φ_S(z) = ∏_{i∈S} z_i of independent APQB coordinates z_i = r_i + i·q_i (Eq. 12) coincide with the Boolean Fourier basis χ_S(x) = ∏_{i∈S} x_i on x∈{−1,+1}^d (Eq. 10) when r_i = x_i, q_i = 0
    - No general isomorphism between APQB and arbitrary neural networks is claimed
 
 3. **Provides Structured, Controllable Decisions**

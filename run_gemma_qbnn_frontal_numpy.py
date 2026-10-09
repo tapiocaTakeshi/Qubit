@@ -338,7 +338,7 @@ class FrontalDemo:
 【量子推論の特徴】
   - APQB (Adjustable Pseudo Quantum Bit) による量子状態
   - 層間エンタングルメント: e^(l) = f_entangle(q^(l), q^(l-1))
-  - 恒等式: r² + T² = 1（T は改訂版のコヒーレンス座標 q。温度ではない）
+  - 恒等式: r² + T² = 1（T = |sin2θ| はコヒーレンス座標。温度ではない）
   - ハイブリッド推論: 古典的分析 + 量子補正
 
 【システム能力】

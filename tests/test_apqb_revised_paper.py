@@ -3,6 +3,7 @@ Eq. (3)-(12), (16), and the numerical tables 2-3."""
 
 import math
 
+import numpy as np
 import pytest
 import torch
 
@@ -206,6 +207,7 @@ def test_eq15_J_gradient_and_zero_P_gradient_at_init():
 def test_calculator_rejects_invalid_operands_and_widths():
     calc = ThresholdCircuitCalculator(4)
     assert calc.add(3, torch.arange(4)).tolist() == [3, 4, 5, 6]
+    assert calc.add(np.uint64(3), np.uint64(5)).item() == 8
     for a, b in [(3.7, 1), (-1, 1), (16, 0)]:
         with pytest.raises((TypeError, ValueError)):
             calc.add(a, b)
