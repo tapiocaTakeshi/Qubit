@@ -30,6 +30,7 @@ corresponding equations/sections/propositions in the revised paper.
 """
 
 import math
+import numbers
 import operator
 from itertools import combinations, product
 
@@ -682,6 +683,8 @@ class ThresholdCircuitCalculator:
         to a common shape, and return their bit lists (LSB first)."""
         xs = []
         for x in (a, b):
+            if isinstance(x, numbers.Integral) and not isinstance(x, bool):
+                x = int(x)  # e.g. np.uint64 scalars, which as_tensor rejects
             x = torch.as_tensor(x)
             if x.is_floating_point() or x.is_complex() or x.dtype == torch.bool:
                 raise TypeError("operands must be integer tensors or ints")

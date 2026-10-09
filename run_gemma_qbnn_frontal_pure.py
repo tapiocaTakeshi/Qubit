@@ -323,7 +323,7 @@ class FrontalDemo:
 1. APQB (Adjustable Pseudo Quantum Bit)
    ├─ θ → 量子状態: [cos(θ), sin(θ)]
    ├─ 相関係数: r = cos(2θ)
-   ├─ コヒーレンス座標: T = |sin(2θ)|（改訂版の q。AI温度ではない）
+   ├─ コヒーレンス座標: T = |sin(2θ)|（改訂版論文のコヒーレンス座標。AI温度ではない）
    └─ 恒等式: r² + T² = 1
 
 2. 層間エンタングルメント
