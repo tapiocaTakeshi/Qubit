@@ -26,12 +26,12 @@ class APQB:
 
     @staticmethod
     def theta_to_T(theta: np.ndarray) -> np.ndarray:
-        """θ → 温度 T = |sin(2θ)|"""
+        """θ → コヒーレンス座標 q = |sin(2θ)|（旧稿の T。AI温度とは別量で、温度は校正式 Eq.(18) で定義）"""
         return np.abs(np.sin(2 * theta))
 
     @staticmethod
     def constraint(theta: np.ndarray) -> np.ndarray:
-        """制約検証: r² + T² = 1"""
+        """制約検証: r² + q² = 1（T は q と同じ量）"""
         r = APQB.theta_to_r(theta)
         T = APQB.theta_to_T(theta)
         return r**2 + T**2

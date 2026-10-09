@@ -50,7 +50,7 @@ class APQB:
     
     @staticmethod
     def theta_to_T(theta):
-        """θ → 温度 T = |sin(2θ)|"""
+        """θ → コヒーレンス座標 q = |sin(2θ)|（旧稿の T。AI温度とは別量で、温度は校正式 Eq.(18) で定義）"""
         return torch.abs(torch.sin(2 * theta))
     
     @staticmethod
@@ -60,14 +60,14 @@ class APQB:
     
     @staticmethod
     def constraint(theta):
-        """r² + T² = 1 の検証"""
+        """r² + q² = 1 の検証（T は q と同じ量）"""
         r = APQB.theta_to_r(theta)
         T = APQB.theta_to_T(theta)
         return r**2 + T**2
     
     @staticmethod
     def Q_k(theta, k):
-        """k体相関 Q_k(θ)"""
+        """調和特徴 cos(2kθ) / sin(2kθ)（旧稿の k体相関。改訂版では多体もつれ量とはみなさない: apqb_qbnn_v2.three_tangle を参照）"""
         if k % 2 == 0:
             return torch.cos(2 * k * theta)
         else:

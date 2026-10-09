@@ -7,6 +7,7 @@ on:
       - "apqb_qbnn_v2.py"
       - "test_apqb_qbnn_v2.py"
       - "tests/test_apqb_qbnn_regressions.py"
+      - "tests/test_apqb_revised_paper.py"
       - "neuroquantum_layered.py"
       - "neuroquantum_search.py"
       - "qbnn_layered.py"
@@ -21,6 +22,7 @@ on:
       - "apqb_qbnn_v2.py"
       - "test_apqb_qbnn_v2.py"
       - "tests/test_apqb_qbnn_regressions.py"
+      - "tests/test_apqb_revised_paper.py"
       - "neuroquantum_layered.py"
       - "neuroquantum_search.py"
       - "qbnn_layered.py"
@@ -48,7 +50,7 @@ jobs:
           python -m pip install numpy pytest requests
       - name: Test QBNN math, NeuroQuantum attention, and microbatch training
         run: >-
-          python -m pytest -q test_apqb_qbnn_v2.py tests/test_apqb_qbnn_regressions.py
+          python -m pytest -q test_apqb_qbnn_v2.py tests/test_apqb_qbnn_regressions.py tests/test_apqb_revised_paper.py
           tests/test_neuroquantum_regressions.py tests/test_neuroquantum_training.py
           tests/test_neuroquantum_search.py
       - name: Check Runpod entry points
