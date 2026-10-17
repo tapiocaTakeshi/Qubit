@@ -27,6 +27,8 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 import numpy as np
 import math
+import contextlib
+import difflib
 import json
 import os
 from collections import Counter
@@ -712,6 +714,19 @@ def apqb_latent_coords(s: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     return n, eta
 
 
+def apqb_relative_coherence(eta_tokens: torch.Tensor) -> float:
+    """最終トークンの平均コヒーレンス η̄ を、同じ文脈内の η̄ の分布（10〜90%点）で [0, 1] に正規化する。
+    η̄ はモデルごと・層ごとに狭い範囲（例: 0.80〜0.90）に集まるため、そのままでは温度が動かない。
+    トークンが少ない、または分布の幅がないときは中央の 0.5 を返す。"""
+    eta = eta_tokens.detach().float().flatten()
+    if eta.numel() < 3:
+        return 0.5
+    lo, hi = torch.quantile(eta, torch.tensor([0.1, 0.9], device=eta.device)).tolist()
+    if hi - lo < 1e-6:
+        return 0.5
+    return min(max((eta[-1].item() - lo) / (hi - lo), 0.0), 1.0)
+
+
 def apqb_calibrated_temperature(q_bar: float, tau_min: float, tau_max: float,
                                 gamma: float = 1.0) -> float:
     """改訂版論文 式(18): τ = τ_min + (τ_max − τ_min)·q̄^γ（apqb_qbnn_v2.calibrated_temperature と同式）。
@@ -755,6 +770,12 @@ class QBNNLayer(nn.Module):
     J_z は従来の J、J_x, J_y は低ランク (J = A Bᵀ, A はゼロ初期化) なので、初期状態と
     1次元版のチェックポイントを読み込んだ状態では出力が1次元版と完全に一致する。
     z だけでは位相の違い（干渉）を区別できない（論文 式(9)）ため、x, y が位相情報を運ぶ。
+
+    測定サンプリング（論文 式(2)、measurement_rate > 0 で有効。既定は 0 で無効）:
+    各ニューロンを確率 measurement_rate で計算基底で「測定」し、z を期待値 1 − n/2 から
+    測定値 ±1 に置き換える（P(1) = n/4 で −1）。E[測定値] = z なので平均は変わらない。
+    測定したニューロンは |0⟩ か |1⟩ に収縮し、位相とコヒーレンスを失う（x = y = 0）。
+    勾配は straight-through で期待値と同じものを流す。
 
     APQB診断（平方根振幅座標論文 式(11)-(12)）:
     - s_raw = tanh(h̃) を APQB の r とみなし、n = 2(1 − r) と η = sech h̃ を記録する
@@ -825,6 +846,9 @@ class QBNNLayer(nn.Module):
         # Legacy checkpoint buffer; inference no longer depends on request order.
         self.register_buffer('call_count', torch.tensor(0))
 
+        # 測定サンプリングの割合（0 で無効）。チェックポイントには保存しない
+        self.measurement_rate = 0.0
+
         # 3次元ブロッホニューロン: φ, κ の低ランク射影と x, y 成分の結合 J_x, J_y
         self.bloch = bloch
         self.bloch_rank = bloch_rank
@@ -846,6 +870,21 @@ class QBNNLayer(nn.Module):
             if name.startswith(('bloch_', 'J_xy_')) and prefix + name not in state_dict:
                 value = torch.zeros_like(param) if name == 'J_xy_in' else param.detach().clone()
                 state_dict[prefix + name] = value
+
+    def measure_z(self, z: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """式(2): P(1) = n/4 = (1 − z)/2 で計算基底を測定し、測定したニューロンの z を ±1 にする。
+        戻り値は (z または測定値, 測定したかどうかの bool マスク)。measurement_rate = 0 なら (z, None)。"""
+        if self.measurement_rate <= 0:
+            return z, None
+        with torch.no_grad():
+            p1 = ((1 - z.float()) / 2).clamp(0.0, 1.0)
+            outcome = (1 - 2 * torch.bernoulli(p1)).to(z.dtype)  # |0⟩ → +1, |1⟩ → −1
+            if self.measurement_rate >= 1:
+                measured = torch.ones_like(z, dtype=torch.bool)
+            else:
+                measured = torch.rand_like(p1) < self.measurement_rate
+            z_measured = torch.where(measured, outcome, z)
+        return z + (z_measured - z).detach(), measured
 
     def bloch_vectors(self, h_prev: torch.Tensor, h_tilde: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """出力ニューロンのブロッホベクトル b = (κη cos φ, κη sin φ, tanh h̃)（式(6)）と κ を返す。
@@ -890,8 +929,9 @@ class QBNNLayer(nn.Module):
         
         # まず J_{ij} * s_prev_i を計算: (..., output_dim)
         J_s_prev = torch.einsum('...i,ij->...j', s_prev, J)  # (..., output_dim)
-        # 次に s_raw_j を掛ける（z 成分）
-        delta = J_s_prev * s_raw  # (..., output_dim)
+        # 次に s_raw_j を掛ける（z 成分）。測定サンプリング中は測定値 ±1 を使う
+        z, measured = self.measure_z(s_raw)
+        delta = J_s_prev * z  # (..., output_dim)
 
         bloch = None
         if self.bloch:
@@ -899,7 +939,12 @@ class QBNNLayer(nn.Module):
             bloch, kappa = self.bloch_vectors(h_prev, h_tilde)
             field_xy = torch.einsum('...i,cik->c...k', s_prev, self.J_xy_in)
             field_xy = torch.einsum('c...k,cko->c...o', field_xy, self.J_xy_out)
-            delta = delta + field_xy[0] * bloch[..., 0] + field_xy[1] * bloch[..., 1]
+            x, y = bloch[..., 0], bloch[..., 1]
+            if measured is not None:
+                # 測定で |0⟩/|1⟩ に収縮したニューロンは位相とコヒーレンスを失う
+                coherent = (~measured).to(x.dtype)
+                x, y = x * coherent, y * coherent
+            delta = delta + field_xy[0] * x + field_xy[1] * y
         
         # 5. 学習時と推論時で同じλを使い、呼び出し順による変動を防ぐ。
         lambda_eff = self._effective_lambda()
@@ -2316,6 +2361,26 @@ class NeuroQuantum(nn.Module):
             info.append(block_info)
         return info
 
+    def set_measurement_rate(self, rate: float) -> None:
+        """全 QBNN 層の測定サンプリングの割合を設定する（0 で無効、1 で全ニューロンを測定）。"""
+        if not 0.0 <= rate <= 1.0:
+            raise ValueError(f"measurement rate must be in [0, 1], got {rate}")
+        for module in self.modules():
+            if isinstance(module, QBNNLayer):
+                module.measurement_rate = float(rate)
+
+    @contextlib.contextmanager
+    def measurement(self, rate: float = 1.0):
+        """with model.measurement(rate): の間だけ測定サンプリングを有効にし、終了時に元へ戻す。"""
+        layers = [m for m in self.modules() if isinstance(m, QBNNLayer)]
+        previous = [layer.measurement_rate for layer in layers]
+        self.set_measurement_rate(rate)
+        try:
+            yield self
+        finally:
+            for layer, value in zip(layers, previous):
+                layer.measurement_rate = value
+
     def apqb_coherence(self) -> Optional[torch.Tensor]:
         """最終ブロックの QBNN 出力層が直近の forward で記録したトークンごとの平均 η (batch, seq)。"""
         if len(self.transformer_blocks) == 0:
@@ -3223,6 +3288,7 @@ class NeuroQuantumAI:
         temperature: float = None,   # 後方互換性のため（指定された場合temp_min/temp_maxを自動計算）
         temperature_mode: str = "sine",  # "sine"（従来）または "apqb"（コヒーレンス校正）
         temp_gamma: float = 1.0,      # temperature_mode="apqb" の式(18)の指数 γ
+        measurement_rate: float = 0.0,  # 測定サンプリングの割合（0 で無効）
     ) -> str:
         """
         テキスト生成（改善版）
@@ -3239,15 +3305,23 @@ class NeuroQuantumAI:
             temperature_mode: 温度スケジュール。
                         "sine": ステップ依存の正弦スケジュール（従来の既定動作）。
                         "apqb": 最終ブロックの QBNN 出力層が記録した最終トークンの
-                        平均コヒーレンス η̄ = mean sech(h̃)（平方根振幅座標論文 式(11)）から、
-                        τ = temp_min + (temp_max − temp_min)·η̄^γ（改訂版論文 式(18)）で
-                        温度を決める。η̄ は温度そのものではなく、校正式を通してのみ使う。
-            temp_gamma: "apqb" モードの式(18)の指数 γ (> 0)。
+                        平均コヒーレンス η̄ = mean sech(h̃)（平方根振幅座標論文 式(11)）を
+                        文脈内の分布で [0, 1] に正規化し（apqb_relative_coherence）、
+                        u = 1 − η̃ として τ = temp_min + (temp_max − temp_min)·u^γ で温度を決める。
+                        neuroq_checkpoint.pt では η̄ が高いほど予測エントロピーが低い
+                        （最終層で相関 −0.55）ため、モデルが迷っているときほど温度を上げる。
+                        これはエントロピーに応じて温度を上げる方式と同じ向きで、改訂版論文
+                        式(18)（q̄ が高いほど高温）とは逆向き。η̄ 自体は温度ではない。
+            temp_gamma: "apqb" モードの指数 γ (> 0)。
+            measurement_rate: 測定サンプリングの割合 (0〜1)。各 QBNN ニューロンを
+                        P(1) = n/4（論文 式(2)）で測定し、表現レベルの多様性を加える。
         """
         if temperature_mode not in ("sine", "apqb"):
             raise ValueError(f"temperature_mode must be 'sine' or 'apqb', got {temperature_mode!r}")
         if temp_gamma <= 0:
             raise ValueError("temp_gamma must be positive")
+        if not 0.0 <= measurement_rate <= 1.0:
+            raise ValueError(f"measurement_rate must be in [0, 1], got {measurement_rate}")
         # 後方互換性: temperature が指定された場合、temp_min/temp_max に変換
         if temperature is not None:
             temp_min = temperature * 0.8
@@ -3282,7 +3356,7 @@ class NeuroQuantumAI:
         # 重複防止用のN-gram履歴
         ngram_history = []
         
-        with torch.no_grad():
+        with torch.no_grad(), self.model.measurement(measurement_rate):
             for step in range(max_length):
                 # 最新のmax_seq_lenトークンを使用
                 input_tokens = tokens[:, -self.max_seq_len:] if tokens.size(1) > self.max_seq_len else tokens
@@ -3332,9 +3406,10 @@ class NeuroQuantumAI:
 
                 coherence = self.model.apqb_coherence() if temperature_mode == "apqb" else None
                 if coherence is not None:
-                    # 式(18): 最終トークンの平均コヒーレンス η̄ を温度範囲へ校正
+                    # 文脈内で相対的にコヒーレンスが低い（＝モデルが迷っている）ほど高温にする
+                    uncertainty = 1.0 - apqb_relative_coherence(coherence[0])
                     temperature = apqb_calibrated_temperature(
-                        coherence[0, -1].item(), temp_min, temp_max, temp_gamma)
+                        uncertainty, temp_min, temp_max, temp_gamma)
                 else:
                     # 動的温度: θが動けるように範囲内で変化させる
                     theta_phase = step * 0.2  # 位相（滑らかに）
@@ -3422,6 +3497,78 @@ class NeuroQuantumAI:
         # デコード（BOS/EOSを除く）
         decoded = self.tokenizer.decode(generated, skip_special=True)
         return decoded.strip()
+
+    def measurement_uncertainty(
+        self,
+        prompt: str,
+        shots: int = 8,
+        measurement_rate: float = 1.0,
+        max_length: int = 40,
+    ) -> Dict:
+        """測定サンプリングを shots 回繰り返し、答えがどれだけ割れるかでモデルの迷いを測る。
+
+        QBNN ニューロンの測定（論文 式(2)）だけを乱数源にするため、トークン選択は貪欲法
+        （top_k=1）にする。MC ドロップアウトと同じ考え方で、測定ごとに別のネットワークを
+        引いたアンサンブルとみなす。
+
+        Returns:
+            next_token: プロンプト直後の1トークンについて
+                entropy: 平均分布のエントロピー H[p̄]（nats）
+                expected_entropy: 各測定の分布のエントロピーの平均 E[H[p]]
+                mutual_information: H[p̄] − E[H[p]]（測定による不一致の大きさ、0 以上）
+                top1_agreement: 最頻の1位トークンと一致した測定の割合
+                deterministic_entropy: 測定なしのエントロピー
+            answers: 貪欲生成した shots 個の回答（max_length > 0 のとき）
+            answer_agreement: 最も多い回答と一致した割合
+            answer_similarity: 回答どうしの文字列類似度（difflib）の平均
+        """
+        if shots < 2:
+            raise ValueError("shots must be at least 2")
+        if not 0.0 < measurement_rate <= 1.0:
+            raise ValueError(f"measurement_rate must be in (0, 1], got {measurement_rate}")
+        if self.model is None:
+            raise RuntimeError("モデルが未学習です。先に train() するかモデルを読み込んでください")
+        self.model.eval()
+        content_ids = self.tokenizer.encode(prompt, add_special=False)
+        tokens = torch.tensor([[self.tokenizer.bof_id, self.tokenizer.bos_id] + content_ids],
+                              dtype=torch.long, device=self.device)[:, -self.max_seq_len:]
+
+        def entropy(p: torch.Tensor) -> float:
+            return -(p * torch.log(p.clamp_min(1e-12))).sum(-1).item()
+
+        with torch.no_grad():
+            base = F.softmax(self.model(tokens)[0, -1].float(), dim=-1)
+            with self.model.measurement(measurement_rate):
+                probs = torch.stack([F.softmax(self.model(tokens)[0, -1].float(), dim=-1)
+                                     for _ in range(shots)])
+        mean_p = probs.mean(0)
+        top1 = probs.argmax(-1)
+        h_mean = entropy(mean_p)
+        h_each = sum(entropy(p) for p in probs) / shots
+        result = {
+            'shots': shots,
+            'measurement_rate': measurement_rate,
+            'next_token': {
+                'entropy': h_mean,
+                'expected_entropy': h_each,
+                'mutual_information': max(h_mean - h_each, 0.0),
+                'top1_agreement': (top1 == top1.mode().values).float().mean().item(),
+                'deterministic_entropy': entropy(base),
+            },
+        }
+        if max_length > 0:
+            prefix = self.tokenizer.decode(content_ids, skip_special=True).strip()
+            answers = []
+            for _ in range(shots):
+                text = self.generate(prompt, max_length=max_length, top_k=1,
+                                     measurement_rate=measurement_rate)
+                answers.append(text[len(prefix):].strip() if text.startswith(prefix) else text)
+            pairs = [(a, b) for i, a in enumerate(answers) for b in answers[i + 1:]]
+            result['answers'] = answers
+            result['answer_agreement'] = Counter(answers).most_common(1)[0][1] / shots
+            result['answer_similarity'] = (sum(difflib.SequenceMatcher(None, a, b).ratio()
+                                               for a, b in pairs) / len(pairs))
+        return result
 
     def enable_translation_pipeline(
         self,

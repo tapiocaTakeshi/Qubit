@@ -100,22 +100,36 @@ def test_model_quantum_info_reports_every_block(trained_ai):
     assert len(details["layers"][0]["qbnn"]) == 2
 
 
-def test_apqb_temperature_mode_calibrates_from_last_token_coherence(trained_ai):
+def test_relative_coherence_normalizes_within_the_context():
+    eta = torch.tensor([0.80, 0.82, 0.84, 0.86, 0.88, 0.90])
+    assert nq.apqb_relative_coherence(eta) == pytest.approx(1.0)       # highest in context
+    assert nq.apqb_relative_coherence(eta.flip(0)) == pytest.approx(0.0)
+    mid = torch.tensor([0.80, 0.90, 0.85])
+    assert 0.0 < nq.apqb_relative_coherence(mid) < 1.0
+    assert nq.apqb_relative_coherence(torch.tensor([0.8, 0.9])) == 0.5  # too few tokens
+    assert nq.apqb_relative_coherence(torch.full((5,), 0.85)) == 0.5    # no spread
+
+
+def test_apqb_temperature_rises_when_coherence_is_low(trained_ai):
+    """High eta-bar goes with low predictive entropy, so the temperature uses
+    u = 1 - (relative coherence of the last token)."""
     seen = []
     real = nq.apqb_calibrated_temperature
 
-    def spy(q_bar, tau_min, tau_max, gamma):
-        expected = trained_ai.model.apqb_coherence()[0, -1].item()
-        seen.append((q_bar, expected, tau_min, tau_max, gamma))
-        return real(q_bar, tau_min, tau_max, gamma)
+    def spy(u, tau_min, tau_max, gamma):
+        expected = 1.0 - nq.apqb_relative_coherence(trained_ai.model.apqb_coherence()[0])
+        seen.append((u, expected, tau_min, tau_max, gamma))
+        return real(u, tau_min, tau_max, gamma)
 
     with patch.object(nq, "apqb_calibrated_temperature", side_effect=spy):
         trained_ai.generate("量子", max_length=5, temp_min=0.3, temp_max=0.9,
                             temperature_mode="apqb", temp_gamma=2.0)
     assert seen
-    for q_bar, expected, tau_min, tau_max, gamma in seen:
-        assert q_bar == expected and 0 < q_bar <= 1
+    for u, expected, tau_min, tau_max, gamma in seen:
+        assert u == pytest.approx(expected) and 0.0 <= u <= 1.0
         assert (tau_min, tau_max, gamma) == (0.3, 0.9, 2.0)
+    assert nq.apqb_calibrated_temperature(0.0, 0.3, 0.9) == pytest.approx(0.3)  # confident
+    assert nq.apqb_calibrated_temperature(1.0, 0.3, 0.9) == pytest.approx(0.9)  # unsure
 
     with patch.object(nq, "apqb_calibrated_temperature", side_effect=spy) as default_call:
         trained_ai.generate("量子", max_length=3)
@@ -215,3 +229,84 @@ def test_bloch_parameters_receive_gradients():
     assert 0 < info["bloch_norm_mean"] <= 1
     assert 0.5 <= info["bloch_purity_mean"] <= 1
     assert info["J_xy_norm"] > 0
+
+
+def test_measurement_is_an_unbiased_born_rule_sample():
+    layer = QBNNLayer(4, 6, use_qbnn_layered=False)
+    z = torch.tensor([1.0, 0.5, 0.0, -0.5, -1.0], dtype=torch.float64).repeat(40_000, 1)
+    assert layer.measure_z(z) == (z, None)  # rate 0: unchanged
+    layer.measurement_rate = 1.0
+    out, measured = layer.measure_z(z)
+    assert measured.all()
+    assert set(out.unique().tolist()) <= {-1.0, 1.0}
+    # Eq. (2): P(1) = n/4 = (1 - z)/2, so E[outcome] = z; the poles are deterministic.
+    torch.testing.assert_close(out.mean(0), z[0], rtol=0, atol=0.02)
+    assert (out[:, 0] == 1).all() and (out[:, -1] == -1).all()
+    layer.measurement_rate = 0.3
+    _, measured = layer.measure_z(z)
+    assert measured.float().mean().item() == pytest.approx(0.3, abs=0.01)
+    # Straight-through: the gradient is that of the expectation z.
+    zg = torch.full((3, 6), 0.2, requires_grad=True)
+    layer.measure_z(zg)[0].sum().backward()
+    torch.testing.assert_close(zg.grad, torch.ones_like(zg))
+
+
+def test_measured_neurons_lose_phase():
+    layer = QBNNLayer(8, 12, use_qbnn_layered=False).eval()
+    with torch.no_grad():
+        layer.J_xy_in.normal_(std=0.5)
+        layer.lambda_base.fill_(5.0)
+    h = torch.randn(2, 3, 8)
+    layer.measurement_rate = 1.0
+
+    def run():
+        torch.manual_seed(0)
+        return layer(h)
+
+    before = run()
+    with torch.no_grad():
+        layer.bloch_phi.bias.add_(torch.pi)
+    torch.testing.assert_close(run(), before, rtol=0, atol=0)  # x = y = 0 after measurement
+    layer.measurement_rate = 0.0
+    unmeasured = layer(h)
+    with torch.no_grad():
+        layer.bloch_phi.bias.add_(torch.pi)
+    assert (layer(h) - unmeasured).abs().max() > 1e-3
+
+
+def test_measurement_context_restores_rate_and_validates(trained_ai):
+    model = trained_ai.model
+    layers = [m for m in model.modules() if isinstance(m, QBNNLayer)]
+    with model.measurement(0.5):
+        assert all(layer.measurement_rate == 0.5 for layer in layers)
+    assert all(layer.measurement_rate == 0.0 for layer in layers)
+    with pytest.raises(ValueError):
+        model.set_measurement_rate(1.5)
+    with pytest.raises(ValueError):
+        trained_ai.generate("量子", measurement_rate=-0.1)
+    tokens = torch.tensor([[1, 2, 3, 4]])
+    with torch.no_grad():
+        plain = model(tokens)
+        torch.manual_seed(1)
+        with model.measurement(1.0):
+            measured = model(tokens)
+    assert not torch.equal(plain, measured)
+    torch.testing.assert_close(model(tokens), plain, rtol=0, atol=0)  # rate restored
+
+
+def test_measurement_uncertainty_reports_ensemble_disagreement(trained_ai):
+    torch.manual_seed(3)
+    result = trained_ai.measurement_uncertainty("量子", shots=4, max_length=3)
+    nt = result["next_token"]
+    assert nt["mutual_information"] >= 0
+    assert nt["entropy"] >= nt["expected_entropy"] - 1e-6
+    assert 0.25 <= nt["top1_agreement"] <= 1
+    assert len(result["answers"]) == 4
+    assert 0.25 <= result["answer_agreement"] <= 1
+    assert 0 <= result["answer_similarity"] <= 1
+    assert all(layer.measurement_rate == 0.0
+               for layer in trained_ai.model.modules() if isinstance(layer, QBNNLayer))
+    with pytest.raises(ValueError):
+        trained_ai.measurement_uncertainty("量子", shots=1)
+    with pytest.raises(ValueError):
+        trained_ai.measurement_uncertainty("量子", measurement_rate=0.0)
