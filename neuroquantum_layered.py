@@ -695,6 +695,28 @@ def get_model_config_by_size(size: str = "medium", vocab_size: int = 32000) -> d
 
 
 # ========================================
+# Part 0.5: APQB 平方根振幅座標（論文「APQBにおける平方根振幅座標の定式化」v0.1）
+# ========================================
+# 参照実装は apqb_sqrt_amplitude.py。Dockerイメージはこのファイル単体をコピーするため、
+# 生成と診断に必要な式だけをここに持つ（一致は tests/test_neuroquantum_apqb.py で検査）。
+
+def apqb_latent_coords(s: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """式(11): 潜在値 s → (n, η)。r = tanh s, n = 2(1 − r) = 4P(1) ∈ (0, 4),
+    η = sech s = √(1 − r²)。式(12) より dr/ds = η² なので、tanh 経路の勾配は η² 倍に減衰する。"""
+    n = 2 * (1 - torch.tanh(s))
+    eta = 2.0 * torch.exp(-torch.logaddexp(s, -s))  # cosh を経由しない sech
+    return n, eta
+
+
+def apqb_calibrated_temperature(q_bar: float, tau_min: float, tau_max: float,
+                                gamma: float = 1.0) -> float:
+    """改訂版論文 式(18): τ = τ_min + (τ_max − τ_min)·q̄^γ（apqb_qbnn_v2.calibrated_temperature と同式）。
+    q̄ はコヒーレンス座標の平均で、温度そのものではない。q̄ は [0, 1] に丸める。"""
+    q_bar = min(max(float(q_bar), 0.0), 1.0)
+    return tau_min + (tau_max - tau_min) * q_bar ** gamma
+
+
+# ========================================
 # Part 1: QBNN Layer（独自の量子もつれ層）
 # ========================================
 
@@ -718,9 +740,17 @@ class QBNNLayer(nn.Module):
     - ここでの加算型「もつれ補正」は学習可能な古典的相互作用で、物理的な量子もつれ
       ではない。改訂版論文の主仕様は apqb_qbnn_v2.QBNNLayerV2（式(13)-(14)）
     
+    APQB診断（平方根振幅座標論文 式(11)-(12)）:
+    - s_raw = tanh(h̃) を APQB の r とみなし、n = 2(1 − r) と η = sech h̃ を記録する
+    - 補正項 Δ の s_raw 経由の勾配は dr/dh̃ = η² 倍になるため、η² の平均を
+      相関経路の勾配ゲイン、η² < saturation_eta2 の割合を飽和率として報告する
+
     参照: qbnn_layered.py の APQB クラス
     """
-    
+
+    # η² がこれ未満（|h̃| ≳ 3）のユニットは相関経路の勾配が 1% 未満になる
+    saturation_eta2 = 1e-2
+
     def __init__(self, input_dim: int, output_dim: int,
                  lambda_min: float = 0.2, lambda_max: float = 0.5,
                  use_qbnn_layered: bool = True, rho: float = 0.2):  # qbnn_layered.pyを参照
@@ -737,7 +767,14 @@ class QBNNLayer(nn.Module):
         # ログ記録用（学習ループから読み取る、勾配は持たない）
         self.register_buffer('last_correction_norm', torch.tensor(0.0))
         self.register_buffer('last_htilde_norm', torch.tensor(0.0))
-        
+        # APQB診断（チェックポイントには保存しない）
+        self.register_buffer('last_n_mean', torch.tensor(2.0), persistent=False)
+        self.register_buffer('last_eta_mean', torch.tensor(1.0), persistent=False)
+        self.register_buffer('last_grad_gain', torch.tensor(1.0), persistent=False)
+        self.register_buffer('last_saturation', torch.tensor(0.0), persistent=False)
+        # トークンごとの平均 η (batch, seq)。生成時の温度校正（式(18)）で使う
+        self.last_eta_token: Optional[torch.Tensor] = None
+
         if self.use_qbnn_layered:
             # qbnn_layered.py の EQBNNLayer を内部で使用
             self.eqbnn_core = EQBNNLayer(
@@ -817,6 +854,13 @@ class QBNNLayer(nn.Module):
         with torch.no_grad():
             self.last_correction_norm = correction.norm(dim=-1).mean().detach()
             self.last_htilde_norm = htilde_norm.mean().detach()
+            n_apqb, eta = apqb_latent_coords(h_tilde.detach().float())
+            eta2 = eta * eta
+            self.last_n_mean = n_apqb.mean()
+            self.last_eta_mean = eta.mean()
+            self.last_grad_gain = eta2.mean()
+            self.last_saturation = (eta2 < self.saturation_eta2).float().mean()
+            self.last_eta_token = eta.mean(dim=-1)
 
         # 7. 有効入力
         h_hat = h_tilde + correction
@@ -846,6 +890,12 @@ class QBNNLayer(nn.Module):
                 'J_std': J.std().item(),
                 'J_max': J.max().item(),
                 'source': 'qbnn_layered.py' if self.use_qbnn_layered else 'builtin',
+                # 直近の forward の APQB 座標（平方根振幅座標論文 式(11)-(12)）
+                'apqb_n_mean': self.last_n_mean.item(),
+                'apqb_p1_mean': self.last_n_mean.item() / 4,
+                'apqb_eta_mean': self.last_eta_mean.item(),
+                'apqb_grad_gain': self.last_grad_gain.item(),
+                'apqb_saturation': self.last_saturation.item(),
             }
             
             # qbnn_layered.py使用時は追加情報を取得
@@ -2086,7 +2136,9 @@ class NeuroQuantum(nn.Module):
                 'input_mean': h_input.mean().item(),
                 'output_mean': hidden_states.mean().item(),
                 'input_std': h_input.std().item(),
-                'output_std': hidden_states.std().item()
+                'output_std': hidden_states.std().item(),
+                'qbnn': [block.ffn_qbnn_layer1.get_quantum_info(),
+                         block.ffn_qbnn_layer2.get_quantum_info()],
             }
 
             details['layers'].append(block_details)
@@ -2172,14 +2224,23 @@ class NeuroQuantum(nn.Module):
         print("=" * 70)
     
     def get_quantum_info(self) -> List[Dict]:
-        """全層の量子情報を取得"""
+        """全ブロックの QBNN 情報（λ と直近 forward の APQB 診断）を取得"""
         info = []
         for i, block in enumerate(self.transformer_blocks):
-            block_info = {
-                'block': i,
-            }
+            layers = [block.ffn_qbnn_layer1.get_quantum_info(),
+                      block.ffn_qbnn_layer2.get_quantum_info()]
+            block_info = {'block': i, 'qbnn_layers': layers}
+            for key in ('lambda_eff', 'apqb_n_mean', 'apqb_eta_mean',
+                        'apqb_grad_gain', 'apqb_saturation'):
+                block_info[key] = sum(layer[key] for layer in layers) / len(layers)
             info.append(block_info)
         return info
+
+    def apqb_coherence(self) -> Optional[torch.Tensor]:
+        """最終ブロックの QBNN 出力層が直近の forward で記録したトークンごとの平均 η (batch, seq)。"""
+        if len(self.transformer_blocks) == 0:
+            return None
+        return self.transformer_blocks[-1].ffn_qbnn_layer2.last_eta_token
 
 
 # ========================================
@@ -2909,12 +2970,19 @@ class NeuroQuantumAI:
         print("\n✅ 学習完了！")
         
         # 量子情報
-        print("\n⚛️ 量子もつれ情報:")
-        for info in self.model.get_quantum_info():
-            print(f"   Block {info['block']}: λ_attn = {info['attn_lambda']:.4f}")
+        print("\n⚛️ QBNN / APQB 情報:")
+        self._print_quantum_info()
 
         # 検索インデックスは学習済みモデルの埋め込みで作り直す
         self._refresh_search_index()
+
+    def _print_quantum_info(self) -> None:
+        """ブロックごとの λ と、直近 forward の APQB 診断（平方根振幅座標論文 式(11)-(12)）を表示する。"""
+        for info in self.model.get_quantum_info():
+            print(f"   Block {info['block']}: λ_eff = {info['lambda_eff']:.4f}, "
+                  f"n̄ = {info['apqb_n_mean']:.3f}, η̄ = {info['apqb_eta_mean']:.3f}, "
+                  f"勾配ゲイン η² = {info['apqb_grad_gain']:.3f}, "
+                  f"飽和率 = {info['apqb_saturation']:.1%}")
 
     def _refresh_search_index(self) -> None:
         """モデルが差し替わったとき、登録済み文書を保ったままインデックスを再構築する"""
@@ -3070,6 +3138,8 @@ class NeuroQuantumAI:
         repetition_penalty: float = 1.2,  # 調整（1.1〜1.3の範囲）
         no_repeat_ngram_size: int = 3,  # N-gram重複防止
         temperature: float = None,   # 後方互換性のため（指定された場合temp_min/temp_maxを自動計算）
+        temperature_mode: str = "sine",  # "sine"（従来）または "apqb"（コヒーレンス校正）
+        temp_gamma: float = 1.0,      # temperature_mode="apqb" の式(18)の指数 γ
     ) -> str:
         """
         テキスト生成（改善版）
@@ -3083,7 +3153,18 @@ class NeuroQuantumAI:
             temperature: 後方互換性のための単一温度パラメータ。
                         指定された場合、temp_min = temperature * 0.8, 
                         temp_max = temperature * 1.2 に自動変換されます。
+            temperature_mode: 温度スケジュール。
+                        "sine": ステップ依存の正弦スケジュール（従来の既定動作）。
+                        "apqb": 最終ブロックの QBNN 出力層が記録した最終トークンの
+                        平均コヒーレンス η̄ = mean sech(h̃)（平方根振幅座標論文 式(11)）から、
+                        τ = temp_min + (temp_max − temp_min)·η̄^γ（改訂版論文 式(18)）で
+                        温度を決める。η̄ は温度そのものではなく、校正式を通してのみ使う。
+            temp_gamma: "apqb" モードの式(18)の指数 γ (> 0)。
         """
+        if temperature_mode not in ("sine", "apqb"):
+            raise ValueError(f"temperature_mode must be 'sine' or 'apqb', got {temperature_mode!r}")
+        if temp_gamma <= 0:
+            raise ValueError("temp_gamma must be positive")
         # 後方互換性: temperature が指定された場合、temp_min/temp_max に変換
         if temperature is not None:
             temp_min = temperature * 0.8
@@ -3164,9 +3245,15 @@ class NeuroQuantumAI:
                         penalty = repetition_penalty ** (1 + count * 0.3 * recency_weight)
                         next_logits[token_id] /= penalty
 
-                # 動的温度: θが動けるように範囲内で変化させる
-                theta_phase = step * 0.2  # 位相（滑らかに）
-                temperature = temp_min + (temp_max - temp_min) * (0.5 + 0.5 * math.sin(theta_phase))
+                coherence = self.model.apqb_coherence() if temperature_mode == "apqb" else None
+                if coherence is not None:
+                    # 式(18): 最終トークンの平均コヒーレンス η̄ を温度範囲へ校正
+                    temperature = apqb_calibrated_temperature(
+                        coherence[0, -1].item(), temp_min, temp_max, temp_gamma)
+                else:
+                    # 動的温度: θが動けるように範囲内で変化させる
+                    theta_phase = step * 0.2  # 位相（滑らかに）
+                    temperature = temp_min + (temp_max - temp_min) * (0.5 + 0.5 * math.sin(theta_phase))
                 temperature = max(temp_min, min(temp_max, temperature))  # 範囲内に制限
 
                 # 温度調整
@@ -3357,9 +3444,8 @@ class NeuroQuantumAI:
                     continue
                 
                 if user_input == '/quantum':
-                    print(f"\n⚛️ 量子もつれ情報:")
-                    for info in self.model.get_quantum_info():
-                        print(f"   Block {info['block']}: λ_attn = {info['attn_lambda']:.4f}")
+                    print(f"\n⚛️ QBNN / APQB 情報:")
+                    self._print_quantum_info()
                     continue
 
                 if user_input.startswith('/search'):

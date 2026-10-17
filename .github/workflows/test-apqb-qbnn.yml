@@ -5,7 +5,9 @@ on:
     branches: [main, develop]
     paths:
       - "apqb_qbnn_v2.py"
+      - "apqb_sqrt_amplitude.py"
       - "test_apqb_qbnn_v2.py"
+      - "tests/test_apqb_sqrt_amplitude.py"
       - "tests/test_apqb_qbnn_regressions.py"
       - "tests/test_apqb_revised_paper.py"
       - "neuroquantum_layered.py"
@@ -20,7 +22,9 @@ on:
     branches: [main, develop]
     paths:
       - "apqb_qbnn_v2.py"
+      - "apqb_sqrt_amplitude.py"
       - "test_apqb_qbnn_v2.py"
+      - "tests/test_apqb_sqrt_amplitude.py"
       - "tests/test_apqb_qbnn_regressions.py"
       - "tests/test_apqb_revised_paper.py"
       - "neuroquantum_layered.py"
@@ -51,8 +55,9 @@ jobs:
       - name: Test QBNN math, NeuroQuantum attention, and microbatch training
         run: >-
           python -m pytest -q test_apqb_qbnn_v2.py tests/test_apqb_qbnn_regressions.py tests/test_apqb_revised_paper.py
+          tests/test_apqb_sqrt_amplitude.py
           tests/test_neuroquantum_regressions.py tests/test_neuroquantum_training.py
-          tests/test_neuroquantum_search.py
+          tests/test_neuroquantum_search.py tests/test_neuroquantum_apqb.py
       - name: Check Runpod entry points
         run: |
           bash -n scripts/train_neuroquantum_runpod.sh
