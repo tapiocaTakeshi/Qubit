@@ -84,7 +84,20 @@ NeuroQuantum の `QBNNLayer` は、論文の式(11)–(12)（r = tanh s、η = s
 | `apqb_grad_gain` | 相関補正項の tanh 経路の勾配係数 η² の平均 |
 | `apqb_saturation` | η² < 0.01（\|h̃\| ≳ 3）で勾配が 1% 未満になったユニットの割合 |
 
-`NeuroQuantum.get_quantum_info()` はブロックごとにこれらを返します。学習の終わりと対話モードの `/quantum` コマンドでも表示されます。どの値もチェックポイントには保存されません。
+### 3次元ブロッホニューロン
+
+`QBNNLayer`（既定 `bloch=True`、`NeuroQuantumConfig(qbnn_bloch=True, qbnn_bloch_rank=16)`）の各出力ニューロンは、z 座標 tanh(h̃) だけでなく、論文の式(6)のブロッホベクトルを持ちます。
+
+~~~text
+b_j = (κ_j η_j cos φ_j,  κ_j η_j sin φ_j,  z_j)
+z_j = tanh h̃_j,  η_j = sech h̃_j,  n_j = 2(1 − z_j) = 4P(1)
+φ_j, κ_j = 入力からの低ランク射影（κ = σ(·) ∈ (0, 1)）
+Δ_j = (J_xᵀ s)_j x_j + (J_yᵀ s)_j y_j + (J_zᵀ s)_j z_j
+~~~
+
+‖b‖² = z² + κ²η² ≤ 1 なので、各ニューロンはつねに妥当な密度行列 ρ(n, φ, κ) に対応します（命題2）。z だけでは位相の違いによる干渉を区別できません（式(9)）。この位相情報を x, y 成分が運びます。J_z は従来の J です。J_x, J_y は低ランクで、ゼロから学習を始めます。そのため、1次元版のチェックポイントを読み込むと出力は1次元版と完全に一致します（欠けたパラメータは読み込み時に補われます）。追加されるパラメータは約2%です（`neuroq_checkpoint.pt` の構成で +1.05M）。
+
+`NeuroQuantum.get_quantum_info()` はブロックごとにこれらを返します（3次元ニューロンでは κ の平均 `bloch_kappa_mean`、‖b‖ の平均 `bloch_norm_mean`、純度 (1 + ‖b‖²)/2 の平均 `bloch_purity_mean` も返します）。学習の終わりと対話モードの `/quantum` コマンドでも表示されます。どの値もチェックポイントには保存されません。
 
 ---
 

@@ -179,6 +179,8 @@ class NeuroQuantumConfig:
         lambda_entangle: float = 0.5,  # QBNNもつれ強度
         gradient_checkpointing: bool = True,
         use_bf16: bool = True,
+        qbnn_bloch: bool = True,       # QBNN ニューロンを3次元ブロッホベクトルにする
+        qbnn_bloch_rank: int = 16,     # φ, κ 射影と J_x, J_y の低ランク次元
     ):
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
@@ -191,6 +193,8 @@ class NeuroQuantumConfig:
         self.lambda_entangle = lambda_entangle
         self.gradient_checkpointing = gradient_checkpointing
         self.use_bf16 = use_bf16
+        self.qbnn_bloch = qbnn_bloch
+        self.qbnn_bloch_rank = qbnn_bloch_rank
 
 
 def detect_gpu_tier() -> Tuple[str, str, dict]:
@@ -740,8 +744,21 @@ class QBNNLayer(nn.Module):
     - ここでの加算型「もつれ補正」は学習可能な古典的相互作用で、物理的な量子もつれ
       ではない。改訂版論文の主仕様は apqb_qbnn_v2.QBNNLayerV2（式(13)-(14)）
     
+    3次元ブロッホニューロン（平方根振幅座標論文 式(5)-(6)、bloch=True で有効）:
+    各出力ニューロン j を z 座標だけでなくブロッホベクトル
+        b_j = (κ_j η_j cos φ_j, κ_j η_j sin φ_j, z_j),  z_j = tanh h̃_j,  η_j = sech h̃_j
+    として持つ。n_j = 2(1 − z_j) = 4P(1)、φ_j は相対位相、κ_j ∈ (0, 1) はコヒーレンス係数で、
+    φ, κ は入力からの低ランク射影で決める。‖b_j‖² = z² + κ²η² ≤ 1 なので、各ニューロンは
+    常に妥当な1量子ビット密度行列 ρ(n, φ, κ) に対応する（命題2）。補正項は入力が作る
+    3成分の場 F_j = (J_xᵀ s, J_yᵀ s, J_zᵀ s)_j とブロッホベクトルの内積になる：
+        Δ_j = F_j · b_j = (J_xᵀ s)_j x_j + (J_yᵀ s)_j y_j + (J_zᵀ s)_j z_j
+    J_z は従来の J、J_x, J_y は低ランク (J = A Bᵀ, A はゼロ初期化) なので、初期状態と
+    1次元版のチェックポイントを読み込んだ状態では出力が1次元版と完全に一致する。
+    z だけでは位相の違い（干渉）を区別できない（論文 式(9)）ため、x, y が位相情報を運ぶ。
+
     APQB診断（平方根振幅座標論文 式(11)-(12)）:
     - s_raw = tanh(h̃) を APQB の r とみなし、n = 2(1 − r) と η = sech h̃ を記録する
+    - bloch=True のときは κ の平均、‖b‖ の平均、純度 Tr ρ² = (1 + ‖b‖²)/2（式(8)）も記録する
     - 補正項 Δ の s_raw 経由の勾配は dr/dh̃ = η² 倍になるため、η² の平均を
       相関経路の勾配ゲイン、η² < saturation_eta2 の割合を飽和率として報告する
 
@@ -753,7 +770,8 @@ class QBNNLayer(nn.Module):
 
     def __init__(self, input_dim: int, output_dim: int,
                  lambda_min: float = 0.2, lambda_max: float = 0.5,
-                 use_qbnn_layered: bool = True, rho: float = 0.2):  # qbnn_layered.pyを参照
+                 use_qbnn_layered: bool = True, rho: float = 0.2,  # qbnn_layered.pyを参照
+                 bloch: bool = True, bloch_rank: int = 16):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
@@ -772,6 +790,9 @@ class QBNNLayer(nn.Module):
         self.register_buffer('last_eta_mean', torch.tensor(1.0), persistent=False)
         self.register_buffer('last_grad_gain', torch.tensor(1.0), persistent=False)
         self.register_buffer('last_saturation', torch.tensor(0.0), persistent=False)
+        self.register_buffer('last_kappa_mean', torch.tensor(0.0), persistent=False)
+        self.register_buffer('last_bloch_norm', torch.tensor(0.0), persistent=False)
+        self.register_buffer('last_purity', torch.tensor(1.0), persistent=False)
         # トークンごとの平均 η (batch, seq)。生成時の温度校正（式(18)）で使う
         self.last_eta_token: Optional[torch.Tensor] = None
 
@@ -803,6 +824,38 @@ class QBNNLayer(nn.Module):
         
         # Legacy checkpoint buffer; inference no longer depends on request order.
         self.register_buffer('call_count', torch.tensor(0))
+
+        # 3次元ブロッホニューロン: φ, κ の低ランク射影と x, y 成分の結合 J_x, J_y
+        self.bloch = bloch
+        self.bloch_rank = bloch_rank
+        if bloch:
+            self.bloch_proj = nn.Linear(input_dim, bloch_rank, bias=False)
+            self.bloch_phi = nn.Linear(bloch_rank, output_dim)     # 相対位相 φ
+            self.bloch_kappa = nn.Linear(bloch_rank, output_dim)   # κ = σ(·)
+            # J_c = J_xy_in[c] @ J_xy_out[c] (c = x, y)。J_xy_in をゼロにして初期出力を1次元版と一致させる
+            self.J_xy_in = nn.Parameter(torch.zeros(2, input_dim, bloch_rank))
+            self.J_xy_out = nn.Parameter(torch.randn(2, bloch_rank, output_dim) * 0.02)
+            self._register_load_state_dict_pre_hook(self._fill_missing_bloch_state)
+
+    def _fill_missing_bloch_state(self, state_dict, prefix, *args):
+        """1次元版のチェックポイントを strict に読めるよう、欠けたブロッホ用の値を補う。
+        J_xy_in はゼロで補うので、読み込み後の出力は1次元版と一致する。"""
+        if not self.bloch:
+            return
+        for name, param in self.named_parameters():
+            if name.startswith(('bloch_', 'J_xy_')) and prefix + name not in state_dict:
+                value = torch.zeros_like(param) if name == 'J_xy_in' else param.detach().clone()
+                state_dict[prefix + name] = value
+
+    def bloch_vectors(self, h_prev: torch.Tensor, h_tilde: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """出力ニューロンのブロッホベクトル b = (κη cos φ, κη sin φ, tanh h̃)（式(6)）と κ を返す。
+        b: (..., output_dim, 3)"""
+        u = self.bloch_proj(h_prev)
+        phi = self.bloch_phi(u)
+        kappa = torch.sigmoid(self.bloch_kappa(u))
+        radial = kappa * apqb_latent_coords(h_tilde)[1]  # κη: 計算基底の ℓ1 コヒーレンス
+        b = torch.stack([radial * torch.cos(phi), radial * torch.sin(phi), torch.tanh(h_tilde)], dim=-1)
+        return b, kappa
 
     def _effective_lambda(self) -> torch.Tensor:
         # Preserve the trained mapping and the old first inference call (phase=0).
@@ -837,8 +890,16 @@ class QBNNLayer(nn.Module):
         
         # まず J_{ij} * s_prev_i を計算: (..., output_dim)
         J_s_prev = torch.einsum('...i,ij->...j', s_prev, J)  # (..., output_dim)
-        # 次に s_raw_j を掛ける
+        # 次に s_raw_j を掛ける（z 成分）
         delta = J_s_prev * s_raw  # (..., output_dim)
+
+        bloch = None
+        if self.bloch:
+            # 3次元ブロッホニューロン: Δ_j = F_j · b_j（z 成分は上で計算済み）
+            bloch, kappa = self.bloch_vectors(h_prev, h_tilde)
+            field_xy = torch.einsum('...i,cik->c...k', s_prev, self.J_xy_in)
+            field_xy = torch.einsum('c...k,cko->c...o', field_xy, self.J_xy_out)
+            delta = delta + field_xy[0] * bloch[..., 0] + field_xy[1] * bloch[..., 1]
         
         # 5. 学習時と推論時で同じλを使い、呼び出し順による変動を防ぐ。
         lambda_eff = self._effective_lambda()
@@ -861,6 +922,11 @@ class QBNNLayer(nn.Module):
             self.last_grad_gain = eta2.mean()
             self.last_saturation = (eta2 < self.saturation_eta2).float().mean()
             self.last_eta_token = eta.mean(dim=-1)
+            if bloch is not None:
+                norm2 = (bloch.detach().float() ** 2).sum(-1)
+                self.last_kappa_mean = kappa.detach().float().mean()
+                self.last_bloch_norm = norm2.sqrt().mean()
+                self.last_purity = ((1 + norm2) / 2).mean()
 
         # 7. 有効入力
         h_hat = h_tilde + correction
@@ -896,7 +962,15 @@ class QBNNLayer(nn.Module):
                 'apqb_eta_mean': self.last_eta_mean.item(),
                 'apqb_grad_gain': self.last_grad_gain.item(),
                 'apqb_saturation': self.last_saturation.item(),
+                'bloch': self.bloch,
             }
+            if self.bloch:
+                # 3次元ブロッホニューロン（式(6)・式(8)）
+                info['bloch_kappa_mean'] = self.last_kappa_mean.item()
+                info['bloch_norm_mean'] = self.last_bloch_norm.item()
+                info['bloch_purity_mean'] = self.last_purity.item()
+                Jx, Jy = (self.J_xy_in[c] @ self.J_xy_out[c] for c in range(2))
+                info['J_xy_norm'] = torch.sqrt(Jx.pow(2).sum() + Jy.pow(2).sum()).item()
             
             # qbnn_layered.py使用時は追加情報を取得
             if self.use_qbnn_layered:
@@ -1101,13 +1175,17 @@ class QBNNTransformerBlock(nn.Module):
         self.ffn_qbnn_layer1 = QBNNLayer(
             config.embed_dim, config.hidden_dim,
             lambda_min=config.lambda_entangle * 0.5,
-            lambda_max=config.lambda_entangle * 1.5
+            lambda_max=config.lambda_entangle * 1.5,
+            bloch=getattr(config, 'qbnn_bloch', True),
+            bloch_rank=getattr(config, 'qbnn_bloch_rank', 16),
         )
         self.ffn_qbnn_dropout = nn.Dropout(config.dropout)
         self.ffn_qbnn_layer2 = QBNNLayer(
             config.hidden_dim, config.embed_dim,
             lambda_min=config.lambda_entangle * 0.5,
-            lambda_max=config.lambda_entangle * 1.5
+            lambda_max=config.lambda_entangle * 1.5,
+            bloch=getattr(config, 'qbnn_bloch', True),
+            bloch_rank=getattr(config, 'qbnn_bloch_rank', 16),
         )
 
         self.dropout = nn.Dropout(config.dropout)
@@ -2231,8 +2309,10 @@ class NeuroQuantum(nn.Module):
                       block.ffn_qbnn_layer2.get_quantum_info()]
             block_info = {'block': i, 'qbnn_layers': layers}
             for key in ('lambda_eff', 'apqb_n_mean', 'apqb_eta_mean',
-                        'apqb_grad_gain', 'apqb_saturation'):
-                block_info[key] = sum(layer[key] for layer in layers) / len(layers)
+                        'apqb_grad_gain', 'apqb_saturation', 'bloch_kappa_mean',
+                        'bloch_norm_mean', 'bloch_purity_mean'):
+                if all(key in layer for layer in layers):
+                    block_info[key] = sum(layer[key] for layer in layers) / len(layers)
             info.append(block_info)
         return info
 
@@ -2983,6 +3063,9 @@ class NeuroQuantumAI:
                   f"n̄ = {info['apqb_n_mean']:.3f}, η̄ = {info['apqb_eta_mean']:.3f}, "
                   f"勾配ゲイン η² = {info['apqb_grad_gain']:.3f}, "
                   f"飽和率 = {info['apqb_saturation']:.1%}")
+            if 'bloch_norm_mean' in info:
+                print(f"      3次元ニューロン: κ̄ = {info['bloch_kappa_mean']:.3f}, "
+                      f"‖b‖ = {info['bloch_norm_mean']:.3f}, 純度 = {info['bloch_purity_mean']:.3f}")
 
     def _refresh_search_index(self) -> None:
         """モデルが差し替わったとき、登録済み文書を保ったままインデックスを再構築する"""
