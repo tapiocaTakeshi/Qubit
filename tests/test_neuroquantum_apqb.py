@@ -142,3 +142,76 @@ def test_generate_prompt_matches_training_format_without_trailing_eos(trained_ai
         trained_ai.generate("量子ビット", max_length=2)
     content = tok.encode("量子ビット", add_special=False)
     assert seen[0] == [tok.bof_id, tok.bos_id] + content
+
+
+def test_bloch_neurons_are_valid_density_matrices_in_paper_coordinates():
+    layer = QBNNLayer(8, 12, use_qbnn_layered=False).double()
+    with torch.no_grad():
+        layer.W.weight.mul_(3.0)  # spread h̃ so z covers most of (-1, 1)
+    h = torch.randn(4, 5, 8, dtype=torch.float64)
+    h_tilde = layer.W(h)
+    b, kappa = layer.bloch_vectors(h, h_tilde)
+    assert b.shape == (4, 5, 12, 3)
+    # Eq. (6): b = (k eta cos phi, k eta sin phi, 1 - n/2) with n = 2(1 - tanh h̃).
+    n = 2 * (1 - torch.tanh(h_tilde))
+    phi = layer.bloch_phi(layer.bloch_proj(h))
+    torch.testing.assert_close(b, sa.bloch(n, phi, kappa), rtol=0, atol=1e-12)
+    assert (b.norm(dim=-1) <= 1 + 1e-12).all()
+    rho = sa.rho_from_bloch(b)
+    assert torch.linalg.eigvalsh(rho).min() >= -1e-12  # Prop. 2
+    n2, _, kappa2 = sa.from_bloch(b)
+    torch.testing.assert_close(n2, n, rtol=0, atol=1e-12)
+    torch.testing.assert_close(kappa2, kappa, rtol=0, atol=1e-9)
+
+
+@pytest.mark.parametrize("use_core", [False, True])
+def test_bloch_layer_reproduces_1d_layer_from_a_1d_checkpoint(use_core):
+    flat = QBNNLayer(8, 12, use_qbnn_layered=use_core, bloch=False).eval()
+    bloch = QBNNLayer(8, 12, use_qbnn_layered=use_core, bloch=True).eval()
+    with torch.no_grad():
+        bloch.J_xy_in.normal_()  # must be reset to zero by the load hook
+    bloch.load_state_dict(flat.state_dict(), strict=True)
+    assert torch.count_nonzero(bloch.J_xy_in) == 0
+    h = torch.randn(3, 4, 8)
+    torch.testing.assert_close(bloch(h), flat(h), rtol=0, atol=0)
+    assert set(bloch.state_dict()) - set(flat.state_dict()) == {
+        "bloch_proj.weight", "bloch_phi.weight", "bloch_phi.bias",
+        "bloch_kappa.weight", "bloch_kappa.bias", "J_xy_in", "J_xy_out"}
+
+
+def test_bloch_neurons_carry_phase_that_the_z_coordinate_cannot():
+    """Eq. (9): states with equal n but different phase interfere differently.
+    Changing only phi leaves z = tanh h̃ untouched, so a 1D neuron cannot see it."""
+    layer = QBNNLayer(8, 12, use_qbnn_layered=False).eval()
+    h = torch.randn(2, 3, 8)
+    at_init = layer(h)
+    with torch.no_grad():
+        layer.bloch_phi.bias.add_(torch.pi)  # phi -> phi + pi
+    torch.testing.assert_close(layer(h), at_init, rtol=0, atol=0)  # J_x = J_y = 0 at init
+    with torch.no_grad():
+        layer.J_xy_in.normal_(std=0.5)
+        layer.lambda_base.fill_(5.0)
+    before = layer(h)
+    with torch.no_grad():
+        layer.bloch_phi.bias.add_(torch.pi)
+    after = layer(h)
+    assert (after - before).abs().max() > 1e-3
+
+
+def test_bloch_parameters_receive_gradients():
+    layer = QBNNLayer(8, 12, use_qbnn_layered=False)
+    h = torch.randn(2, 3, 8)
+    layer(h).pow(2).sum().backward()
+    # At init only J_xy_in can move (it gates the x, y path).
+    assert layer.J_xy_in.grad.abs().sum() > 0
+    layer.zero_grad()
+    with torch.no_grad():
+        layer.J_xy_in.normal_(std=0.1)
+    layer(h).pow(2).sum().backward()
+    for name in ("bloch_proj.weight", "bloch_phi.weight", "bloch_kappa.weight", "J_xy_out"):
+        assert layer.get_parameter(name).grad.abs().sum() > 0, name
+    info = layer.get_quantum_info()
+    assert 0 < info["bloch_kappa_mean"] < 1
+    assert 0 < info["bloch_norm_mean"] <= 1
+    assert 0.5 <= info["bloch_purity_mean"] <= 1
+    assert info["J_xy_norm"] > 0
