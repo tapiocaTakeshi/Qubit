@@ -777,6 +777,13 @@ class QBNNLayer(nn.Module):
     測定したニューロンは |0⟩ か |1⟩ に収縮し、位相とコヒーレンスを失う（x = y = 0）。
     勾配は straight-through で期待値と同じものを流す。
 
+    ガウス記号による n の量子化（n_floor=True で有効。既定は無効）:
+    n = 2(1 − tanh h̃) を ⌊n⌋ ∈ {0, 1, 2, 3, 4} に切り捨て、z = 1 − ⌊n⌋/2 ∈ {1, ½, 0, −½, −1}、
+    η = √(⌊n⌋(4 − ⌊n⌋))/2 とする（論文 2.1 節で特別な角度に現れる整数値）。z² + η² = 1 なので
+    ブロッホベクトルは球の内側に残る。n は (0, 4) を動くため ⌊n⌋ = 4（z = −1）は飽和時にしか
+    現れず、切り捨てなので n は平均で約 0.5 小さく（z は約 0.25 大きく）なる。
+    勾配は straight-through で連続値のものを流す。測定サンプリングと併用すると P(1) = ⌊n⌋/4。
+
     APQB診断（平方根振幅座標論文 式(11)-(12)）:
     - s_raw = tanh(h̃) を APQB の r とみなし、n = 2(1 − r) と η = sech h̃ を記録する
     - bloch=True のときは κ の平均、‖b‖ の平均、純度 Tr ρ² = (1 + ‖b‖²)/2（式(8)）も記録する
@@ -848,6 +855,8 @@ class QBNNLayer(nn.Module):
 
         # 測定サンプリングの割合（0 で無効）。チェックポイントには保存しない
         self.measurement_rate = 0.0
+        # n にガウス記号 ⌊·⌋ を付けて整数化するか。チェックポイントには保存しない
+        self.n_floor = False
 
         # 3次元ブロッホニューロン: φ, κ の低ランク射影と x, y 成分の結合 J_x, J_y
         self.bloch = bloch
@@ -877,7 +886,8 @@ class QBNNLayer(nn.Module):
         if self.measurement_rate <= 0:
             return z, None
         with torch.no_grad():
-            p1 = ((1 - z.float()) / 2).clamp(0.0, 1.0)
+            zf = z if z.dtype in (torch.float32, torch.float64) else z.float()
+            p1 = ((1 - zf) / 2).clamp(0.0, 1.0)
             outcome = (1 - 2 * torch.bernoulli(p1)).to(z.dtype)  # |0⟩ → +1, |1⟩ → −1
             if self.measurement_rate >= 1:
                 measured = torch.ones_like(z, dtype=torch.bool)
@@ -886,14 +896,34 @@ class QBNNLayer(nn.Module):
             z_measured = torch.where(measured, outcome, z)
         return z + (z_measured - z).detach(), measured
 
-    def bloch_vectors(self, h_prev: torch.Tensor, h_tilde: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """出力ニューロンのブロッホベクトル b = (κη cos φ, κη sin φ, tanh h̃)（式(6)）と κ を返す。
-        b: (..., output_dim, 3)"""
+    def z_eta(self, h_tilde: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """出力ニューロンの (z, η)。通常は (tanh h̃, sech h̃)。n_floor=True のときは
+        n = 2(1 − z) をガウス記号で ⌊n⌋ にし、z = 1 − ⌊n⌋/2、η = √(⌊n⌋(4 − ⌊n⌋))/2 とする
+        （値は整数化したもの、勾配は straight-through で連続値のもの）。"""
+        z = torch.tanh(h_tilde)
+        eta = apqb_latent_coords(h_tilde)[1]
+        if not self.n_floor:
+            return z, eta
+        with torch.no_grad():
+            # bf16/fp16 は境界の判定がずれるので float32 以上で計算する
+            zf = z if z.dtype in (torch.float32, torch.float64) else z.float()
+            n_int = torch.floor(2 * (1 - zf)).clamp(0.0, 4.0)
+            z_int = (1 - n_int / 2).to(z.dtype)
+            eta_int = (torch.sqrt(n_int * (4 - n_int)) / 2).to(eta.dtype)
+        return z + (z_int - z).detach(), eta + (eta_int - eta).detach()
+
+    def bloch_vectors(self, h_prev: torch.Tensor, h_tilde: torch.Tensor,
+                      z: Optional[torch.Tensor] = None,
+                      eta: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        """出力ニューロンのブロッホベクトル b = (κη cos φ, κη sin φ, z)（式(6)）と κ を返す。
+        z, η を省略すると z_eta(h̃) を使う。b: (..., output_dim, 3)"""
+        if z is None or eta is None:
+            z, eta = self.z_eta(h_tilde)
         u = self.bloch_proj(h_prev)
         phi = self.bloch_phi(u)
         kappa = torch.sigmoid(self.bloch_kappa(u))
-        radial = kappa * apqb_latent_coords(h_tilde)[1]  # κη: 計算基底の ℓ1 コヒーレンス
-        b = torch.stack([radial * torch.cos(phi), radial * torch.sin(phi), torch.tanh(h_tilde)], dim=-1)
+        radial = kappa * eta  # κη: 計算基底の ℓ1 コヒーレンス
+        b = torch.stack([radial * torch.cos(phi), radial * torch.sin(phi), z], dim=-1)
         return b, kappa
 
     def _effective_lambda(self) -> torch.Tensor:
@@ -911,7 +941,7 @@ class QBNNLayer(nn.Module):
         h_tilde = self.W(h_prev)  # (..., output_dim)
         
         # 3. 次層の候補を正規化
-        s_raw = torch.tanh(h_tilde)  # (..., output_dim)
+        s_raw, eta_raw = self.z_eta(h_tilde)  # (..., output_dim)。n_floor なら ⌊n⌋ から
         
         # 4. もつれ補正項 Δ
         # Δ_j = Σ_i J_{ij} s^(l)_i * s^(l+1)_{raw,j}
@@ -936,7 +966,7 @@ class QBNNLayer(nn.Module):
         bloch = None
         if self.bloch:
             # 3次元ブロッホニューロン: Δ_j = F_j · b_j（z 成分は上で計算済み）
-            bloch, kappa = self.bloch_vectors(h_prev, h_tilde)
+            bloch, kappa = self.bloch_vectors(h_prev, h_tilde, s_raw, eta_raw)
             field_xy = torch.einsum('...i,cik->c...k', s_prev, self.J_xy_in)
             field_xy = torch.einsum('c...k,cko->c...o', field_xy, self.J_xy_out)
             x, y = bloch[..., 0], bloch[..., 1]
@@ -2381,6 +2411,24 @@ class NeuroQuantum(nn.Module):
             for layer, value in zip(layers, previous):
                 layer.measurement_rate = value
 
+    def set_n_floor(self, enabled: bool) -> None:
+        """全 QBNN 層で n にガウス記号を付ける（⌊n⌋ ∈ {0, 1, 2, 3, 4}）かどうかを設定する。"""
+        for module in self.modules():
+            if isinstance(module, QBNNLayer):
+                module.n_floor = bool(enabled)
+
+    @contextlib.contextmanager
+    def n_floor(self, enabled: bool = True):
+        """with model.n_floor(): の間だけ n をガウス記号で整数化し、終了時に元へ戻す。"""
+        layers = [m for m in self.modules() if isinstance(m, QBNNLayer)]
+        previous = [layer.n_floor for layer in layers]
+        self.set_n_floor(enabled)
+        try:
+            yield self
+        finally:
+            for layer, value in zip(layers, previous):
+                layer.n_floor = value
+
     def apqb_coherence(self) -> Optional[torch.Tensor]:
         """最終ブロックの QBNN 出力層が直近の forward で記録したトークンごとの平均 η (batch, seq)。"""
         if len(self.transformer_blocks) == 0:
@@ -3289,6 +3337,7 @@ class NeuroQuantumAI:
         temperature_mode: str = "sine",  # "sine"（従来）または "apqb"（コヒーレンス校正）
         temp_gamma: float = 1.0,      # temperature_mode="apqb" の式(18)の指数 γ
         measurement_rate: float = 0.0,  # 測定サンプリングの割合（0 で無効）
+        n_floor: bool = False,        # n にガウス記号を付けて ⌊n⌋ にする
     ) -> str:
         """
         テキスト生成（改善版）
@@ -3315,6 +3364,7 @@ class NeuroQuantumAI:
             temp_gamma: "apqb" モードの指数 γ (> 0)。
             measurement_rate: 測定サンプリングの割合 (0〜1)。各 QBNN ニューロンを
                         P(1) = n/4（論文 式(2)）で測定し、表現レベルの多様性を加える。
+            n_floor: True なら QBNN ニューロンの n をガウス記号で ⌊n⌋ ∈ {0, 1, 2, 3, 4} にする。
         """
         if temperature_mode not in ("sine", "apqb"):
             raise ValueError(f"temperature_mode must be 'sine' or 'apqb', got {temperature_mode!r}")
@@ -3356,7 +3406,7 @@ class NeuroQuantumAI:
         # 重複防止用のN-gram履歴
         ngram_history = []
         
-        with torch.no_grad(), self.model.measurement(measurement_rate):
+        with torch.no_grad(), self.model.measurement(measurement_rate), self.model.n_floor(n_floor):
             for step in range(max_length):
                 # 最新のmax_seq_lenトークンを使用
                 input_tokens = tokens[:, -self.max_seq_len:] if tokens.size(1) > self.max_seq_len else tokens

@@ -110,6 +110,10 @@ ai.measurement_uncertainty(prompt, shots=8)        # 測定ごとに貪欲生成
 
 `measurement_uncertainty` は MC ドロップアウトと同じ考え方の不確かさ推定です。返り値は、回答の一致率（`answer_agreement`）、回答どうしの類似度（`answer_similarity`）、次トークンの相互情報量（`next_token.mutual_information`）です。`neuroq_checkpoint.pt` で6問を試すと、覚えている定型回答（「あなたは誰ですか？」など）では8回すべて同じ回答になり、提案や列挙を求める質問では一致率が 25〜50% に下がりました。ただし、割れることは誤りを意味しません（正しく答えた「日本の首都」も 50%）。次トークン1つだけの指標は、ほとんど差が出ませんでした。
 
+### ガウス記号による n の整数化
+
+`generate(n_floor=True)` または `with ai.model.n_floor():` で、各 QBNN ニューロンの n をガウス記号で ⌊n⌋ ∈ {0, 1, 2, 3, 4} に切り捨てます。z = 1 − ⌊n⌋/2 ∈ {1, ½, 0, −½, −1}、η = √(⌊n⌋(4 − ⌊n⌋))/2 となり、z² + η² = 1 なのでブロッホベクトルは球の内側に残ります。勾配は straight-through で連続値のものを流します。n は (0, 4) を動くので ⌊n⌋ = 4 は飽和時にしか現れず、切り捨てで n は平均約 0.5 小さくなります。`neuroq_checkpoint.pt` では ⌊n⌋ = 0, 1, 2, 3 がそれぞれ 19%, 30%, 31%, 21% で、予測の変化はごく小さい値でした（1位の予測の一致 98.3%）。
+
 `NeuroQuantum.get_quantum_info()` はブロックごとにこれらを返します（3次元ニューロンでは κ の平均 `bloch_kappa_mean`、‖b‖ の平均 `bloch_norm_mean`、純度 (1 + ‖b‖²)/2 の平均 `bloch_purity_mean` も返します）。学習の終わりと対話モードの `/quantum` コマンドでも表示されます。どの値もチェックポイントには保存されません。
 
 ---
