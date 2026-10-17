@@ -3188,11 +3188,13 @@ class NeuroQuantumAI:
         
         self.model.eval()
         
-        # プロンプトエンコード（特殊タグなし、シンプルに）
-        tokens = self.tokenizer.encode(prompt, add_special=True)
-        
+        # プロンプトエンコード: 学習時と同じ [BOF, BOS] + 本文。
+        # EOS を付けると、学習データでは EOS の次が EOF なので生成が即終了する。
+        content_ids = self.tokenizer.encode(prompt, add_special=False)
+        tokens = [self.tokenizer.bof_id, self.tokenizer.bos_id] + content_ids
+
         tokens = torch.tensor(tokens, dtype=torch.long).unsqueeze(0).to(self.device)
-        generated = tokens[0].tolist()[1:]  # BOSを除く
+        generated = list(content_ids)
         
         # 重複防止用のN-gram履歴
         ngram_history = []

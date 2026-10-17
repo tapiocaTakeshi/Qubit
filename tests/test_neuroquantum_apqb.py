@@ -79,8 +79,11 @@ def trained_ai():
     ai = NeuroQuantumAI(embed_dim=16, hidden_dim=24, num_heads=2, num_layers=2,
                         max_seq_len=32, dropout=0.0)
     texts = ["量子ビットの状態は確率と位相とコヒーレンスで決まる。"] * 4
-    # Regression: train() used to end with KeyError('attn_lambda').
-    ai.train(texts, epochs=1, batch_size=2, seq_len=16)
+    # Character fallback tokenizer whether or not sentencepiece is installed
+    # (this corpus is far too small for a 32k SentencePiece vocabulary).
+    with patch.object(nq, "SENTENCEPIECE_AVAILABLE", False):
+        # Regression: train() used to end with KeyError('attn_lambda').
+        ai.train(texts, epochs=1, batch_size=2, seq_len=16)
     return ai
 
 
@@ -122,3 +125,20 @@ def test_apqb_temperature_mode_calibrates_from_last_token_coherence(trained_ai):
         trained_ai.generate("量子", temperature_mode="cosine")
     with pytest.raises(ValueError):
         trained_ai.generate("量子", temperature_mode="apqb", temp_gamma=0.0)
+
+
+def test_generate_prompt_matches_training_format_without_trailing_eos(trained_ai):
+    """Training sequences are [BOF, BOS] + text + [EOS, EOF]; a prompt ending in
+    EOS made the model predict EOF immediately, so generation returned nothing."""
+    tok = trained_ai.tokenizer
+    seen = []
+    real_forward = trained_ai.model.forward
+
+    def spy(token_ids, *args, **kwargs):
+        seen.append(token_ids[0].tolist())
+        return real_forward(token_ids, *args, **kwargs)
+
+    with patch.object(trained_ai.model, "forward", side_effect=spy):
+        trained_ai.generate("量子ビット", max_length=2)
+    content = tok.encode("量子ビット", add_special=False)
+    assert seen[0] == [tok.bof_id, tok.bos_id] + content
