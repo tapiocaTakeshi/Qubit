@@ -310,3 +310,64 @@ def test_measurement_uncertainty_reports_ensemble_disagreement(trained_ai):
         trained_ai.measurement_uncertainty("量子", shots=1)
     with pytest.raises(ValueError):
         trained_ai.measurement_uncertainty("量子", measurement_rate=0.0)
+
+
+def test_n_floor_quantizes_to_the_five_integer_levels():
+    layer = QBNNLayer(4, 6, use_qbnn_layered=False)
+    h = torch.linspace(-12, 12, 2001, dtype=torch.float64, requires_grad=True)
+    z, eta = layer.z_eta(h)  # default: continuous
+    torch.testing.assert_close(z, torch.tanh(h))
+    torch.testing.assert_close(eta, sa.sech(h))
+    layer.n_floor = True
+    z, eta = layer.z_eta(h)
+    n = 2 * (1 - torch.tanh(h.detach()))
+    n_int = torch.floor(n)
+    assert set(n_int.unique().tolist()) <= {0.0, 1.0, 2.0, 3.0, 4.0}
+    torch.testing.assert_close(z.detach(), 1 - n_int / 2, rtol=0, atol=0)
+    torch.testing.assert_close(eta.detach(), torch.sqrt(n_int * (4 - n_int)) / 2, rtol=0, atol=0)
+    torch.testing.assert_close(z.detach() ** 2 + eta.detach() ** 2, torch.ones_like(z), rtol=0, atol=1e-12)
+    assert ((n - n_int) >= 0).all() and ((n - n_int) < 1).all()  # floor, not rounding
+    # Straight-through: gradients are those of tanh and sech.
+    grad, = torch.autograd.grad(z.sum() + eta.sum(), h)
+    torch.testing.assert_close(grad, sa.sech(h.detach()) ** 2 - torch.tanh(h.detach()) * sa.sech(h.detach()))
+
+
+def test_n_floor_keeps_bloch_vectors_valid_and_combines_with_measurement():
+    layer = QBNNLayer(8, 12, use_qbnn_layered=False).double()
+    layer.n_floor = True
+    with torch.no_grad():
+        layer.W.weight.mul_(3.0)
+    h = torch.randn(4, 5, 8, dtype=torch.float64)
+    h_tilde = layer.W(h)
+    b, _ = layer.bloch_vectors(h, h_tilde)
+    assert (b.norm(dim=-1) <= 1 + 1e-12).all()
+    assert set(b[..., 2].unique().tolist()) <= {1.0, 0.5, 0.0, -0.5, -1.0}
+    # Measuring a floored z: P(1) = floor(n)/4, so floor(n) = 0 always gives +1.
+    layer.measurement_rate = 1.0
+    z = torch.ones(1000, dtype=torch.float64)
+    assert (layer.measure_z(z)[0] == 1).all()
+
+
+def test_model_n_floor_context_and_generate(trained_ai):
+    model = trained_ai.model
+    layers = [m for m in model.modules() if isinstance(m, QBNNLayer)]
+    tokens = torch.tensor([[1, 2, 3, 4, 5]])
+    with torch.no_grad():
+        plain = model(tokens)
+        with model.n_floor():
+            assert all(layer.n_floor for layer in layers)
+            floored = model(tokens)
+    assert not any(layer.n_floor for layer in layers)
+    assert not torch.equal(plain, floored)
+    torch.testing.assert_close(model(tokens), plain, rtol=0, atol=0)
+    seen = []
+    real_forward = model.forward
+
+    def spy(*args, **kwargs):
+        seen.append(all(layer.n_floor for layer in layers))
+        return real_forward(*args, **kwargs)
+
+    with patch.object(model, "forward", side_effect=spy):
+        trained_ai.generate("量子", max_length=3, n_floor=True)
+    assert seen and all(seen)
+    assert not any(layer.n_floor for layer in layers)
