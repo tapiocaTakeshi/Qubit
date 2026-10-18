@@ -36,6 +36,27 @@ m > 0 なら q の葉の半球体, m < 0 なら反対側の葉の半球体に入
 
 で, 純粋状態の忠実度 F = (1 + b1.b2)/2 を用いれば 1 + 2(1 - F)/(z1 z2).
 
+エンタングルメント (CE1-CE4). 2量子ビットの純粋状態では, 両方の局所ブロッホ
+ベクトルの長さが等しく, 共起 (concurrence) C と |b_A|^2 + C^2 = 1 で結ばれる.
+完全ブロッホ球では |b| = |tanh c| なので
+
+    C = sech c,   エンタングルメント・エントロピー = h((1 + tanh c)/2)     (CE1)
+
+で, 偏極の深さ c がそのままエンタングルメントの量になる. シュミット分解は
+
+    |psi> = cos(a) |P(q_A)>|P(q_B)> + e^{i chi} sin(a) |P(q~_A)>|P(q~_B)>,
+    cos^2(a) = (1 + tanh c)/2                                         (CE2)
+
+すなわち 2つの葉 q, q~ の状態がシュミット基底, 葉軸測定の Born 確率がシュミット
+係数の2乗である. 2量子ビットの純粋状態 (6実パラメータ) は, |c| を共有する2つの
+完全ブロッホ球 (c_A = c, c_B = +-c, q_A, q_B) と位相 chi で表せる. A を葉軸で測ると
+B も対応する葉に収縮する (CE3: 測定結果は完全に相関する). 局所ブロッホベクトル
+を 1/C 倍した (t, x) = (cosh c, sinh c b/|b|) は3次元双曲面 t^2 - |x|^2 = 1 の点で,
+c はその頂点 (ベル状態) からの双曲距離, A 側の局所フィルタ A (det A = 1) は
+この点をローレンツ変換で動かす (CE4). 完全ブロッホ球の中心 (m = 0, 写像の階数が
+落ちる特異点) は最大エンタングルメントで, シュミット基底が決まらない点に当たる.
+混合状態の2量子ビットは一般に 15 実パラメータを要し, この表現には収まらない.
+
 これは単一量子ビットの標準的な量子情報の再表現であり, ネットワークのニューロ
 ンは古典計算機上の状態座標である. 量子優位性や高速化は主張しない. 式の検証は
 tests/test_complete_qbnn.py にある.
@@ -169,6 +190,118 @@ def describe(b) -> Dict[str, float]:
         'depth_median': hyperbolic_depth(b).median().item(),
         'polarization_abs_mean': r2.sqrt().mean().item(),
     }
+
+
+# ---------------------------------------------------------------------------
+# エンタングルメント (CE1-CE4)
+# ---------------------------------------------------------------------------
+
+def pure_state_from_bloch(d):
+    """単位ブロッホベクトル d [..., 3] の純粋状態の振幅 [..., 2] (平方根振幅論文 式(1))."""
+    n, phi, _ = sa.from_bloch(d.to(torch.float64))
+    return sa.state(n, phi)
+
+
+def orthogonal_state(psi):
+    """|psi> = (a, b) に直交する状態 (-b*, a*). ブロッホベクトルは -b (対蹠の葉)."""
+    return torch.stack([-psi[..., 1].conj(), psi[..., 0].conj()], dim=-1)
+
+
+def concurrence_from_polarization(c):
+    """(CE1) C = sqrt(1 - tanh^2 c) = sech c."""
+    return sa.sech(torch.as_tensor(c, dtype=torch.float64))
+
+
+def entanglement_entropy_from_polarization(c):
+    """(CE1) S = h((1 + tanh c)/2) [nats]. c = 0 (中心) で最大 log 2."""
+    p = (1 + torch.tanh(torch.as_tensor(c, dtype=torch.float64))) / 2
+    q = 1 - p
+    return -(torch.xlogy(p, p) + torch.xlogy(q, q))
+
+
+def entangled_pair(c, u_a, v_a, u_b, v_b, chi=0.0, sheet_b=1.0):
+    """(CE2) 2つの完全ブロッホ球から2量子ビットの純粋状態 [..., 4] (基底 |00>,|01>,|10>,|11>).
+
+    A の局所状態は complete_bloch(c, u_a, v_a), B は complete_bloch(sheet_b c, u_b, v_b).
+    シュミット基底は各ニューロンの葉の状態 P(q), P(q~), 係数は sqrt((1 +- tanh c)/2)."""
+    c = torch.as_tensor(c, dtype=torch.float64)
+    m = torch.tanh(c)
+    d_a = sheet_to_sphere(hyperboloid_point(*(torch.as_tensor(t, dtype=torch.float64) for t in (u_a, v_a))))
+    d_b = torch.as_tensor(sheet_b, dtype=torch.float64)[..., None] * sheet_to_sphere(hyperboloid_point(*(torch.as_tensor(t, dtype=torch.float64) for t in (u_b, v_b))))
+    a_plus, b_plus = pure_state_from_bloch(d_a), pure_state_from_bloch(d_b)
+    a_minus, b_minus = orthogonal_state(a_plus), orthogonal_state(b_plus)
+    w_plus = torch.sqrt((1 + m) / 2).to(torch.complex128)
+    w_minus = torch.polar(torch.sqrt((1 - m) / 2), torch.as_tensor(chi, dtype=torch.float64))
+    psi = w_plus[..., None, None] * a_plus[..., :, None] * b_plus[..., None, :] \
+        + w_minus[..., None, None] * a_minus[..., :, None] * b_minus[..., None, :]
+    return psi.flatten(-2)
+
+
+def reduced_bloch(psi):
+    """2量子ビット純粋状態 [..., 4] の局所ブロッホベクトル (b_A, b_B)."""
+    coef = psi.reshape(psi.shape[:-1] + (2, 2))
+    rho_a = coef @ coef.conj().transpose(-1, -2)
+    rho_b = coef.transpose(-1, -2) @ coef.conj()
+    return sa.bloch_from_rho(rho_a), sa.bloch_from_rho(rho_b)
+
+
+def concurrence(psi):
+    """純粋状態の共起 C = 2 |psi_00 psi_11 - psi_01 psi_10|."""
+    return 2 * (psi[..., 0] * psi[..., 3] - psi[..., 1] * psi[..., 2]).abs()
+
+
+def pair_coords(psi, eps=1e-12):
+    """(CE2) の逆写像: 純粋状態 -> (c, u_a, v_a, u_b, v_b, chi, sheet_b).
+    |b| = 0 (ベル状態, 中心) と b_z = 0 (赤道, 無限遠) では葉の点が定まらない."""
+    b_a, b_b = reduced_bloch(psi)
+    c, u_a, v_a = complete_coords(b_a, eps)
+    c_b, u_b, v_b = complete_coords(b_b, eps)
+    sheet_b = torch.where(c * c_b < 0, -torch.ones_like(c), torch.ones_like(c))
+    # 位相 chi は2つのシュミット項の振幅の比から読む (大域位相は打ち消し合う).
+    # "+" 項のシュミットベクトルは P(q_A) = b_A / tanh c と sheet_b P(q_B) = b_B / tanh c
+    m = torch.tanh(c)[..., None]
+    d_a, d_b = b_a / m, b_b / m
+    a_plus, b_plus = pure_state_from_bloch(d_a), pure_state_from_bloch(d_b)
+    a_minus, b_minus = orthogonal_state(a_plus), orthogonal_state(b_plus)
+    coef = psi.reshape(psi.shape[:-1] + (2, 2))
+    amp_plus = torch.einsum('...i,...ij,...j->...', a_plus.conj(), coef, b_plus.conj())
+    amp_minus = torch.einsum('...i,...ij,...j->...', a_minus.conj(), coef, b_minus.conj())
+    chi = torch.remainder(torch.angle(amp_minus) - torch.angle(amp_plus), 2 * torch.pi)
+    return c, u_a, v_a, u_b, v_b, chi, sheet_b
+
+
+def measure_pair_sheets(psi, generator=None):
+    """(CE3) A を葉軸で測定する. 戻り値は (A の結果 +-1, 収縮後の B のブロッホベクトル).
+    結果 +1 (確率 (1 + m)/2) なら B は P(q_B), -1 なら P(q~_B) に収縮する."""
+    b_a, b_b = reduced_bloch(psi)
+    d_a = b_a / torch.linalg.vector_norm(b_a, dim=-1, keepdim=True)
+    a_plus = pure_state_from_bloch(d_a)
+    a_minus = orthogonal_state(a_plus)
+    coef = psi.reshape(psi.shape[:-1] + (2, 2))
+    p_plus = (torch.einsum('...i,...ij->...j', a_plus.conj(), coef).abs() ** 2).sum(-1)
+    outcome = torch.where(torch.rand(p_plus.shape, generator=generator, dtype=torch.float64) < p_plus, 1.0, -1.0)
+    a_out = torch.where(outcome[..., None] > 0, a_plus, a_minus)
+    b_state = torch.einsum('...i,...ij->...j', a_out.conj(), coef)
+    b_state = b_state / torch.linalg.vector_norm(b_state, dim=-1, keepdim=True)
+    rho_b = b_state[..., :, None] * b_state[..., None, :].conj()
+    return outcome, sa.bloch_from_rho(rho_b)
+
+
+def entanglement_hyperboloid(b, eps=1e-12):
+    """(CE4) 純粋2量子ビットの局所ブロッホベクトル b -> 3次元双曲面の点 (t, x) = (1, b)/C,
+    C = sqrt(1 - |b|^2). t^2 - |x|^2 = 1, t = cosh c, |x| = sinh c. 頂点 (1, 0) がベル状態."""
+    C = torch.sqrt(torch.clamp(1 - (b * b).sum(-1, keepdim=True), min=eps))
+    return torch.cat([torch.ones_like(C), b], dim=-1) / C
+
+
+def lorentz_from_filter(A):
+    """(CE4) 局所フィルタ A in SL(2, C) のローレンツ変換 L_{mu nu} = Tr(s_mu A s_nu A^dag)/2
+    (s_0 = I). 非正規化した局所状態の4元ベクトル (Tr rho, Tr rho sigma) に作用する."""
+    A = A.to(torch.complex128)
+    sig = (torch.eye(2, dtype=torch.complex128),) + sa.PAULI
+    Ad = A.conj().transpose(-1, -2)
+    return torch.stack([torch.stack([torch.einsum('ij,...jk,kl,...li->...', si, A, sj, Ad).real / 2
+                                     for sj in sig], -1) for si in sig], -2)
 
 
 def axis_angle_rotation(w):
