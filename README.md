@@ -116,6 +116,16 @@ ai.measurement_uncertainty(prompt, shots=8)        # 測定ごとに貪欲生成
 
 `NeuroQuantum.get_quantum_info()` はブロックごとにこれらを返します（3次元ニューロンでは κ の平均 `bloch_kappa_mean`、‖b‖ の平均 `bloch_norm_mean`、純度 (1 + ‖b‖²)/2 の平均 `bloch_purity_mean` も返します）。学習の終わりと対話モードの `/quantum` コマンドでも表示されます。どの値もチェックポイントには保存されません。
 
+### 完全ブロッホ球と完全QBNN
+
+**完全ブロッホ球**は、二葉双曲面と2つの半球体の組です。
+
+- 二葉双曲面 ζ² − u² − v² = 1 の上の葉は、射影 P(q) = (u, v, 1)/ζ で北半球（|0⟩ 側）に移ります。下の葉は南半球（|1⟩ 側）に移ります。
+- 偏極 m = tanh c を掛けた b = m·P(q) は、2つの半球体でブロッホ球体全体を覆います。
+- 葉軸で測定すると、状態はどちらかの葉に収縮します。
+
+完全QBNN は、このニューロンだけで隠れ層を作ったネットワークです。分類器 `CompleteQBNN` と、再帰型の文字言語モデル `CompleteQBNNLM` / `CompleteQBNNAI` があります。実装は `complete_qbnn.py`、検証は `tests/test_complete_qbnn.py`、詳細は [COMPLETE_QBNN.md](COMPLETE_QBNN.md) にあります。
+
 ---
 
 ## QBNN：APQBを利用したニューラルネットワーク
