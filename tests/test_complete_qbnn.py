@@ -197,3 +197,78 @@ def test_save_and_load_round_trip(tmp_path):
     assert ai2.chars == ai.chars
     tokens = ai.encode(text)[None]
     torch.testing.assert_close(ai.model(tokens)[0], ai2.model(tokens)[0])
+
+
+# ---------------------------------------------------------------------------
+# Entanglement (CE1-CE4)
+# ---------------------------------------------------------------------------
+
+def random_pure_pairs(n, seed):
+    g = torch.Generator().manual_seed(seed)
+    psi = torch.complex(torch.randn(n, 4, generator=g, dtype=torch.float64),
+                        torch.randn(n, 4, generator=g, dtype=torch.float64))
+    return psi / psi.norm(dim=-1, keepdim=True)
+
+
+def test_local_polarization_fixes_the_concurrence():
+    psi = random_pure_pairs(N, 5)
+    b_a, b_b = cq.reduced_bloch(psi)
+    assert_max_abs(b_a.norm(dim=-1), b_b.norm(dim=-1))                  # shared Schmidt spectrum
+    C = cq.concurrence(psi)
+    assert_max_abs(b_a.norm(dim=-1) ** 2 + C ** 2, 1.0)
+    c, *_ = cq.complete_coords(b_a)
+    assert_max_abs(cq.concurrence_from_polarization(c), C, 1e-9)        # CE1: C = sech c
+    coef = psi.reshape(-1, 2, 2)
+    schmidt = torch.linalg.svdvals(coef) ** 2
+    p = schmidt.clamp_min(1e-300)
+    assert_max_abs(cq.entanglement_entropy_from_polarization(c), -(p * p.log()).sum(-1), 1e-9)
+    assert cq.entanglement_entropy_from_polarization(0.0).item() == pytest.approx(math.log(2))
+
+
+def test_two_complete_bloch_spheres_parameterize_every_pure_pair(latent):
+    c, u, v = latent
+    g = torch.Generator().manual_seed(6)
+    u_b, v_b = (2 * torch.randn(2, N, generator=g, dtype=torch.float64)).unbind(0)
+    chi = 2 * math.pi * torch.rand(N, generator=g, dtype=torch.float64)
+    sheet_b = torch.where(torch.rand(N, generator=g) < 0.5, -1.0, 1.0).double()
+    psi = cq.entangled_pair(c, u, v, u_b, v_b, chi, sheet_b)            # CE2
+    assert_max_abs(psi.norm(dim=-1), 1.0)
+    b_a, b_b = cq.reduced_bloch(psi)
+    assert_max_abs(b_a, cq.complete_bloch(c, u, v))
+    assert_max_abs(b_b, cq.complete_bloch(sheet_b * c, u_b, v_b))
+    assert_max_abs(cq.concurrence(psi), cq.concurrence_from_polarization(c), 1e-9)
+    # Inverse: any pure two-qubit state (off the centre and the equator) is recovered up to phase.
+    target = random_pure_pairs(N, 7)
+    coords = cq.pair_coords(target)
+    rebuilt = cq.entangled_pair(*coords)
+    fidelity = (rebuilt.conj() * target).sum(-1).abs()
+    assert_max_abs(fidelity, 1.0, 1e-9)
+
+
+def test_sheet_measurement_on_one_neuron_collapses_the_partner():
+    psi = cq.entangled_pair(torch.full((3000,), 0.4, dtype=torch.float64),
+                            0.7, -0.3, -1.2, 0.5, 1.0)
+    outcome, b_b = cq.measure_pair_sheets(psi, torch.Generator().manual_seed(8))   # CE3
+    d_b = cq.sheet_to_sphere(cq.hyperboloid_point(torch.tensor(-1.2, dtype=torch.float64),
+                                                  torch.tensor(0.5, dtype=torch.float64)))
+    assert_max_abs(b_b, outcome[:, None] * d_b, 1e-9)                   # perfectly correlated sheets
+    assert abs((outcome > 0).double().mean().item() - (1 + math.tanh(0.4)) / 2) < 0.03
+
+
+def test_local_filters_move_the_entanglement_hyperboloid_by_lorentz_maps():
+    psi = random_pure_pairs(500, 9)
+    g = torch.Generator().manual_seed(10)
+    A = torch.complex(torch.randn(500, 2, 2, generator=g, dtype=torch.float64),
+                      torch.randn(500, 2, 2, generator=g, dtype=torch.float64))
+    A = A / torch.sqrt(torch.linalg.det(A))[:, None, None]             # SL(2, C)
+    L = cq.lorentz_from_filter(A)
+    eta = torch.diag(torch.tensor([1.0, -1.0, -1.0, -1.0], dtype=torch.float64))
+    assert_max_abs(L.transpose(-1, -2) @ eta @ L, eta.expand(500, 4, 4), 1e-8)
+    filtered = torch.einsum('nij,njk->nik', A, psi.reshape(-1, 2, 2)).reshape(-1, 4)
+    filtered = filtered / filtered.norm(dim=-1, keepdim=True)          # (A x I)|psi>, renormalized
+    h_before = cq.entanglement_hyperboloid(cq.reduced_bloch(psi)[0])
+    h_after = cq.entanglement_hyperboloid(cq.reduced_bloch(filtered)[0])
+    assert_max_abs(h_before[:, 0] ** 2 - (h_before[:, 1:] ** 2).sum(-1), 1.0, 1e-9)
+    assert torch.allclose(torch.einsum('nij,nj->ni', L, h_before), h_after, rtol=1e-7, atol=1e-7)
+    bell = cq.entanglement_hyperboloid(torch.zeros(3, dtype=torch.float64))
+    assert_max_abs(bell, torch.tensor([1.0, 0.0, 0.0, 0.0], dtype=torch.float64))
