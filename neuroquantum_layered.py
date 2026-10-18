@@ -906,9 +906,9 @@ class QBNNLayer(nn.Module):
         if bloch and bloch_mode == 'complete':
             # 完全ブロッホ球: 双曲面の空間座標 (u, v) と1量子ビットゲート R_j。ゼロ初期化で頂点・恒等
             self.bloch_proj = nn.Linear(input_dim, bloch_rank, bias=False)
-            self.bloch_uv = nn.Linear(bloch_rank, 2 * output_dim)
-            nn.init.zeros_(self.bloch_uv.weight)
-            nn.init.zeros_(self.bloch_uv.bias)
+            # nn.Linear にしない: NeuroQuantum._init_weights が全 nn.Linear を乱数で初期化し直すため
+            self.bloch_uv = nn.Parameter(torch.zeros(bloch_rank, 2 * output_dim))
+            self.bloch_uv_bias = nn.Parameter(torch.zeros(2 * output_dim))
             self.bloch_gate = nn.Parameter(torch.zeros(output_dim, 3))
             self.J_xy_in = nn.Parameter(torch.randn(2, input_dim, bloch_rank) * 0.02)
             self.J_xy_out = nn.Parameter(torch.randn(2, bloch_rank, output_dim) * 0.02)
@@ -931,7 +931,7 @@ class QBNNLayer(nn.Module):
         if not self.bloch:
             return
         other = ('bloch_phi.', 'bloch_kappa.') if self.bloch_mode == 'complete' \
-            else ('bloch_uv.', 'bloch_gate')
+            else ('bloch_uv', 'bloch_gate')
         for key in [k for k in state_dict if k.startswith(tuple(prefix + o for o in other))]:
             del state_dict[key]
         for name, param in self.named_parameters():
@@ -989,7 +989,8 @@ class QBNNLayer(nn.Module):
     def complete_vectors(self, h_prev: torch.Tensor, m: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """完全ブロッホ球ニューロンの b = R_j m (u, v, 1)/ζ（CB4）と κ = ‖b_xy‖ / √(1 − b_z²) を返す。
         m は偏極 tanh h̃（n_floor のときは整数化したもの）。b: (..., output_dim, 3)"""
-        u, v = self.bloch_uv(self.bloch_proj(h_prev)).unflatten(-1, (self.output_dim, 2)).unbind(-1)
+        uv = self.bloch_proj(h_prev) @ self.bloch_uv + self.bloch_uv_bias
+        u, v = uv.unflatten(-1, (self.output_dim, 2)).unbind(-1)
         b = complete_bloch_vectors(m, u, v)
         R = axis_angle_rotation(self.bloch_gate).to(b.dtype)
         b = torch.einsum('oij,...oj->...oi', R, b)
