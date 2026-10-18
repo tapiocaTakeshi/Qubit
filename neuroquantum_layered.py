@@ -184,6 +184,7 @@ class NeuroQuantumConfig:
         qbnn_bloch: bool = True,       # QBNN ニューロンを3次元ブロッホベクトルにする
         qbnn_bloch_rank: int = 16,     # φ, κ 射影と J_x, J_y の低ランク次元
         qbnn_neuron: str = "sphere",   # "sphere"（ブロッホ球）/ "complete"（完全ブロッホ球 = 完全QBNN）
+        qbnn_complete_scale: float = 1.0,  # 完全QBNN で h̃ を何倍してから写すか（γ）
     ):
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
@@ -199,6 +200,7 @@ class NeuroQuantumConfig:
         self.qbnn_bloch = qbnn_bloch
         self.qbnn_bloch_rank = qbnn_bloch_rank
         self.qbnn_neuron = qbnn_neuron
+        self.qbnn_complete_scale = qbnn_complete_scale
 
 
 def detect_gpu_tier() -> Tuple[str, str, dict]:
@@ -776,7 +778,10 @@ class QBNNLayer(nn.Module):
     完全ブロッホ球ニューロン（neuron="complete"。既定は "sphere"）:
     ブロッホ球（0 ≤ n ≤ 4）と、n を [0, 4] の外へ解析接続した二葉双曲面（n < 0 が上の葉、
     n > 4 が下の葉。論文 v0.4 第6節）を合わせて「完全ブロッホ球」と呼ぶ。各ニューロンの高さを
-        z = tanh h̃ + β (h̃ − tanh h̃),   β ∈ [0, 1]（層ごとに学習、初期値 0）
+        a = γ h̃,   z = tanh a + β (a − tanh a),   β ∈ [0, 1]（層ごとに学習、初期値 0）
+    γ（complete_scale）は h̃ を何倍してから写すかの倍率。h̃ は LayerNorm 後の入力と小さな重みの
+    積で ±0.3 程度しかなく、γ = 1 ではほとんどのニューロンが球（|z| ≤ 1）にとどまるため、
+    大きな γ で双曲面まで届かせる。γ はチェックポイントに保存される。
     とし、|z| ≤ 1 なら球、|z| > 1 なら双曲面に置く（n = 2(1 − z)）。半径は ρ = √|1 − z²|
     （球では η、双曲面では |η|。境界 |z| = 1 の近くは勾配だけを平滑化）。x, y 成分の補正は、面に合わせた
     計量で足す（命題3）：
@@ -813,7 +818,8 @@ class QBNNLayer(nn.Module):
     def __init__(self, input_dim: int, output_dim: int,
                  lambda_min: float = 0.2, lambda_max: float = 0.5,
                  use_qbnn_layered: bool = True, rho: float = 0.2,  # qbnn_layered.pyを参照
-                 bloch: bool = True, bloch_rank: int = 16, neuron: str = "sphere"):
+                 bloch: bool = True, bloch_rank: int = 16, neuron: str = "sphere",
+                 complete_scale: float = 1.0):
         super().__init__()
         if neuron not in ("sphere", "complete"):
             raise ValueError(f"neuron must be 'sphere' or 'complete', got {neuron!r}")
@@ -891,7 +897,10 @@ class QBNNLayer(nn.Module):
 
         # 完全ブロッホ球: 球の外へ出る度合い β（0 で球ニューロンと同じ）
         if neuron == "complete":
+            if not complete_scale > 0:
+                raise ValueError(f"complete_scale must be positive, got {complete_scale}")
             self.complete_beta = nn.Parameter(torch.tensor(0.0))
+            self.register_buffer('complete_scale', torch.tensor(float(complete_scale)))
             self._register_load_state_dict_pre_hook(self._fill_missing_complete_state)
         else:
             self._register_load_state_dict_pre_hook(self._reject_complete_state)
@@ -900,30 +909,38 @@ class QBNNLayer(nn.Module):
     complete_eps = 0.05
 
     def _reject_complete_state(self, state_dict, prefix, *args):
-        """完全QBNNのチェックポイントを球ニューロンに読み込むと β が黙って捨てられるので止める。
-        β = 0 なら球ニューロンと同じなので、そのまま読み込む。"""
+        """完全QBNNのチェックポイントを球ニューロンに読み込むと β, γ が黙って捨てられるので止める。
+        β = 0 かつ γ = 1 なら球ニューロンと同じなので、そのまま読み込む。"""
         beta = state_dict.get(prefix + 'complete_beta')
-        if beta is None:
+        scale = state_dict.get(prefix + 'complete_scale')
+        if beta is None and scale is None:
             return
-        if float(beta.clamp(0.0, 1.0)) != 0.0:
-            raise ValueError("このチェックポイントは完全QBNN（β > 0）です。"
+        beta_on = beta is not None and float(beta.clamp(0.0, 1.0)) != 0.0
+        scaled = scale is not None and float(scale) != 1.0
+        if beta_on or scaled:
+            raise ValueError("このチェックポイントは完全QBNN（β > 0 または γ ≠ 1）です。"
                              "NeuroQuantumConfig(qbnn_neuron='complete') で読み込んでください")
-        del state_dict[prefix + 'complete_beta']
+        state_dict.pop(prefix + 'complete_beta', None)
+        state_dict.pop(prefix + 'complete_scale', None)
 
     def _fill_missing_complete_state(self, state_dict, prefix, *args):
-        """球ニューロンのチェックポイントを strict に読めるよう β = 0 を補う。"""
+        """球ニューロンのチェックポイントを strict に読めるよう β = 0 を補う。
+        倍率 γ が無いチェックポイント（γ 導入前の完全QBNN、球ニューロン）は γ = 1 で学習されている。"""
         if prefix + 'complete_beta' not in state_dict:
             state_dict[prefix + 'complete_beta'] = torch.zeros_like(self.complete_beta)
+        if prefix + 'complete_scale' not in state_dict:
+            state_dict[prefix + 'complete_scale'] = torch.ones_like(self.complete_scale)
 
     def complete_coords(self, h_tilde: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """完全ブロッホ球ニューロンの (z, ρ, σ)。z = tanh h̃ + β(h̃ − tanh h̃)、
+        """完全ブロッホ球ニューロンの (z, ρ, σ)。a = γh̃、z = tanh a + β(a − tanh a)、
         ρ = √|1 − z²|（勾配だけ √(|1 − z²| + ε²) で平滑化）、σ = +1（球 |z| ≤ 1）/ −1（双曲面 |z| > 1）。
         n_floor=True なら n = 2(1 − z) を ⌊n⌋（全整数）にした値を使う（straight-through）。"""
-        t = torch.tanh(h_tilde)
+        a = self.complete_scale.to(h_tilde.dtype) * h_tilde
+        t = torch.tanh(a)
         # 値は [0, 1] に切り詰め、勾配は切り詰めずに流す（β = 0 からも学習できるように）
         beta_raw = self.complete_beta
         beta = beta_raw + (beta_raw.clamp(0.0, 1.0) - beta_raw).detach()
-        z = t + beta * (h_tilde - t)
+        z = t + beta * (a - t)
         if self.n_floor:
             with torch.no_grad():
                 zf = z if z.dtype in (torch.float32, torch.float64) else z.float()
@@ -1124,6 +1141,7 @@ class QBNNLayer(nn.Module):
             if self.neuron == "complete":
                 # 完全ブロッホ球: β と、各面にいるニューロンの割合
                 info['complete_beta'] = self.complete_beta.clamp(0.0, 1.0).item()
+                info['complete_scale'] = self.complete_scale.item()
                 info['region_upper'], info['region_sphere'], info['region_lower'] = self.last_region.tolist()
             if self.bloch:
                 # 3次元ブロッホニューロン（式(6)・式(8)）
@@ -1340,6 +1358,7 @@ class QBNNTransformerBlock(nn.Module):
             bloch=getattr(config, 'qbnn_bloch', True),
             bloch_rank=getattr(config, 'qbnn_bloch_rank', 16),
             neuron=getattr(config, 'qbnn_neuron', 'sphere'),
+            complete_scale=getattr(config, 'qbnn_complete_scale', 1.0),
         )
         self.ffn_qbnn_dropout = nn.Dropout(config.dropout)
         self.ffn_qbnn_layer2 = QBNNLayer(
@@ -1349,6 +1368,7 @@ class QBNNTransformerBlock(nn.Module):
             bloch=getattr(config, 'qbnn_bloch', True),
             bloch_rank=getattr(config, 'qbnn_bloch_rank', 16),
             neuron=getattr(config, 'qbnn_neuron', 'sphere'),
+            complete_scale=getattr(config, 'qbnn_complete_scale', 1.0),
         )
 
         self.dropout = nn.Dropout(config.dropout)

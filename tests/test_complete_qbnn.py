@@ -122,3 +122,37 @@ def test_sphere_model_refuses_a_trained_complete_checkpoint():
         complete.complete_beta.fill_(0.4)
     with pytest.raises(ValueError, match="qbnn_neuron='complete'"):
         sphere.load_state_dict(complete.state_dict(), strict=True)
+
+
+def test_scale_gamma_multiplies_the_pre_activation_and_is_saved():
+    with pytest.raises(ValueError):
+        QBNNLayer(4, 6, neuron="complete", complete_scale=0.0)
+    layer = QBNNLayer(4, 6, use_qbnn_layered=False, neuron="complete", complete_scale=10.0).double()
+    h = torch.linspace(-0.5, 0.5, 101, dtype=torch.float64)
+    with torch.no_grad():
+        layer.complete_beta.fill_(1.0)
+    z, _, sigma = layer.complete_coords(h)
+    torch.testing.assert_close(z, 10 * h)  # beta = 1: z = gamma * h
+    assert (sigma < 0).float().mean() > 0.7  # |10 h| > 1 for most of [-0.5, 0.5]
+    with torch.no_grad():
+        layer.complete_beta.fill_(0.0)
+    torch.testing.assert_close(layer.complete_coords(h)[0], torch.tanh(10 * h))
+    # gamma travels with the checkpoint; old checkpoints without it were trained with gamma = 1.
+    other = QBNNLayer(4, 6, use_qbnn_layered=False, neuron="complete", complete_scale=3.0).double()
+    other.load_state_dict(layer.state_dict(), strict=True)
+    assert other.complete_scale.item() == 10.0
+    legacy = {k: v for k, v in layer.state_dict().items() if k != "complete_scale"}
+    other.load_state_dict(legacy, strict=True)
+    assert other.complete_scale.item() == 1.0
+    # A sphere model must not silently drop gamma != 1, even with beta = 0.
+    with pytest.raises(ValueError, match="qbnn_neuron='complete'"):
+        QBNNLayer(4, 6, use_qbnn_layered=False).double().load_state_dict(layer.state_dict(), strict=True)
+
+
+def test_config_scale_reaches_every_layer():
+    cfg = NeuroQuantumConfig(vocab_size=40, embed_dim=16, hidden_dim=24, num_heads=2, num_layers=2,
+                             max_seq_len=32, dropout=0.0, gradient_checkpointing=False,
+                             qbnn_neuron="complete", qbnn_complete_scale=25.0)
+    model = NeuroQuantum(cfg)
+    scales = {m.complete_scale.item() for m in model.modules() if isinstance(m, QBNNLayer)}
+    assert scales == {25.0}

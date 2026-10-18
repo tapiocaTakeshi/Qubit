@@ -366,6 +366,8 @@ def parse_args(argv=None):
     p.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True, help="勾配チェックポイント（メモリ削減）を使用")
     p.add_argument("--qbnn-neuron", choices=["sphere", "complete"], default="sphere",
                    help="QBNN ニューロンの種類。complete は完全ブロッホ球（球＋双曲面）の完全QBNN")
+    p.add_argument("--qbnn-complete-scale", type=float, default=1.0,
+                   help="完全QBNN で h̃ を何倍してから写すか（γ）。大きいほど双曲面に届くニューロンが増える")
     p.add_argument(
         "--ckpt-name",
         default=None,
@@ -509,6 +511,7 @@ def main():
         gradient_checkpointing=gradient_checkpointing,
         use_bf16=use_bf16,
         qbnn_neuron=args.qbnn_neuron,
+        qbnn_complete_scale=args.qbnn_complete_scale,
     )
     model = NeuroQuantum(config=nq_config).to(device)
     n_params = sum(p.numel() for p in model.parameters())

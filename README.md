@@ -102,18 +102,20 @@ z_j = tanh h̃_j,  η_j = sech h̃_j,  n_j = 2(1 − z_j) = 4P(1)
 ブロッホ球（0 ≤ n ≤ 4）と、n を [0, 4] の外へ解析接続した二葉双曲面（n < 0 が上の葉、n > 4 が下の葉）を合わせて**完全ブロッホ球**と呼びます（論文 v0.4 第6節）。完全ブロッホ球をニューロンにした QBNN が**完全QBNN**です。
 
 ~~~python
-config = NeuroQuantumConfig(..., qbnn_neuron="complete")   # 既定は "sphere"
-# 学習スクリプト: python train_hf_dataset.py ... --qbnn-neuron complete
+config = NeuroQuantumConfig(..., qbnn_neuron="complete", qbnn_complete_scale=10.0)   # 既定は "sphere"
+# 学習スクリプト: python train_hf_dataset.py ... --qbnn-neuron complete --qbnn-complete-scale 10
 ~~~
 
 ~~~text
-z = tanh h̃ + β (h̃ − tanh h̃)        β ∈ [0, 1]（層ごとに学習、初期値 0）
+a = γ h̃                              γ = qbnn_complete_scale（既定 1、チェックポイントに保存）
+z = tanh a + β (a − tanh a)          β ∈ [0, 1]（層ごとに学習、初期値 0）
 |z| ≤ 1 → 球（σ = +1）、|z| > 1 → 双曲面（σ = −1）、n = 2(1 − z)
 ρ = √|1 − z²|                       球では η、双曲面では |η|
 Δ_j = (J_zᵀ s)_j z_j + σ_j [(J_xᵀ s)_j x_j + (J_yᵀ s)_j y_j]   面に合わせた計量（命題3）
 ~~~
 
-- β = 0 では z = tanh h̃ で球の外に出ないため、球ニューロンと出力が一致します。球ニューロンのチェックポイントもそのまま読み込めます。逆に、β > 0 で学習した完全QBNNのチェックポイントを球ニューロンで読み込もうとするとエラーにします（β が黙って捨てられるのを防ぐため）。
+- h̃ は LayerNorm 後の入力と小さな重みの積で ±0.3 程度しかなく、γ = 1 ではほとんどのニューロンが球にとどまります。γ を大きくすると双曲面まで届くニューロンが増えます。
+- β = 0 かつ γ = 1 では z = tanh h̃ で球の外に出ないため、球ニューロンと出力が一致します。球ニューロンのチェックポイントもそのまま読み込めます。逆に、β > 0 または γ ≠ 1 の完全QBNNのチェックポイントを球ニューロンで読み込もうとするとエラーにします（β, γ が黙って捨てられるのを防ぐため）。
 - 双曲面上のニューロンは確率を持ちません（P(1) = n/4 ∉ [0, 1]）。測定サンプリングでは球の上のニューロンだけを測定し、双曲面上のニューロンは tanh で飽和しない古典的な座標として使います。
 - ⌊n⌋（`n_floor`）は全整数に広がり、z は半整数の格子に乗ります。
 - `get_quantum_info()` は β（`complete_beta`）と、上の葉・球・下の葉にいるニューロンの割合（`region_upper` / `region_sphere` / `region_lower`）を返します。
