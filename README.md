@@ -126,6 +126,11 @@ ai.measurement_uncertainty(prompt, shots=8)        # 測定ごとに貪欲生成
 
 完全QBNN は、このニューロンだけで隠れ層を作ったネットワークです。分類器 `CompleteQBNN` と、再帰型の文字言語モデル `CompleteQBNNLM` / `CompleteQBNNAI` があります。実装は `complete_qbnn.py`、検証は `tests/test_complete_qbnn.py`、詳細は [COMPLETE_QBNN.md](COMPLETE_QBNN.md) にあります。
 
+NeuroQuantum では `NeuroQuantumConfig(qbnn_bloch_mode='complete')` または `NeuroQuantumAI(qbnn_bloch_mode='complete')` を指定すると、全 QBNN 層のニューロンが完全ブロッホ球になります。
+
+- 双曲面の座標 (u, v) とゲートはゼロで初期化します。このとき全ニューロンは葉の頂点（両極）にあり、1次元版のチェックポイントを読み込んだときの出力はビット単位で変わりません。
+- `get_quantum_info()` は、上の葉にいるニューロンの割合 `bloch_upper_sheet_frac` と、双曲深さの中央値 `bloch_depth_median` も返します。
+
 ---
 
 ## QBNN：APQBを利用したニューラルネットワーク
