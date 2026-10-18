@@ -364,6 +364,8 @@ def parse_args(argv=None):
     p.add_argument("--gradient-accumulation-steps", type=int, default=8, help="勾配蓄積ステップ (VRAMを増やさずに実効バッチを増加)")
     p.add_argument("--use-bf16", action=argparse.BooleanOptionalAction, default=True, help="対応GPUでBF16混合精度を使用。非対応時はFP32")
     p.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True, help="勾配チェックポイント（メモリ削減）を使用")
+    p.add_argument("--qbnn-neuron", choices=["sphere", "complete"], default="sphere",
+                   help="QBNN ニューロンの種類。complete は完全ブロッホ球（球＋双曲面）の完全QBNN")
     p.add_argument(
         "--ckpt-name",
         default=None,
@@ -506,6 +508,7 @@ def main():
         lambda_entangle=CONFIG["entangle_strength"],
         gradient_checkpointing=gradient_checkpointing,
         use_bf16=use_bf16,
+        qbnn_neuron=args.qbnn_neuron,
     )
     model = NeuroQuantum(config=nq_config).to(device)
     n_params = sum(p.numel() for p in model.parameters())

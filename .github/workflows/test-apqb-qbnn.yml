@@ -15,6 +15,7 @@ on:
       - "qbnn_layered.py"
       - "train_hf_dataset.py"
       - "tests/test_neuroquantum*.py"
+      - "tests/test_complete_qbnn.py"
       - "scripts/*neuroquantum*"
       - "requirements-runpod.txt"
       - ".github/workflows/test-apqb-qbnn.yml"
@@ -32,6 +33,7 @@ on:
       - "qbnn_layered.py"
       - "train_hf_dataset.py"
       - "tests/test_neuroquantum*.py"
+      - "tests/test_complete_qbnn.py"
       - "scripts/*neuroquantum*"
       - "requirements-runpod.txt"
       - ".github/workflows/test-apqb-qbnn.yml"
@@ -57,7 +59,7 @@ jobs:
           python -m pytest -q test_apqb_qbnn_v2.py tests/test_apqb_qbnn_regressions.py tests/test_apqb_revised_paper.py
           tests/test_apqb_sqrt_amplitude.py
           tests/test_neuroquantum_regressions.py tests/test_neuroquantum_training.py
-          tests/test_neuroquantum_search.py tests/test_neuroquantum_apqb.py
+          tests/test_neuroquantum_search.py tests/test_neuroquantum_apqb.py tests/test_complete_qbnn.py
       - name: Check Runpod entry points
         run: |
           bash -n scripts/train_neuroquantum_runpod.sh
