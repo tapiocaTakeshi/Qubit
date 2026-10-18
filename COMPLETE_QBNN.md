@@ -249,6 +249,22 @@ logits = net(x, measure=1.0)    # 全ニューロンを葉軸で測定
 net.diagnostics()               # 層ごとの n, κ, 純度, 上の葉の割合, 双曲深さ, 偏極
 ```
 
+## 完全QBNN 観測室（ブラウザでの可視化）
+
+`tools/complete_qbnn_viewer/` は、学習済みの `CompleteQBNNLM` をブラウザ内で動かすページを組み立てる。
+
+- 重みは fp16 にして埋め込む。次の文字の予測は PyTorch 版と 99.9% 一致し、貪欲生成は PyTorch 版と完全に一致する。
+- 入力した文字から1文字ずつ生成し、生成中に次のものを表示する。
+  - 子午線ビュー: 球と二葉双曲面の断面の上に、各ニューロンの b と葉の点 q を描く。
+  - ニューロン地図: 共起 C、n、葉、κ を色で表す。
+  - 層ごとの読み値と、次の文字の候補。
+  - 予測エントロピーと平均共起の推移。
+- 出力の文字をクリックすると、その文字を出したときの状態に戻れる。
+
+```bash
+python tools/complete_qbnn_viewer/build.py complete_qbnn_lm.pt -o complete-qbnn-observatory.html
+```
+
 ## 実行結果（CPU）
 
 **二重らせんの分類**（`classify-demo`）
