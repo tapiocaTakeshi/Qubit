@@ -183,6 +183,7 @@ class NeuroQuantumConfig:
         use_bf16: bool = True,
         qbnn_bloch: bool = True,       # QBNN ニューロンを3次元ブロッホベクトルにする
         qbnn_bloch_rank: int = 16,     # φ, κ 射影と J_x, J_y の低ランク次元
+        qbnn_bloch_mode: str = 'standard',  # 'complete' で完全ブロッホ球ニューロン（二葉双曲面）
     ):
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
@@ -197,6 +198,7 @@ class NeuroQuantumConfig:
         self.use_bf16 = use_bf16
         self.qbnn_bloch = qbnn_bloch
         self.qbnn_bloch_rank = qbnn_bloch_rank
+        self.qbnn_bloch_mode = qbnn_bloch_mode
 
 
 def detect_gpu_tier() -> Tuple[str, str, dict]:
@@ -735,6 +737,31 @@ def apqb_calibrated_temperature(q_bar: float, tau_min: float, tau_max: float,
     return tau_min + (tau_max - tau_min) * q_bar ** gamma
 
 
+# 完全ブロッホ球（二葉双曲面 + 2つの半球体）。参照実装は complete_qbnn.py（CB1-CB7）で、
+# 一致は tests/test_neuroquantum_complete_bloch.py で検査する。
+
+def complete_bloch_vectors(m: torch.Tensor, u: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """CB4: b = m·P(q), P(q) = (u, v, 1)/ζ, q = (u, v, ζ = √(1 + u² + v²)) は二葉双曲面の上の葉。
+    m = tanh(·) ∈ (−1, 1) が負なら下の葉（南の半球体）に入る。u = v = 0 で b = (0, 0, m)。"""
+    inv_zeta = torch.rsqrt(1 + u * u + v * v)
+    return torch.stack([m * u * inv_zeta, m * v * inv_zeta, m * inv_zeta], dim=-1)
+
+
+def axis_angle_rotation(w: torch.Tensor) -> torch.Tensor:
+    """軸角ベクトル w [..., 3] → SO(3)（ロドリゲス）。1量子ビットゲートのブロッホ表現（式(8)）。
+    w = 0 で厳密に単位行列。"""
+    theta2 = (w * w).sum(-1)[..., None, None]
+    theta = torch.sqrt(theta2 + 1e-24)
+    small = theta2 < 1e-8
+    a = torch.where(small, 1 - theta2 / 6, torch.sin(theta) / theta)
+    c = torch.where(small, 0.5 - theta2 / 24, (1 - torch.cos(theta)) / torch.clamp(theta2, min=1e-24))
+    zero = torch.zeros_like(w[..., 0])
+    K = torch.stack([torch.stack([zero, -w[..., 2], w[..., 1]], -1),
+                     torch.stack([w[..., 2], zero, -w[..., 0]], -1),
+                     torch.stack([-w[..., 1], w[..., 0], zero], -1)], -2)
+    return torch.eye(3, dtype=w.dtype, device=w.device) + a * K + c * (K @ K)
+
+
 # ========================================
 # Part 1: QBNN Layer（独自の量子もつれ層）
 # ========================================
@@ -771,6 +798,16 @@ class QBNNLayer(nn.Module):
     1次元版のチェックポイントを読み込んだ状態では出力が1次元版と完全に一致する。
     z だけでは位相の違い（干渉）を区別できない（論文 式(9)）ため、x, y が位相情報を運ぶ。
 
+    完全ブロッホ球ニューロン（bloch_mode='complete'、complete_qbnn.py / COMPLETE_QBNN.md）:
+    各ニューロンを二葉双曲面の点 q = (u_j, v_j, ζ_j) と偏極 m_j = tanh h̃_j で表し、
+        b_j = R_j · m_j (u_j, v_j, 1) / ζ_j,  ζ_j = √(1 + u_j² + v_j²)
+    とする。(u, v) は入力からのランク bloch_rank の射影（ゼロ初期化）、R_j は学習可能な
+    1量子ビットゲート（軸角、ゼロ初期化で恒等）。u = v = 0（葉の頂点 = 両極）では
+    b = (0, 0, tanh h̃) なので、初期状態と1次元版のチェックポイントを読み込んだ状態では
+    出力が1次元版と完全に一致する。J_x, J_y は両方の因子を乱数で初期化し、(u, v) に勾配が
+    届くようにする（x = y = 0 なので出力には影響しない）。測定サンプリングは葉軸 b/‖b‖ で
+    行い、状態はどちらかの葉の純粋状態 ±b/‖b‖ に収縮する（頂点では計算基底の測定と同じ）。
+
     測定サンプリング（論文 式(2)、measurement_rate > 0 で有効。既定は 0 で無効）:
     各ニューロンを確率 measurement_rate で計算基底で「測定」し、z を期待値 1 − n/2 から
     測定値 ±1 に置き換える（P(1) = n/4 で −1）。E[測定値] = z なので平均は変わらない。
@@ -799,8 +836,10 @@ class QBNNLayer(nn.Module):
     def __init__(self, input_dim: int, output_dim: int,
                  lambda_min: float = 0.2, lambda_max: float = 0.5,
                  use_qbnn_layered: bool = True, rho: float = 0.2,  # qbnn_layered.pyを参照
-                 bloch: bool = True, bloch_rank: int = 16):
+                 bloch: bool = True, bloch_rank: int = 16, bloch_mode: str = 'standard'):
         super().__init__()
+        if bloch_mode not in ('standard', 'complete'):
+            raise ValueError(f"bloch_mode must be 'standard' or 'complete', got {bloch_mode!r}")
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.use_qbnn_layered = use_qbnn_layered and QBNN_LAYERED_AVAILABLE
@@ -821,6 +860,8 @@ class QBNNLayer(nn.Module):
         self.register_buffer('last_kappa_mean', torch.tensor(0.0), persistent=False)
         self.register_buffer('last_bloch_norm', torch.tensor(0.0), persistent=False)
         self.register_buffer('last_purity', torch.tensor(1.0), persistent=False)
+        self.register_buffer('last_upper_sheet', torch.tensor(1.0), persistent=False)
+        self.register_buffer('last_depth', torch.tensor(0.0), persistent=False)
         # トークンごとの平均 η (batch, seq)。生成時の温度校正（式(18)）で使う
         self.last_eta_token: Optional[torch.Tensor] = None
 
@@ -861,7 +902,18 @@ class QBNNLayer(nn.Module):
         # 3次元ブロッホニューロン: φ, κ の低ランク射影と x, y 成分の結合 J_x, J_y
         self.bloch = bloch
         self.bloch_rank = bloch_rank
-        if bloch:
+        self.bloch_mode = bloch_mode
+        if bloch and bloch_mode == 'complete':
+            # 完全ブロッホ球: 双曲面の空間座標 (u, v) と1量子ビットゲート R_j。ゼロ初期化で頂点・恒等
+            self.bloch_proj = nn.Linear(input_dim, bloch_rank, bias=False)
+            self.bloch_uv = nn.Linear(bloch_rank, 2 * output_dim)
+            nn.init.zeros_(self.bloch_uv.weight)
+            nn.init.zeros_(self.bloch_uv.bias)
+            self.bloch_gate = nn.Parameter(torch.zeros(output_dim, 3))
+            self.J_xy_in = nn.Parameter(torch.randn(2, input_dim, bloch_rank) * 0.02)
+            self.J_xy_out = nn.Parameter(torch.randn(2, bloch_rank, output_dim) * 0.02)
+            self._register_load_state_dict_pre_hook(self._fill_missing_bloch_state)
+        elif bloch:
             self.bloch_proj = nn.Linear(input_dim, bloch_rank, bias=False)
             self.bloch_phi = nn.Linear(bloch_rank, output_dim)     # 相対位相 φ
             self.bloch_kappa = nn.Linear(bloch_rank, output_dim)   # κ = σ(·)
@@ -872,13 +924,21 @@ class QBNNLayer(nn.Module):
 
     def _fill_missing_bloch_state(self, state_dict, prefix, *args):
         """1次元版のチェックポイントを strict に読めるよう、欠けたブロッホ用の値を補う。
-        J_xy_in はゼロで補うので、読み込み後の出力は1次元版と一致する。"""
+        J_xy_in はゼロで補うので、読み込み後の出力は1次元版と一致する。
+        完全ブロッホ球モードでは (u, v) とゲートをゼロ（頂点・恒等）で補うので同じく一致し、
+        J_xy は乱数のまま補う。もう一方のモード固有の値（標準版の φ, κ 射影、完全版の (u, v)
+        とゲート）は読み飛ばす。"""
         if not self.bloch:
             return
+        other = ('bloch_phi.', 'bloch_kappa.') if self.bloch_mode == 'complete' \
+            else ('bloch_uv.', 'bloch_gate')
+        for key in [k for k in state_dict if k.startswith(tuple(prefix + o for o in other))]:
+            del state_dict[key]
         for name, param in self.named_parameters():
             if name.startswith(('bloch_', 'J_xy_')) and prefix + name not in state_dict:
-                value = torch.zeros_like(param) if name == 'J_xy_in' else param.detach().clone()
-                state_dict[prefix + name] = value
+                zero = name.startswith(('bloch_uv', 'bloch_gate')) or (
+                    name == 'J_xy_in' and self.bloch_mode == 'standard')
+                state_dict[prefix + name] = torch.zeros_like(param) if zero else param.detach().clone()
 
     def measure_z(self, z: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """式(2): P(1) = n/4 = (1 − z)/2 で計算基底を測定し、測定したニューロンの z を ±1 にする。
@@ -926,6 +986,37 @@ class QBNNLayer(nn.Module):
         b = torch.stack([radial * torch.cos(phi), radial * torch.sin(phi), z], dim=-1)
         return b, kappa
 
+    def complete_vectors(self, h_prev: torch.Tensor, m: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """完全ブロッホ球ニューロンの b = R_j m (u, v, 1)/ζ（CB4）と κ = ‖b_xy‖ / √(1 − b_z²) を返す。
+        m は偏極 tanh h̃（n_floor のときは整数化したもの）。b: (..., output_dim, 3)"""
+        u, v = self.bloch_uv(self.bloch_proj(h_prev)).unflatten(-1, (self.output_dim, 2)).unbind(-1)
+        b = complete_bloch_vectors(m, u, v)
+        R = axis_angle_rotation(self.bloch_gate).to(b.dtype)
+        b = torch.einsum('oij,...oj->...oi', R, b)
+        with torch.no_grad():
+            bf = b.detach().float()
+            eta = torch.sqrt(torch.clamp(1 - bf[..., 2] ** 2, min=1e-12))
+            kappa = torch.clamp(torch.hypot(bf[..., 0], bf[..., 1]) / eta, max=1.0)
+        return b, kappa
+
+    def measure_sheet(self, b: torch.Tensor) -> torch.Tensor:
+        """CB5: 確率 measurement_rate で各ニューロンを葉軸 b/‖b‖ で測定し、±b/‖b‖（確率 (1 ± ‖b‖)/2）
+        に収縮させる。E[測定値] = b なので勾配は straight-through で b のものを流す。"""
+        if self.measurement_rate <= 0:
+            return b
+        with torch.no_grad():
+            bf = b.detach().float()
+            r = torch.linalg.vector_norm(bf, dim=-1, keepdim=True)
+            z_axis = torch.tensor([0.0, 0.0, 1.0], device=b.device)
+            axis = torch.where(r > 1e-12, bf / torch.clamp(r, min=1e-12), z_axis)
+            outcome = 2 * torch.bernoulli(((1 + r) / 2).clamp(0.0, 1.0)) - 1
+            if self.measurement_rate >= 1:
+                measured = torch.ones_like(r, dtype=torch.bool)
+            else:
+                measured = torch.rand_like(r) < self.measurement_rate
+            b_measured = torch.where(measured, outcome * axis, bf).to(b.dtype)
+        return b + (b_measured - b).detach()
+
     def _effective_lambda(self) -> torch.Tensor:
         # Preserve the trained mapping and the old first inference call (phase=0).
         # Diversity belongs in explicit sampling, not a process-global call counter.
@@ -959,12 +1050,20 @@ class QBNNLayer(nn.Module):
         
         # まず J_{ij} * s_prev_i を計算: (..., output_dim)
         J_s_prev = torch.einsum('...i,ij->...j', s_prev, J)  # (..., output_dim)
-        # 次に s_raw_j を掛ける（z 成分）。測定サンプリング中は測定値 ±1 を使う
-        z, measured = self.measure_z(s_raw)
-        delta = J_s_prev * z  # (..., output_dim)
-
         bloch = None
-        if self.bloch:
+        if self.bloch and self.bloch_mode == 'complete':
+            # 完全ブロッホ球ニューロン: Δ_j = F_j · b_j, b_j = R_j m_j P(q_j)。測定は葉軸で行う
+            bloch, kappa = self.complete_vectors(h_prev, s_raw)
+            b = self.measure_sheet(bloch)
+            field_xy = torch.einsum('...i,cik->c...k', s_prev, self.J_xy_in)
+            field_xy = torch.einsum('c...k,cko->c...o', field_xy, self.J_xy_out)
+            delta = J_s_prev * b[..., 2] + field_xy[0] * b[..., 0] + field_xy[1] * b[..., 1]
+        else:
+            # 次に s_raw_j を掛ける（z 成分）。測定サンプリング中は測定値 ±1 を使う
+            z, measured = self.measure_z(s_raw)
+            delta = J_s_prev * z  # (..., output_dim)
+
+        if self.bloch and self.bloch_mode == 'standard':
             # 3次元ブロッホニューロン: Δ_j = F_j · b_j（z 成分は上で計算済み）
             bloch, kappa = self.bloch_vectors(h_prev, h_tilde, s_raw, eta_raw)
             field_xy = torch.einsum('...i,cik->c...k', s_prev, self.J_xy_in)
@@ -1002,6 +1101,12 @@ class QBNNLayer(nn.Module):
                 self.last_kappa_mean = kappa.detach().float().mean()
                 self.last_bloch_norm = norm2.sqrt().mean()
                 self.last_purity = ((1 + norm2) / 2).mean()
+                # どちらの葉の半球体にいるか（b_z ≥ 0 が上の葉）と、葉軸の頂点からの双曲深さ
+                # ρ = arccosh(‖b‖ / |b_z|)（CB2: |cos Θ| = sech ρ）
+                bz = bloch.detach().float()[..., 2]
+                self.last_upper_sheet = (bz >= 0).float().mean()
+                cos_t = bz.abs() / torch.clamp(norm2.sqrt(), min=1e-12)
+                self.last_depth = torch.acosh(1 / torch.clamp(cos_t, min=1e-6)).median()
 
         # 7. 有効入力
         h_hat = h_tilde + correction
@@ -1044,6 +1149,9 @@ class QBNNLayer(nn.Module):
                 info['bloch_kappa_mean'] = self.last_kappa_mean.item()
                 info['bloch_norm_mean'] = self.last_bloch_norm.item()
                 info['bloch_purity_mean'] = self.last_purity.item()
+                info['bloch_mode'] = self.bloch_mode
+                info['bloch_upper_sheet_frac'] = self.last_upper_sheet.item()
+                info['bloch_depth_median'] = self.last_depth.item()
                 Jx, Jy = (self.J_xy_in[c] @ self.J_xy_out[c] for c in range(2))
                 info['J_xy_norm'] = torch.sqrt(Jx.pow(2).sum() + Jy.pow(2).sum()).item()
             
@@ -1253,6 +1361,7 @@ class QBNNTransformerBlock(nn.Module):
             lambda_max=config.lambda_entangle * 1.5,
             bloch=getattr(config, 'qbnn_bloch', True),
             bloch_rank=getattr(config, 'qbnn_bloch_rank', 16),
+            bloch_mode=getattr(config, 'qbnn_bloch_mode', 'standard'),
         )
         self.ffn_qbnn_dropout = nn.Dropout(config.dropout)
         self.ffn_qbnn_layer2 = QBNNLayer(
@@ -1261,6 +1370,7 @@ class QBNNTransformerBlock(nn.Module):
             lambda_max=config.lambda_entangle * 1.5,
             bloch=getattr(config, 'qbnn_bloch', True),
             bloch_rank=getattr(config, 'qbnn_bloch_rank', 16),
+            bloch_mode=getattr(config, 'qbnn_bloch_mode', 'standard'),
         )
 
         self.dropout = nn.Dropout(config.dropout)
@@ -2385,7 +2495,8 @@ class NeuroQuantum(nn.Module):
             block_info = {'block': i, 'qbnn_layers': layers}
             for key in ('lambda_eff', 'apqb_n_mean', 'apqb_eta_mean',
                         'apqb_grad_gain', 'apqb_saturation', 'bloch_kappa_mean',
-                        'bloch_norm_mean', 'bloch_purity_mean'):
+                        'bloch_norm_mean', 'bloch_purity_mean', 'bloch_upper_sheet_frac',
+                        'bloch_depth_median'):
                 if all(key in layer for layer in layers):
                     block_info[key] = sum(layer[key] for layer in layers) / len(layers)
             info.append(block_info)
@@ -2859,6 +2970,7 @@ class NeuroQuantumAI:
         use_google_embedding: bool = False,  # Google Text Embeddingを使用するか
         google_api_key: Optional[str] = None,  # Google APIキー
         google_model: str = "models/text-embedding-004",  # Google Embeddingモデル
+        qbnn_bloch_mode: str = 'standard',  # 'complete' で QBNN を完全ブロッホ球ニューロンにする
     ):
         # デバイス選択: MPS (Apple Silicon) > CUDA > CPU
         if torch.backends.mps.is_available():
@@ -2878,6 +2990,7 @@ class NeuroQuantumAI:
         self.max_seq_len = max_seq_len
         self.dropout = dropout
         self.lambda_entangle = lambda_entangle
+        self.qbnn_bloch_mode = qbnn_bloch_mode
         self.use_openai_embedding = use_openai_embedding
         self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
         self.openai_model = openai_model
@@ -3044,6 +3157,7 @@ class NeuroQuantumAI:
             max_seq_len=self.max_seq_len,
             dropout=self.dropout,
             lambda_entangle=self.lambda_entangle,
+            qbnn_bloch_mode=self.qbnn_bloch_mode,
         )
 
         self.model = NeuroQuantum(
@@ -3179,6 +3293,9 @@ class NeuroQuantumAI:
             if 'bloch_norm_mean' in info:
                 print(f"      3次元ニューロン: κ̄ = {info['bloch_kappa_mean']:.3f}, "
                       f"‖b‖ = {info['bloch_norm_mean']:.3f}, 純度 = {info['bloch_purity_mean']:.3f}")
+                if info['qbnn_layers'][0].get('bloch_mode') == 'complete':
+                    print(f"      完全ブロッホ球: 上の葉 = {info['bloch_upper_sheet_frac']:.1%}, "
+                          f"双曲深さ ρ の中央値 = {info['bloch_depth_median']:.3f}")
 
     def _refresh_search_index(self) -> None:
         """モデルが差し替わったとき、登録済み文書を保ったままインデックスを再構築する"""
