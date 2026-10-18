@@ -1,0 +1,417 @@
+<title>完全QBNN 観測室</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@600;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: 計測器の操作卓。左に入力と出力のテープ、右に子午線ビュー・ニューロン地図・読み値 */
+:root {
+  --bg: #eceef2; --panel: #f9fafb; --ink: #1a2030; --muted: #5a6274; --line: #cfd4dd;
+  --up: #17798a; --down: #c24e2c; --accent: #3a49c9; --accent-ink: #ffffff; --wash: #e2e6ee;
+  --font-display: "Shippori Mincho", "Hiragino Mincho ProN", "Yu Mincho", serif;
+  --font-body: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #11141b; --panel: #181c25; --ink: #e4e7ee; --muted: #98a0b2; --line: #2b3241;
+  --up: #4cb6c7; --down: #ee7b57; --accent: #8c9bff; --accent-ink: #11141b; --wash: #202634; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #11141b; --panel: #181c25; --ink: #e4e7ee; --muted: #98a0b2; --line: #2b3241;
+  --up: #4cb6c7; --down: #ee7b57; --accent: #8c9bff; --accent-ink: #11141b; --wash: #202634; color-scheme: dark }
+* { box-sizing: border-box }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 14px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 20px 40px }
+.wrap { max-width: 1240px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px }
+h1 { font-family: var(--font-display); font-size: 1.9rem; margin: 0; letter-spacing: .02em; text-wrap: balance }
+.sub { color: var(--muted); margin: 0; max-width: 70ch }
+h2 { font-size: .78rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 0 }
+.grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 18px; align-items: start }
+@media (max-width: 900px) { .grid { grid-template-columns: minmax(0, 1fr) } }
+.col { display: flex; flex-direction: column; gap: 18px; min-width: 0 }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0 }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center }
+textarea { width: 100%; min-height: 64px; resize: vertical; font: inherit; font-size: 15px; color: var(--ink); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px }
+textarea:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, .tape span:focus-visible, .cell:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+button { font: inherit; font-weight: 700; border-radius: 8px; border: 1px solid var(--line); background: var(--wash); color: var(--ink); padding: 8px 14px; cursor: pointer }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent) }
+button:disabled { opacity: .5; cursor: default }
+.chip { font-weight: 500; padding: 4px 10px; font-size: 13px }
+.controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 16px }
+.ctl { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted) }
+.ctl b { font-family: var(--font-mono); font-weight: 600; color: var(--ink) }
+.ctl input[type=range] { width: 100%; accent-color: var(--accent) }
+.ctl input[type=number], select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; width: 100% }
+.tape { font-size: 16px; line-height: 1.9; white-space: pre-wrap; word-break: break-all; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 12px 14px; min-height: 160px; max-height: 340px; overflow-y: auto }
+.tape span { cursor: pointer; border-radius: 3px }
+.tape span.prompt { color: var(--muted) }
+.tape span.sel { outline: 2px solid var(--accent); outline-offset: 1px }
+.tape span.nl::before { content: "⏎"; color: var(--muted); font-size: 12px }
+.status { font-size: 12px; color: var(--muted); min-height: 1.4em }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums }
+.bars { display: grid; grid-template-columns: 2.2em minmax(0, 1fr) 4.2em; gap: 4px 8px; align-items: center; font-size: 13px }
+.bars .ch { font-size: 16px; text-align: center; background: var(--wash); border-radius: 4px }
+.bars .bar { height: 10px; border-radius: 3px; background: var(--wash); overflow: hidden }
+.bars .bar i { display: block; height: 100%; background: var(--accent) }
+.bars .picked .ch { outline: 2px solid var(--accent) }
+.split { display: grid; grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: 16px; align-items: start }
+@media (max-width: 560px) { .split { grid-template-columns: minmax(0, 1fr) } }
+canvas { display: block; width: 100%; max-width: 100% }
+#meridian { aspect-ratio: 300 / 560; max-width: 300px; margin: 0 auto }
+#timeline { height: 90px }
+.cells { display: grid; grid-template-columns: repeat(16, minmax(0, 1fr)); gap: 2px }
+.cell { aspect-ratio: 1; border-radius: 2px; cursor: pointer; border: 0; padding: 0 }
+.cell.sel { outline: 2px solid var(--accent); outline-offset: 1px }
+.cell.meas { box-shadow: inset 0 0 0 1.5px var(--ink) }
+.legend { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted) }
+.legend .ramp { flex: 1; height: 8px; border-radius: 4px }
+.kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px; font-size: 13px }
+.kv dt { color: var(--muted) } .kv dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere }
+table { border-collapse: collapse; width: 100%; font-size: 13px }
+th, td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--line) } th:first-child, td:first-child { text-align: left }
+th { color: var(--muted); font-weight: 500; font-size: 12px }
+td { font-family: var(--font-mono); font-variant-numeric: tabular-nums }
+.tabs { display: flex; gap: 6px; flex-wrap: wrap }
+.tabs button { padding: 4px 10px; font-size: 12px; font-weight: 500 }
+.tabs button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink) }
+.note { font-size: 12px; color: var(--muted); margin: 0 }
+.key { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; margin-right: 4px }
+.scroll { overflow-x: auto }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>完全QBNN 観測室</h1>
+    <p class="sub">文字を入力して生成すると、1文字ごとに完全ブロッホ球ニューロン（2層 × 128個）の状態が下の計器に出ます。生成後は出力の文字をクリックすると、その文字を出したときの中身に戻れます。</p>
+  </header>
+
+  <div class="grid">
+    <div class="col">
+      <section class="panel" aria-labelledby="in-h">
+        <h2 id="in-h">入力</h2>
+        <textarea id="prompt" aria-label="プロンプト">量子ビット</textarea>
+        <div class="row" id="examples">
+          <button class="chip" type="button">量子ビット</button>
+          <button class="chip" type="button">完全ブロッホ球</button>
+          <button class="chip" type="button">ニューロQは</button>
+          <button class="chip" type="button">## 使い方</button>
+        </div>
+        <div class="controls">
+          <label class="ctl" for="temp">温度 <b id="tempv">0.80</b><input id="temp" type="range" min="0" max="1.5" step="0.05" value="0.8"></label>
+          <label class="ctl" for="meas">測定率（葉軸） <b id="measv">0.00</b><input id="meas" type="range" min="0" max="1" step="0.05" value="0"></label>
+          <label class="ctl" for="len">生成する文字数 <b id="lenv">120</b><input id="len" type="range" min="20" max="400" step="10" value="120"></label>
+          <label class="ctl" for="speed">速さ<select id="speed"><option value="120">ゆっくり</option><option value="35" selected>ふつう</option><option value="0">最速</option></select></label>
+          <label class="ctl" for="seed">乱数シード<input id="seed" type="number" value="1" min="0" step="1"></label>
+        </div>
+        <div class="row">
+          <button class="primary" id="go" type="button">生成</button>
+          <button id="stop" type="button" disabled>停止</button>
+          <button id="latest" type="button" disabled>最新の文字へ</button>
+        </div>
+        <div class="status" id="status" role="status"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="out-h">
+        <h2 id="out-h">出力</h2>
+        <div class="tape" id="tape" aria-live="off"></div>
+        <p class="note">灰色はプロンプト、黒は生成した文字です。文字の背景の濃さは、その文字を出したときの予測エントロピー（迷い）を表します。</p>
+      </section>
+
+      <section class="panel" aria-labelledby="next-h">
+        <h2 id="next-h">次の文字の候補（温度 1 の確率）</h2>
+        <div class="bars" id="bars"></div>
+        <canvas id="timeline" aria-label="予測エントロピーと最終層の平均共起の推移"></canvas>
+        <p class="note"><span class="key" style="background:var(--accent)"></span>予測エントロピー H（nats）　<span class="key" style="background:var(--up)"></span>2層目の平均共起 C̄（右目盛り 0〜1）</p>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="panel" aria-labelledby="mer-h">
+        <div class="row" style="justify-content:space-between">
+          <h2 id="mer-h">子午線ビュー</h2>
+          <div class="tabs" role="group" aria-label="表示する層">
+            <button type="button" data-layer="0" aria-pressed="false">1層目</button>
+            <button type="button" data-layer="1" aria-pressed="true">2層目</button>
+          </div>
+        </div>
+        <div class="split">
+          <canvas id="meridian" aria-label="球と二葉双曲面の子午線断面に、各ニューロンの状態 b と葉の点 q を描いた図"></canvas>
+          <div style="display:flex;flex-direction:column;gap:10px;min-width:0">
+            <p class="note">縦軸は z（上が |0⟩、下が |1⟩）、横軸は z 軸からの距離です。円弧はブロッホ球、上下の曲線は二葉双曲面の葉で、両極で球に接します。</p>
+            <p class="note"><span class="key" style="background:var(--up)"></span>上の葉（北の半球体）　<span class="key" style="background:var(--down)"></span>下の葉（南の半球体）<br>塗りの点はブロッホベクトル b、白抜きの点は葉の上の点 q（逆写像 (b<sub>x</sub>, b<sub>y</sub>)/b<sub>z</sub>）。選んだニューロンは q → P(q) → b = m·P(q) を線で結びます。</p>
+            <dl class="kv" id="detail"></dl>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="map-h">
+        <div class="row" style="justify-content:space-between">
+          <h2 id="map-h">ニューロン地図</h2>
+          <div class="tabs" role="group" aria-label="色で表す量" id="metric">
+            <button type="button" data-m="C" aria-pressed="true">共起 C</button>
+            <button type="button" data-m="n" aria-pressed="false">n</button>
+            <button type="button" data-m="sheet" aria-pressed="false">葉</button>
+            <button type="button" data-m="kappa" aria-pressed="false">κ</button>
+          </div>
+        </div>
+        <div class="cells" id="cells" aria-label="選んだ層の128個のニューロン"></div>
+        <div class="legend" id="legend"></div>
+        <p class="note" id="metric-note"></p>
+      </section>
+
+      <section class="panel" aria-labelledby="sum-h">
+        <h2 id="sum-h">層の読み値</h2>
+        <div class="scroll"><table>
+          <thead><tr><th>層</th><th>n̄</th><th>共起 C̄</th><th>純度</th><th>上の葉</th><th>測定</th></tr></thead>
+          <tbody id="summary"></tbody>
+        </table></div>
+        <p class="note">このページで動くのは、リポジトリの文書（約39万字）で学習した約96万パラメータの文字モデルです。ブラウザ内で計算しています（fp16 の重み、PyTorch 版と次の文字の予測が 99.9% 一致）。NeuroQuantum（5,430万パラメータ）ではありません。共起 C = √(1 − |b|²) は、各ニューロンを見えない相手とのペアの片方とみなしたときのエンタングルメントで、ニューロン同士が本当にエンタングルしているわけではありません。</p>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script type="application/json" id="meta">%%META%%</script>
+<script type="text/plain" id="weights">%%WEIGHTS%%</script>
+<script>
+%%ENGINE%%
+</script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const meta = JSON.parse($('meta').textContent);
+  const model = new CompleteQBNN(meta, decodeWeights($('weights').textContent.trim(), meta.layout));
+  const N = model.N;
+  const ui = { layer: 1, metric: 'C', neuron: 0, view: -1 };
+  let steps = [], running = false, stopFlag = false;
+
+  // ---------- 状態の読み値 ----------
+  function neuronStats(snap, l, j) {
+    const b = snap.b[l], bx = b[3 * j], by = b[3 * j + 1], bz = b[3 * j + 2];
+    const r2 = bx * bx + by * by + bz * bz, rxy = Math.hypot(bx, by), n = 2 * (1 - bz);
+    const eta = Math.sqrt(Math.max(1 - bz * bz, 0));
+    return {
+      bx, by, bz, n, r: Math.sqrt(r2), C: Math.sqrt(Math.max(1 - r2, 0)), purity: (1 + r2) / 2,
+      sheet: bz < 0 ? -1 : 1, kappa: eta > 1e-9 ? Math.min(rxy / eta, 1) : 0,
+      phi: (Math.atan2(by, bx) + 2 * Math.PI) % (2 * Math.PI),
+      c: snap.c[l][j], u: snap.u[l][j], v: snap.v[l][j], m: Math.tanh(snap.c[l][j]),
+      measured: snap.measured[l][j],
+      depth: Math.acosh(1 / Math.max(Math.abs(bz) / Math.max(Math.sqrt(r2), 1e-12), 1e-9)),
+    };
+  }
+  function layerSummary(snap, l) {
+    let n = 0, C = 0, p = 0, up = 0, meas = 0;
+    for (let j = 0; j < N; j++) { const s = neuronStats(snap, l, j); n += s.n; C += s.C; p += s.purity; up += s.sheet > 0; meas += s.measured; }
+    return { n: n / N, C: C / N, purity: p / N, up: up / N, meas: meas / N };
+  }
+
+  // ---------- 色 ----------
+  const css = () => getComputedStyle(document.documentElement);
+  function hex(c) { c = c.trim(); if (c.startsWith('#')) { const v = parseInt(c.slice(1), 16); return [(v >> 16) & 255, (v >> 8) & 255, v & 255]; } return [128, 128, 128]; }
+  function mix(a, b, t) { return `rgb(${a.map((x, i) => Math.round(x + (b[i] - x) * t)).join(',')})`; }
+  function palette() { const s = css(); return Object.fromEntries(['bg', 'panel', 'ink', 'muted', 'line', 'up', 'down', 'accent', 'wash'].map(k => [k, s.getPropertyValue('--' + k).trim()])); }
+  function metricColor(s, P) {
+    const wash = hex(P.wash), up = hex(P.up), down = hex(P.down), acc = hex(P.accent);
+    if (ui.metric === 'C') return mix(wash, acc, s.C);
+    if (ui.metric === 'kappa') return mix(wash, acc, s.kappa);
+    if (ui.metric === 'n') return s.n < 2 ? mix(up, wash, s.n / 2) : mix(wash, down, (s.n - 2) / 2);
+    return mix(wash, s.sheet > 0 ? up : down, s.r);
+  }
+  const metricInfo = {
+    C: ['0（積状態）', '1（ベル状態）', '共起 C = √(1 − |b|²) = sech c。中心に近いほど大きい。'],
+    n: ['0（|0⟩）', '4（|1⟩）', 'n = 2(1 − b_z) = 4P(1)。中央の 2 が赤道。'],
+    sheet: ['下の葉', '上の葉', '色が葉、濃さが |b|（偏極の大きさ）。'],
+    kappa: ['0', '1', 'κ = |b_xy| / √(1 − b_z²)：同じ n の純粋状態に対するコヒーレンスの比。'],
+  };
+
+  // ---------- キャンバス ----------
+  function fitCanvas(cv) {
+    const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); return [g, w, h];
+  }
+  function drawMeridian(snap) {
+    const cv = $('meridian'), [g, w, h] = fitCanvas(cv), P = palette();
+    g.clearRect(0, 0, w, h);
+    const RMAX = 3.0, ZMAX = 3.3, padL = 30, padR = 10, padT = 14, padB = 14;
+    const sx = r => padL + (r / RMAX) * (w - padL - padR), sy = z => padT + (ZMAX - z) / (2 * ZMAX) * (h - padT - padB);
+    g.font = '11px ' + css().getPropertyValue('--font-mono'); g.lineWidth = 1;
+    g.strokeStyle = P.line; g.setLineDash([3, 4]);
+    g.beginPath(); g.moveTo(sx(0), sy(ZMAX)); g.lineTo(sx(0), sy(-ZMAX)); g.moveTo(sx(0), sy(0)); g.lineTo(sx(RMAX), sy(0)); g.stroke();
+    g.setLineDash([]);
+    g.fillStyle = P.muted;
+    for (const z of [-3, -2, -1, 0, 1, 2, 3]) g.fillText(String(z), 4, sy(z) + 4);
+    g.fillText('赤道 n=2', sx(1.15), sy(0) - 5);
+    // ブロッホ球（子午線の右半分）と二葉双曲面
+    g.strokeStyle = P.ink; g.lineWidth = 1.4;
+    g.beginPath(); for (let t = 0; t <= 64; t++) { const a = Math.PI / 2 - Math.PI * t / 64; const x = sx(Math.cos(a)), y = sy(Math.sin(a)); t ? g.lineTo(x, y) : g.moveTo(x, y); } g.stroke();
+    for (const [sgn, col] of [[1, P.up], [-1, P.down]]) {
+      g.strokeStyle = col; g.lineWidth = 1.6; g.beginPath();
+      for (let t = 0; t <= 80; t++) { const r = RMAX * t / 80, z = sgn * Math.sqrt(1 + r * r); if (Math.abs(z) > ZMAX) break; const x = sx(r), y = sy(z); t ? g.lineTo(x, y) : g.moveTo(x, y); }
+      g.stroke();
+    }
+    g.fillStyle = P.ink; g.fillText('|0⟩ n=0', sx(0) + 5, sy(1.42)); g.fillText('|1⟩ n=4', sx(0) + 5, sy(-1.42) + 9);
+    g.fillStyle = P.up; g.fillText('上の葉 H₊', sx(0) + 5, sy(2.95));
+    g.fillStyle = P.down; g.fillText('下の葉 H₋', sx(0) + 5, sy(-2.95) + 9);
+    if (!snap) return;
+    const l = ui.layer;
+    let outside = 0;
+    for (let j = 0; j < N; j++) {
+      const s = neuronStats(snap, l, j), col = s.sheet > 0 ? P.up : P.down;
+      if (Math.abs(s.bz) > 1e-6) {
+        const qr = Math.hypot(s.bx, s.by) / Math.abs(s.bz), qz = s.sheet * Math.sqrt(1 + qr * qr);
+        if (qr <= RMAX && Math.abs(qz) <= ZMAX) { g.strokeStyle = col; g.globalAlpha = .55; g.beginPath(); g.arc(sx(qr), sy(qz), 2.6, 0, 7); g.stroke(); }
+        else outside++;
+      }
+      g.globalAlpha = .8; g.fillStyle = col; g.beginPath(); g.arc(sx(Math.hypot(s.bx, s.by)), sy(s.bz), 2.4, 0, 7); g.fill();
+    }
+    g.globalAlpha = 1;
+    // 選んだニューロン: q -> P(q) -> b
+    const s = neuronStats(snap, l, ui.neuron), rb = Math.hypot(s.bx, s.by);
+    if (s.r > 1e-6) {
+      const pr = rb / s.r, pz = s.bz / s.r;   // P(q) = b/|b|（b と同じ半球）
+      const qr = Math.abs(s.bz) > 1e-6 ? rb / Math.abs(s.bz) : RMAX, qz = s.sheet * Math.sqrt(1 + qr * qr);
+      g.strokeStyle = P.accent; g.lineWidth = 1.5; g.setLineDash([4, 3]);
+      g.beginPath(); g.moveTo(sx(Math.min(qr, RMAX)), sy(Math.max(-ZMAX, Math.min(ZMAX, qz)))); g.lineTo(sx(pr), sy(pz)); g.stroke();
+      g.setLineDash([]); g.beginPath(); g.moveTo(sx(0), sy(0)); g.lineTo(sx(pr), sy(pz)); g.stroke();
+      g.fillStyle = P.accent; g.beginPath(); g.arc(sx(rb), sy(s.bz), 5, 0, 7); g.fill();
+      g.beginPath(); g.arc(sx(pr), sy(pz), 3, 0, 7); g.fill();
+    }
+    if (outside) { g.fillStyle = P.muted; g.fillText(`q が枠外: ${outside}`, sx(1.2), h - 4); }
+  }
+  function drawTimeline() {
+    const cv = $('timeline'), [g, w, h] = fitCanvas(cv), P = palette();
+    g.clearRect(0, 0, w, h);
+    const gen = steps;
+    if (gen.length < 2) return;
+    const Hmax = Math.max(3, ...gen.map(s => s.H)), x = i => 4 + i / (gen.length - 1) * (w - 8);
+    g.strokeStyle = P.line; g.lineWidth = 1; g.beginPath(); g.moveTo(0, h - 1); g.lineTo(w, h - 1); g.stroke();
+    const line = (f, col) => { g.strokeStyle = col; g.lineWidth = 1.5; g.beginPath(); gen.forEach((s, i) => { const y = h - 4 - f(s) * (h - 10); i ? g.lineTo(x(i), y) : g.moveTo(x(i), y); }); g.stroke(); };
+    line(s => s.H / Hmax, P.accent); line(s => s.sum[1].C, P.up);
+    const vi = viewIndex();
+    if (vi >= 0) { g.strokeStyle = P.ink; g.globalAlpha = .4; g.beginPath(); g.moveTo(x(vi), 0); g.lineTo(x(vi), h); g.stroke(); g.globalAlpha = 1; }
+    g.fillStyle = P.muted; g.font = '11px ' + css().getPropertyValue('--font-mono'); g.fillText(`H 最大 ${Hmax.toFixed(1)}`, 6, 12);
+  }
+
+  // ---------- パネル ----------
+  const cellsEl = $('cells');
+  for (let j = 0; j < N; j++) { const b = document.createElement('button'); b.className = 'cell'; b.type = 'button'; b.dataset.j = j; b.setAttribute('aria-label', 'ニューロン ' + j); cellsEl.appendChild(b); }
+  cellsEl.addEventListener('click', e => { const j = e.target.dataset && e.target.dataset.j; if (j !== undefined) { ui.neuron = +j; render(); } });
+
+  const viewIndex = () => ui.view < 0 ? steps.length - 1 : ui.view;
+  function currentSnap() { return steps[viewIndex()] || null; }
+  function fmt(x, d = 3) { return (x >= 0 ? ' ' : '') + x.toFixed(d); }
+  function render() {
+    const snap = currentSnap(), P = palette();
+    drawMeridian(snap); drawTimeline();
+    const info = metricInfo[ui.metric];
+    $('legend').innerHTML = `<span>${info[0]}</span><span class="ramp"></span><span>${info[1]}</span>`;
+    const ramp = $('legend').querySelector('.ramp');
+    ramp.style.background = ui.metric === 'n' ? `linear-gradient(90deg, ${P.up}, ${P.wash}, ${P.down})` : ui.metric === 'sheet' ? `linear-gradient(90deg, ${P.down}, ${P.wash}, ${P.up})` : `linear-gradient(90deg, ${P.wash}, ${P.accent})`;
+    $('metric-note').textContent = info[2] + ' 枠付きのマスは、この文字で測定されたニューロンです。';
+    if (!snap) return;
+    const cells = cellsEl.children;
+    for (let j = 0; j < N; j++) {
+      const s = neuronStats(snap, ui.layer, j);
+      cells[j].style.background = metricColor(s, P);
+      cells[j].classList.toggle('sel', j === ui.neuron);
+      cells[j].classList.toggle('meas', !!s.measured);
+    }
+    const s = neuronStats(snap, ui.layer, ui.neuron);
+    $('detail').innerHTML = [
+      ['ニューロン', `${ui.layer + 1}層目 #${ui.neuron}`], ['葉', s.sheet > 0 ? '上 H₊（|0⟩ 側）' : '下 H₋（|1⟩ 側）'],
+      ['学習座標 c, u, v', `${fmt(s.c, 2)}, ${fmt(s.u, 2)}, ${fmt(s.v, 2)}`], ['偏極 m = tanh c', fmt(s.m)],
+      ['b = (x, y, z)', `${fmt(s.bx)}, ${fmt(s.by)}, ${fmt(s.bz)}`], ['n = 4P(1)', s.n.toFixed(3)],
+      ['φ', s.phi.toFixed(3)], ['κ', s.kappa.toFixed(3)], ['純度', s.purity.toFixed(3)],
+      ['共起 C', s.C.toFixed(3)], ['双曲深さ ρ', s.depth.toFixed(3)], ['測定', s.measured ? 'この文字で測定（収縮）' : 'なし'],
+    ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+    $('summary').innerHTML = snap.sum.map((x, l) => `<tr><td>${l + 1}層目</td><td>${x.n.toFixed(2)}</td><td>${x.C.toFixed(3)}</td><td>${x.purity.toFixed(3)}</td><td>${(100 * x.up).toFixed(0)}%</td><td>${(100 * x.meas).toFixed(0)}%</td></tr>`).join('');
+    const show = ch => ch === '\n' ? '⏎' : ch === ' ' ? '␣' : ch;
+    $('bars').innerHTML = snap.top.map(([ch, p]) => `<div class="${ch === snap.picked ? 'picked' : ''}" style="display:contents"><span class="ch">${escapeHtml(show(ch))}</span><span class="bar"><i style="width:${(100 * p).toFixed(1)}%"></i></span><span class="mono">${(100 * p).toFixed(1)}%</span></div>`).join('');
+    document.querySelectorAll('#tape span').forEach(sp => sp.classList.toggle('sel', +sp.dataset.step === viewIndex()));
+    $('latest').disabled = ui.view < 0;
+  }
+  function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]); }
+
+  // ---------- 生成 ----------
+  function snapshot(out, pickedChar) {
+    const p = CompleteQBNN.softmax(out.logits, 1);
+    let H = 0; for (const x of p) if (x > 0) H -= x * Math.log(x);
+    const order = Array.from(p.keys()).sort((a, b) => p[b] - p[a]).slice(0, 8);
+    const snap = {
+      b: out.state.map(b => Float32Array.from(b)), c: out.trace.map(t => t.c), u: out.trace.map(t => t.u), v: out.trace.map(t => t.v),
+      measured: out.trace.map(t => t.measured), H, top: order.map(i => [model.chars[i], p[i]]), picked: pickedChar,
+    };
+    snap.sum = [0, 1].map(l => layerSummary(snap, l));
+    return snap;
+  }
+  function addChar(ch, step, isPrompt, H) {
+    const sp = document.createElement('span');
+    sp.textContent = ch === '\n' ? '\n' : ch; if (ch === '\n') sp.className = 'nl';
+    if (isPrompt) sp.classList.add('prompt');
+    sp.dataset.step = step; sp.tabIndex = 0;
+    if (H !== undefined) sp.style.background = `color-mix(in srgb, var(--accent) ${Math.min(30, H * 7).toFixed(0)}%, transparent)`;
+    $('tape').appendChild(sp); $('tape').scrollTop = $('tape').scrollHeight;
+  }
+  $('tape').addEventListener('click', e => { const st = e.target.dataset && e.target.dataset.step; if (st !== undefined && steps[+st]) { ui.view = +st; render(); } });
+  $('tape').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.click(); });
+
+  async function generate() {
+    if (running) return;
+    running = true; stopFlag = false; $('go').disabled = true; $('stop').disabled = false;
+    steps = []; ui.view = -1; $('tape').textContent = '';
+    const T = +$('temp').value, measure = +$('meas').value, len = +$('len').value, delay = +$('speed').value;
+    const rng = mulberry32(+$('seed').value || 0);
+    const raw = $('prompt').value, ids = model.encode(raw);
+    const dropped = [...new Set([...raw].filter(ch => !model.index.has(ch)))];
+    $('status').textContent = dropped.length ? `語彙にない文字は飛ばしました：${dropped.slice(0, 12).join(' ')}` : '';
+    if (!ids.length) ids.push(model.index.get('\n') ?? 0);
+    // steps[k] は k 番目の文字を読んだ直後の中身で、k+1 番目の文字を出す。出力の i 文字目は steps[i−1] に対応する
+    let state = model.initState(), out;
+    addChar(model.chars[ids[0]], -1, true);
+    for (let i = 0; i < ids.length - 1; i++) {
+      out = model.step(ids[i], state, { measure, rng }); state = out.state;
+      steps[i] = snapshot(out, model.chars[ids[i + 1]]);
+      addChar(model.chars[ids[i + 1]], i, true, steps[i].H);
+    }
+    let tok = ids[ids.length - 1], n = 0;
+    const t0 = performance.now();
+    for (let k = ids.length - 1; n < len && !stopFlag; k++, n++) {
+      out = model.step(tok, state, { measure, rng }); state = out.state;
+      tok = T <= 0 ? out.logits.indexOf(Math.max(...out.logits)) : CompleteQBNN.sample(CompleteQBNN.softmax(out.logits, T), rng);
+      steps[k] = snapshot(out, model.chars[tok]);
+      addChar(model.chars[tok], k, false, steps[k].H);
+      if (ui.view < 0) render();
+      if (delay) await new Promise(r => setTimeout(r, delay)); else if (n % 8 === 7) await new Promise(r => setTimeout(r, 0));
+    }
+    $('status').textContent = (stopFlag ? '停止しました。' : '生成しました。') + ` ${n} 文字、${((performance.now() - t0) / Math.max(n, 1)).toFixed(1)} ms/文字（待ち時間を含む）。文字をクリックすると、その時点の中身を表示します。`;
+    running = false; $('go').disabled = false; $('stop').disabled = true; render();
+  }
+
+  // ---------- 操作 ----------
+  for (const [id, d] of [['temp', 2], ['meas', 2], ['len', 0]]) { const f = () => $(id + 'v').textContent = (+$(id).value).toFixed(d); $(id).addEventListener('input', f); f(); }
+  $('go').addEventListener('click', generate);
+  $('stop').addEventListener('click', () => { stopFlag = true; });
+  $('latest').addEventListener('click', () => { ui.view = -1; render(); });
+  $('examples').addEventListener('click', e => { if (e.target.tagName === 'BUTTON') { $('prompt').value = e.target.textContent; generate(); } });
+  document.querySelectorAll('[data-layer]').forEach(b => b.addEventListener('click', () => {
+    ui.layer = +b.dataset.layer; document.querySelectorAll('[data-layer]').forEach(x => x.setAttribute('aria-pressed', String(x === b))); render(); }));
+  $('metric').addEventListener('click', e => { const m = e.target.dataset && e.target.dataset.m; if (!m) return;
+    ui.metric = m; $('metric').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.m === m))); render(); });
+  $('meridian').addEventListener('click', e => {
+    const snap = currentSnap(); if (!snap) return;
+    const rect = e.target.getBoundingClientRect(), w = rect.width, h = rect.height, px = e.clientX - rect.left, py = e.clientY - rect.top;
+    const sx = r => 30 + r / 3 * (w - 40), sy = z => 14 + (3.3 - z) / 6.6 * (h - 28);
+    let best = -1, bd = 1e9;
+    for (let j = 0; j < N; j++) { const s = neuronStats(snap, ui.layer, j); const d = Math.hypot(sx(Math.hypot(s.bx, s.by)) - px, sy(s.bz) - py); if (d < bd) { bd = d; best = j; } }
+    if (bd < 14) { ui.neuron = best; render(); }
+  });
+  new ResizeObserver(() => render()).observe($('meridian'));
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
+  new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  render();
+  generate();
+})();
+</script>
