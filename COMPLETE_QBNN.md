@@ -265,6 +265,10 @@ net.diagnostics()               # 層ごとの n, κ, 純度, 上の葉の割合
 python tools/complete_qbnn_viewer/build.py complete_qbnn_lm.pt -o complete-qbnn-observatory.html
 ```
 
+## 完全QBNN 文字言語モデル（大きいモデルの学習）
+
+`tools/complete_qbnn_lm/` は、FFN のニューロンを完全ブロッホ球にした文字単位の GPT（最大 2,740 万パラメータ）を、日本語の文章・会話・指示・コードで学習・評価し、ブラウザ用に書き出すスクリプト群である。使い方と結果は `tools/complete_qbnn_lm/README.md` にまとめた。
+
 ## 実行結果（CPU）
 
 **二重らせんの分類**（`classify-demo`）
