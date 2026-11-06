@@ -53,13 +53,34 @@ class FFN(nn.Module):
 
     def __init__(self, d, h, kind):
         super().__init__()
+        if kind == 'rnn':   # 再帰の重み h×h の分だけ幅を減らし、GELU の FFN とパラメータ数を揃える
+            h = 3 * int((-(2 * d + 1) + math.sqrt((2 * d + 1) ** 2 + 4 * (2 * d * h + h))) / 6)
         self.kind, self.h = kind, h
         self.up, self.down = nn.Linear(d, h), nn.Linear(h, d)
-        if kind == 'complete':
+        if kind in ('complete', 'rnn'):
             self.gate = nn.Parameter(torch.zeros(h // 3, 3))
+        if kind == 'rnn':   # b_{t-1} -> 次の時刻の (c, u, v)。ゼロで初期化すると最初は 'complete' と同じ
+            self.rec = nn.Linear(h, h, bias=False)
+            nn.init.zeros_(self.rec.weight)
 
-    def forward(self, x):
+    def bloch(self, a):
+        c, u, v = a.unflatten(-1, (self.h // 3, 3)).unbind(-1)
+        b = cq.complete_bloch(c, u, v)
+        return torch.einsum('nij,...nj->...ni', cq.axis_angle_rotation(self.gate), b).flatten(-2)
+
+    def forward(self, x, state=None):
+        """kind='rnn' のときだけ state（直前の b、[B, h]）を受け取り (出力, 最後の b) を返せる。"""
         a = self.up(x)
+        if self.kind == 'rnn':
+            R = cq.axis_angle_rotation(self.gate)
+            b = torch.zeros_like(a[:, 0]) if state is None else state
+            outs = []
+            for t in range(a.shape[1]):   # 完全ブロッホ球ニューロンの状態 b_t を記憶として次の時刻へ渡す
+                c, u, v = (a[:, t] + self.rec(b)).unflatten(-1, (self.h // 3, 3)).unbind(-1)
+                b = torch.einsum('nij,bnj->bni', R, cq.complete_bloch(c, u, v)).flatten(-2)
+                outs.append(b)
+            self.last_state = b
+            return self.down(torch.stack(outs, 1))
         if self.kind == 'gelu':
             a = F.gelu(a)
         elif self.kind == 'tanh':
