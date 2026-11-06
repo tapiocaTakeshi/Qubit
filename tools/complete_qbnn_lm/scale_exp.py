@@ -93,15 +93,78 @@ class FFN(nn.Module):
         return self.down(a)
 
 
+class RWKV7(nn.Module):
+    """Attention の代わりの RWKV-7 time mixing（一般化デルタ則）。ヘッドごとの状態 S は 値 N × 鍵 nk の行列:
+        S_t = S_{t-1} (diag(w_t) − κ̂_tᵀ (a_t ⊙ κ̂_t)) + v_tᵀ k_t,   y_t = S_t r_t
+    w_t（減衰）と a_t（書き込みの強さ）は入力ごとに変わる。v-first の残差は省いた。
+    bloch=True なら受容 r と鍵 k を完全ブロッホ球ニューロン（ヘッドあたり N//3 個、ゲート R_j つき）の出力にする。"""
+    def __init__(self, d, heads, bloch=False, lora=16):
+        super().__init__()
+        H, N = heads, d // heads
+        nk = 3 * (N // 3) if bloch else N
+        self.H, self.N, self.nk, self.bloch = H, N, nk, bloch
+        self.mix = nn.Parameter(torch.full((6, d), 0.5))   # token shift: r, w, k, v, a, g
+        self.r, self.k = nn.Linear(d, H * nk, bias=False), nn.Linear(d, H * nk, bias=False)
+        self.v, self.o = nn.Linear(d, d, bias=False), nn.Linear(d, d, bias=False)
+        lo = lambda n_out, act: nn.Sequential(nn.Linear(d, lora, bias=False), act, nn.Linear(lora, n_out, bias=False))
+        self.w_lora, self.a_lora, self.g_lora = lo(H * nk, nn.Tanh()), lo(H * nk, nn.Identity()), lo(d, nn.Sigmoid())
+        for m in (self.w_lora, self.a_lora):
+            nn.init.zeros_(m[2].weight)
+        self.w0 = nn.Parameter(torch.linspace(-4, 1, nk).repeat(H))
+        self.a0 = nn.Parameter(torch.zeros(H * nk))
+        self.k_k, self.k_a = nn.Parameter(torch.full((H * nk,), 0.85)), nn.Parameter(torch.ones(H * nk))
+        self.r_k = nn.Parameter(torch.zeros(H, nk))
+        self.ln_x = nn.GroupNorm(H, d, eps=64e-5)
+        if bloch:
+            self.gate_r, self.gate_k = nn.Parameter(torch.zeros(H * nk // 3, 3)), nn.Parameter(torch.zeros(H * nk // 3, 3))
+
+    def to_bloch(self, a, gate):
+        c, u, v = a.unflatten(-1, (-1, 3)).unbind(-1)
+        return torch.einsum('nij,...nj->...ni', cq.axis_angle_rotation(gate), cq.complete_bloch(c, u, v)).flatten(-2)
+
+    def forward(self, x):
+        B, T, C = x.shape
+        H, N, nk = self.H, self.N, self.nk
+        xx = F.pad(x, (0, 0, 1, -1)) - x
+        xr, xw, xk, xv, xa, xg = (x + xx * m for m in self.mix)
+        r, k = self.r(xr), self.k(xk)
+        if self.bloch:
+            r, k = self.to_bloch(r, self.gate_r), self.to_bloch(k, self.gate_k)
+        v, g = self.v(xv), self.g_lora(xg)
+        w = torch.exp(-0.606531 * torch.sigmoid(self.w0 + self.w_lora(xw)))   # (0.545, 1)
+        a = torch.sigmoid(self.a0 + self.a_lora(xa))
+        kk = F.normalize((k * self.k_k).view(B, T, H, nk), dim=-1)
+        k = k * (1 + (a - 1) * self.k_a)
+        r, k, w, a = (t.view(B, T, H, nk) for t in (r, k, w, a))
+        v = v.view(B, T, H, N)
+        S = x.new_zeros(B, H, N, nk)
+        ys = []
+        for t in range(T):
+            kt = kk[:, t]
+            S = S * w[:, t, :, None, :] - (S @ kt[..., None]) @ (kt * a[:, t])[..., None, :] \
+                + v[:, t, :, :, None] @ k[:, t, :, None, :]
+            ys.append((S @ r[:, t, :, :, None]).squeeze(-1))
+        y = self.ln_x(torch.stack(ys, 1).reshape(B * T, C)).view(B, T, H, N)
+        y = y + (r * k * self.r_k).sum(-1, keepdim=True) * v
+        return self.o(y.reshape(B, T, C) * g)
+
+
 class Block(nn.Module):
     def __init__(self, d, heads, h, kind):
         super().__init__()
         self.ln1, self.ln2 = nn.LayerNorm(d), nn.LayerNorm(d)
-        self.qkv, self.proj = nn.Linear(d, 3 * d), nn.Linear(d, d)
         self.heads = heads
+        if kind in ('rwkv7', 'rwkv7b'):   # Attention を RWKV-7 にし、FFN は完全ブロッホ球のまま
+            self.tmix = RWKV7(d, heads, bloch=kind == 'rwkv7b')
+            kind = 'complete'
+        else:
+            self.qkv, self.proj = nn.Linear(d, 3 * d), nn.Linear(d, d)
         self.ffn = FFN(d, h, kind)
 
     def forward(self, x):
+        if hasattr(self, 'tmix'):
+            x = x + self.tmix(self.ln1(x))
+            return x + self.ffn(self.ln2(x))
         B, T, C = x.shape
         q, k, v = self.qkv(self.ln1(x)).split(C, -1)
         q, k, v = (t.view(B, T, self.heads, C // self.heads).transpose(1, 2) for t in (q, k, v))
