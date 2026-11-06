@@ -9,7 +9,8 @@ With --eval_data, held-out perplexity is reported for the untouched base model
 """
 import argparse, math, time, torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from apqb_filter import patch_model, apqb_parameters, freeze_except_apqb, APQBGatedMLP
+from apqb_filter import (patch_model, patch_model_control, apqb_parameters, freeze_except_apqb,
+                         APQBGatedMLP, AffineSiLUMLP)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--model", default="Qwen/Qwen3.8-27B")
@@ -23,6 +24,8 @@ ap.add_argument("--lam_init", type=float, default=-3.0)   # sigmoid(-3)=5% blend
 ap.add_argument("--dtype", default="bfloat16")
 ap.add_argument("--log_every", type=int, default=50)
 ap.add_argument("--seed", type=int, default=0)
+ap.add_argument("--control", action="store_true",
+                help="train a per-channel affine on SiLU instead of the APQB filter (baseline)")
 ap.add_argument("--out", default="apqb_qwen38.pt")
 a = ap.parse_args()
 torch.manual_seed(a.seed)
@@ -57,9 +60,10 @@ def eval_ppl():
 if eval_ids is not None:
     print(f"held-out ppl, base model (baseline): {eval_ppl():.3f}", flush=True)
 
-print("patched MLPs:", patch_model(model, lam_init=a.lam_init))
+n_patched = patch_model_control(model) if a.control else patch_model(model, lam_init=a.lam_init)
+print("patched MLPs:", n_patched, "(control: affine SiLU)" if a.control else "(APQB filter)")
 for m in model.modules():
-    if isinstance(m, APQBGatedMLP):
+    if isinstance(m, (APQBGatedMLP, AffineSiLUMLP)):
         m.to(dev)
 freeze_except_apqb(model)
 params = apqb_parameters(model)
@@ -72,17 +76,18 @@ model.train()
 
 ids = load_ids(a.data)
 opt = torch.optim.AdamW(params, lr=a.lr, weight_decay=0.0)
+data_rng = torch.Generator().manual_seed(a.seed)   # same windows for filter and control runs
 t0, run = time.time(), 0.0
 for step in range(a.steps):
-    i = torch.randint(0, len(ids) - a.seq, (1,)).item()
+    i = torch.randint(0, len(ids) - a.seq, (1,), generator=data_rng).item()
     x = ids[i:i + a.seq].unsqueeze(0).to(dev)
     loss = model(x, labels=x).loss                  # HF shifts labels internally
     loss.backward(); torch.nn.utils.clip_grad_norm_(params, 1.0)
     opt.step(); opt.zero_grad()
     run += loss.item()
     if (step + 1) % a.log_every == 0:
-        lam = torch.cat([torch.sigmoid(m.lam_raw).flatten() for m in model.modules()
-                         if isinstance(m, APQBGatedMLP)]).mean().item()
+        lams = [torch.sigmoid(m.lam_raw).flatten() for m in model.modules() if isinstance(m, APQBGatedMLP)]
+        lam = torch.cat(lams).mean().item() if lams else float("nan")
         print(f"step {step+1}  loss {run/a.log_every:.4f}  mean_lambda {lam:.4f}  "
               f"{time.time()-t0:.0f}s", flush=True)
         run = 0.0

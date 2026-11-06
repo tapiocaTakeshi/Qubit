@@ -94,3 +94,42 @@ def freeze_except_apqb(model):
     keep = {id(p) for p in apqb_parameters(model)}
     for p in model.parameters():
         p.requires_grad = id(p) in keep
+
+
+class _ChannelAffine(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.scale = nn.Parameter(torch.ones(dim))
+        self.bias = nn.Parameter(torch.zeros(dim))
+
+
+class AffineSiLUMLP(nn.Module):
+    """Control for APQBGatedMLP: down( up * (a*silu(g) + b) ) with per-channel a, b.
+
+    Identity at init. Trains the same kind of per-channel parameters as the
+    filter, but without the Bloch filter, so any gain it shows is domain
+    adaptation rather than an effect of the APQB filter.
+    """
+
+    def __init__(self, mlp):
+        super().__init__()
+        self.gate_proj, self.up_proj, self.down_proj = mlp.gate_proj, mlp.up_proj, mlp.down_proj
+        self.act_fn = getattr(mlp, "act_fn", Fn.silu)
+        self.filt = _ChannelAffine(self.gate_proj.out_features)
+
+    def forward(self, x):
+        g, u = self.gate_proj(x), self.up_proj(x)
+        gate = self.filt.scale.to(g.dtype) * self.act_fn(g) + self.filt.bias.to(g.dtype)
+        return self.down_proj(gate * u)
+
+
+def patch_model_control(model):
+    """Replace every gated MLP with AffineSiLUMLP. Returns #patched."""
+    targets = [(n, m) for n, m in model.named_modules()
+               if all(hasattr(m, a) for a in ("gate_proj", "up_proj", "down_proj"))
+               and not isinstance(m, (APQBGatedMLP, AffineSiLUMLP))]
+    for name, m in targets:
+        parent_name, _, child = name.rpartition(".")
+        parent = model.get_submodule(parent_name) if parent_name else model
+        setattr(parent, child, AffineSiLUMLP(m))
+    return len(targets)
