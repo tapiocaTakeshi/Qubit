@@ -53,6 +53,8 @@ class FFN(nn.Module):
 
     def __init__(self, d, h, kind):
         super().__init__()
+        if kind == 'cmix':   # RWKV-7 の channel mixing: token shift → ReLU² → 線形（バイアスなし）
+            self.mix_k = nn.Parameter(torch.full((d,), 0.5))
         if kind == 'rnn':   # 再帰の重み h×h の分だけ幅を減らし、GELU の FFN とパラメータ数を揃える
             h = 3 * int((-(2 * d + 1) + math.sqrt((2 * d + 1) ** 2 + 4 * (2 * d * h + h))) / 6)
         self.kind, self.h = kind, h
@@ -70,6 +72,9 @@ class FFN(nn.Module):
 
     def forward(self, x, state=None):
         """kind='rnn' のときだけ state（直前の b、[B, h]）を受け取り (出力, 最後の b) を返せる。"""
+        if self.kind == 'cmix':
+            xk = x + (F.pad(x, (0, 0, 1, -1)) - x) * self.mix_k
+            return self.down(torch.relu(self.up(xk)) ** 2)
         a = self.up(x)
         if self.kind == 'rnn':
             R = cq.axis_angle_rotation(self.gate)
@@ -97,9 +102,21 @@ class RWKV7(nn.Module):
     """Attention の代わりの RWKV-7 time mixing（一般化デルタ則）。ヘッドごとの状態 S は 値 N × 鍵 nk の行列:
         S_t = S_{t-1} (diag(w_t) − κ̂_tᵀ (a_t ⊙ κ̂_t)) + v_tᵀ k_t,   y_t = S_t r_t
     w_t（減衰）と a_t（書き込みの強さ）は入力ごとに変わる。v-first の残差は省いた。
-    bloch=True なら受容 r と鍵 k を完全ブロッホ球ニューロン（ヘッドあたり N//3 個、ゲート R_j つき）の出力にする。"""
-    def __init__(self, d, heads, bloch=False, lora=16):
+    bloch=True なら受容 r と鍵 k を完全ブロッホ球ニューロン（ヘッドあたり N//3 個、ゲート R_j つき）の出力にする。
+    apqb='k' / 'ka' なら、apqb_neurons 個の完全ブロッホ球ニューロンの状態 b_t から鍵（と書き込みの強さ）に足し込む:
+        k_t' = k_t + γ_k W_B b_t,   a_t' = sigmoid(u_a,t + γ_a W_A b_t)
+    γ はゼロで初期化するので、最初は標準の RWKV-7 と同じ出力になる。"""
+    def __init__(self, d, heads, bloch=False, lora=16, apqb=None, apqb_neurons=16):
         super().__init__()
+        self.apqb = apqb
+        if apqb:
+            self.apqb_in = nn.Linear(d, 3 * apqb_neurons)
+            self.apqb_gate = nn.Parameter(torch.zeros(apqb_neurons, 3))
+            self.W_B = nn.Linear(3 * apqb_neurons, d // heads * heads, bias=False)
+            self.gamma_k = nn.Parameter(torch.zeros(()))
+            if apqb == 'ka':
+                self.W_A = nn.Linear(3 * apqb_neurons, d // heads * heads, bias=False)
+                self.gamma_a = nn.Parameter(torch.zeros(()))
         H, N = heads, d // heads
         nk = 3 * (N // 3) if bloch else N
         self.H, self.N, self.nk, self.bloch = H, N, nk, bloch
@@ -132,7 +149,14 @@ class RWKV7(nn.Module):
             r, k = self.to_bloch(r, self.gate_r), self.to_bloch(k, self.gate_k)
         v, g = self.v(xv), self.g_lora(xg)
         w = torch.exp(-0.606531 * torch.sigmoid(self.w0 + self.w_lora(xw)))   # (0.545, 1)
-        a = torch.sigmoid(self.a0 + self.a_lora(xa))
+        u_a = self.a0 + self.a_lora(xa)
+        if self.apqb:   # 完全APQB の状態 b_t（位相・コヒーレンス・偏極）が鍵と更新率を動かす
+            bq = self.to_bloch(self.apqb_in(xk), self.apqb_gate)
+            self.last_apqb = bq.detach()
+            k = k + self.gamma_k * self.W_B(bq)
+            if self.apqb == 'ka':
+                u_a = u_a + self.gamma_a * self.W_A(bq)
+        a = torch.sigmoid(u_a)
         kk = F.normalize((k * self.k_k).view(B, T, H, nk), dim=-1)
         k = k * (1 + (a - 1) * self.k_a)
         r, k, w, a = (t.view(B, T, H, nk) for t in (r, k, w, a))
@@ -154,9 +178,11 @@ class Block(nn.Module):
         super().__init__()
         self.ln1, self.ln2 = nn.LayerNorm(d), nn.LayerNorm(d)
         self.heads = heads
-        if kind in ('rwkv7', 'rwkv7b'):   # Attention を RWKV-7 にし、FFN は完全ブロッホ球のまま
-            self.tmix = RWKV7(d, heads, bloch=kind == 'rwkv7b')
-            kind = 'complete'
+        if kind.startswith('rwkv7'):   # Attention を RWKV-7 にする
+            # rwkv7a: 標準 RWKV-7（channel mixing は ReLU²）/ rwkv7: FFN を完全ブロッホ球に / rwkv7b: r, k をブロッホ球に置換
+            # rwkv7c: rwkv7 + APQB 由来の鍵 / rwkv7d: rwkv7c + APQB 由来の更新率 a
+            self.tmix = RWKV7(d, heads, bloch=kind == 'rwkv7b', apqb={'rwkv7c': 'k', 'rwkv7d': 'ka'}.get(kind))
+            kind = 'cmix' if kind == 'rwkv7a' else 'complete'
         else:
             self.qkv, self.proj = nn.Linear(d, 3 * d), nn.Linear(d, d)
         self.ffn = FFN(d, h, kind)
