@@ -2,6 +2,8 @@
 
     python infer_rnn.py SIZE STEPS [KIND,KIND,...] [プロンプト ...]
 
+KIND は KIND@STEPS と書くと、そのモデルだけ別のステップ数のものを読む。
+
 KIND の既定は complete,rnn,rwkv7,rwkv7b:
 - complete: Attention + 位置ごとの完全ブロッホ球 FFN
 - rnn:      Attention + 完全ブロッホ球の状態 b_{t-1} を次の時刻へ渡す FFN
@@ -35,14 +37,15 @@ def generate(model, prompt, n=80, temp=0.7, seed=0):
 
 
 models = {}
-for kind in kinds:
+for spec in kinds:
+    kind, _, st = spec.partition('@')
     m = GPT(len(vocab), *SIZES[size], kind)
-    m.load_state_dict(torch.load(f'{D}/model_{size}_{kind}_{steps}.pt'))
+    m.load_state_dict(torch.load(f'{D}/model_{size}_{kind}_{st or steps}.pt'))
     m.eval()
     models[kind] = m
     t0 = time.time()
     bpc = evaluate(m, val, 100)
-    print(f'{kind}: params {sum(p.numel() for p in m.parameters()):,}, val {bpc:.3f} bpc ({time.time() - t0:.0f}s)')
+    print(f'{kind}@{st or steps}: params {sum(p.numel() for p in m.parameters()):,}, val {bpc:.3f} bpc ({time.time() - t0:.0f}s)')
     m.eval()
 
 if 'rnn' in models:
