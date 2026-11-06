@@ -103,7 +103,7 @@ class RWKV7(nn.Module):
         S_t = S_{t-1} (diag(w_t) − κ̂_tᵀ (a_t ⊙ κ̂_t)) + v_tᵀ k_t,   y_t = S_t r_t
     w_t（減衰）と a_t（書き込みの強さ）は入力ごとに変わる。v-first の残差は省いた。
     bloch=True なら受容 r と鍵 k を完全ブロッホ球ニューロン（ヘッドあたり N//3 個、ゲート R_j つき）の出力にする。
-    apqb='k' / 'ka' なら、apqb_neurons 個の完全ブロッホ球ニューロンの状態 b_t から鍵（と書き込みの強さ）に足し込む:
+    apqb='k' / 'a' / 'ka' なら、apqb_neurons 個の完全ブロッホ球ニューロンの状態 b_t から鍵（と書き込みの強さ）に足し込む:
         k_t' = k_t + γ_k W_B b_t,   a_t' = sigmoid(u_a,t + γ_a W_A b_t)
     γ はゼロで初期化するので、最初は標準の RWKV-7 と同じ出力になる。"""
     def __init__(self, d, heads, bloch=False, lora=16, apqb=None, apqb_neurons=16):
@@ -112,9 +112,10 @@ class RWKV7(nn.Module):
         if apqb:
             self.apqb_in = nn.Linear(d, 3 * apqb_neurons)
             self.apqb_gate = nn.Parameter(torch.zeros(apqb_neurons, 3))
-            self.W_B = nn.Linear(3 * apqb_neurons, d // heads * heads, bias=False)
-            self.gamma_k = nn.Parameter(torch.zeros(()))
-            if apqb == 'ka':
+            if 'k' in apqb:
+                self.W_B = nn.Linear(3 * apqb_neurons, d // heads * heads, bias=False)
+                self.gamma_k = nn.Parameter(torch.zeros(()))
+            if 'a' in apqb:
                 self.W_A = nn.Linear(3 * apqb_neurons, d // heads * heads, bias=False)
                 self.gamma_a = nn.Parameter(torch.zeros(()))
         H, N = heads, d // heads
@@ -153,8 +154,9 @@ class RWKV7(nn.Module):
         if self.apqb:   # 完全APQB の状態 b_t（位相・コヒーレンス・偏極）が鍵と更新率を動かす
             bq = self.to_bloch(self.apqb_in(xk), self.apqb_gate)
             self.last_apqb = bq.detach()
-            k = k + self.gamma_k * self.W_B(bq)
-            if self.apqb == 'ka':
+            if 'k' in self.apqb:
+                k = k + self.gamma_k * self.W_B(bq)
+            if 'a' in self.apqb:
                 u_a = u_a + self.gamma_a * self.W_A(bq)
         a = torch.sigmoid(u_a)
         kk = F.normalize((k * self.k_k).view(B, T, H, nk), dim=-1)
@@ -180,8 +182,8 @@ class Block(nn.Module):
         self.heads = heads
         if kind.startswith('rwkv7'):   # Attention を RWKV-7 にする
             # rwkv7a: 標準 RWKV-7（channel mixing は ReLU²）/ rwkv7: FFN を完全ブロッホ球に / rwkv7b: r, k をブロッホ球に置換
-            # rwkv7c: rwkv7 + APQB 由来の鍵 / rwkv7d: rwkv7c + APQB 由来の更新率 a
-            self.tmix = RWKV7(d, heads, bloch=kind == 'rwkv7b', apqb={'rwkv7c': 'k', 'rwkv7d': 'ka'}.get(kind))
+            # rwkv7c: rwkv7 + APQB 由来の鍵 / rwkv7d: rwkv7c + APQB 由来の更新率 a / rwkv7e: rwkv7 + APQB 由来の更新率 a だけ
+            self.tmix = RWKV7(d, heads, bloch=kind == 'rwkv7b', apqb={'rwkv7c': 'k', 'rwkv7d': 'ka', 'rwkv7e': 'a'}.get(kind))
             kind = 'cmix' if kind == 'rwkv7a' else 'complete'
         else:
             self.qkv, self.proj = nn.Linear(d, 3 * d), nn.Linear(d, d)
@@ -231,20 +233,27 @@ def evaluate(model, val, n=100):
 
 
 def main():
+    """python scale_exp.py SIZE KIND STEPS SEED [THREADS] [PREV]
+    PREV > 0 なら model_{SIZE}_{KIND}_{PREV}.pt から STEPS ステップ続けて学習し、model_{SIZE}_{KIND}_{PREV+STEPS}.pt に保存する
+    （学習率は最大値を半分にして同じ形で張り直し、データは PREV ごとに別の乱数で引く。AdamW の状態は引き継がない）。"""
     size, kind, steps, seed = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
     torch.set_num_threads(int(sys.argv[5]) if len(sys.argv) > 5 else 1)
+    prev = int(sys.argv[6]) if len(sys.argv) > 6 else 0
     train, val, vocab = load_data()
     torch.manual_seed(seed)
     d, layers, heads = SIZES[size]
     model = GPT(len(vocab), d, layers, heads, kind)
+    if prev:
+        model.load_state_dict(torch.load(f'{D}/model_{size}_{kind}_{prev}.pt'))
     n_params = sum(p.numel() for p in model.parameters())
     n_body = n_params - model.tok.weight.numel() - model.pos.weight.numel()
-    opt = torch.optim.AdamW(model.parameters(), lr=2e-3 if size in ('XS', 'S') else 1e-3, betas=(0.9, 0.95), weight_decay=0.1)
+    lr = (2e-3 if size in ('XS', 'S') else 1e-3) / (2 if prev else 1)   # 続きの学習は最大学習率を半分にする
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=0.1)
     warm = max(steps // 20, 1)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min((s + 1) / warm, 0.5 * (1 + math.cos(math.pi * min(s, steps) / steps))))
-    g = torch.Generator().manual_seed(seed)    # same data order for every neuron type
+    g = torch.Generator().manual_seed(seed + 1000 * prev)    # same data order for every neuron type
     import os
-    ck_path = f'{D}/resume_{size}_{kind}_{steps}.pt'
+    ck_path = f'{D}/resume_{size}_{kind}_{steps}' + (f'_from{prev}' if prev else '') + '.pt'
     start, log = 1, []
     if os.path.exists(ck_path):   # コンテナが再起動しても途中から再開する
         ck = torch.load(ck_path, weights_only=False)
@@ -259,15 +268,15 @@ def main():
         opt.step(); sched.step()
         if step % max(steps // 5, 1) == 0 or step == steps:
             log.append((step, evaluate(model, val, 40), time.time() - t0))
-            print(f'{size} {kind} seed{seed} step {step} val {log[-1][1]:.3f} bpc ({log[-1][2]:.0f}s)', flush=True)
+            print(f'{size} {kind} seed{seed} step {prev + step} val {log[-1][1]:.3f} bpc ({log[-1][2]:.0f}s)', flush=True)
         if step % 600 == 0 and step < steps:
             torch.save({'model': model.state_dict(), 'opt': opt.state_dict(), 'sched': sched.state_dict(),
                         'gen': g.get_state(), 'step': step, 'log': log}, ck_path + '.tmp')
             os.replace(ck_path + '.tmp', ck_path)
-    result = dict(size=size, kind=kind, seed=seed, steps=steps, params=n_params, body_params=n_body,
+    result = dict(size=size, kind=kind, seed=seed, steps=prev + steps, prev=prev, params=n_params, body_params=n_body,
                   train_chars=steps * BATCH * CTX, val_bpc=evaluate(model, val, 200), log=log,
                   seconds=time.time() - t0)
-    torch.save(model.state_dict(), f'{D}/model_{size}_{kind}_{steps}.pt')
+    torch.save(model.state_dict(), f'{D}/model_{size}_{kind}_{prev + steps}.pt')
     with open(f'{D}/results_long.jsonl', 'a') as f:
         f.write(json.dumps(result) + '\n')
     print('RESULT', json.dumps(result), flush=True)
