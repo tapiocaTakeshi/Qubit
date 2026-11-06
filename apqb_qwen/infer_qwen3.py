@@ -13,7 +13,7 @@ result shows only what the blend does untrained; lam_init sets the blend
 import argparse, math, time
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from apqb_filter import patch_model, APQBGatedMLP
+from apqb_filter import patch_model, patch_model_control, APQBGatedMLP, AffineSiLUMLP
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--model", default="Qwen/Qwen3-0.6B")
@@ -22,6 +22,7 @@ ap.add_argument("--lam_init", type=float, default=-3.0)
 ap.add_argument("--max_new_tokens", type=int, default=80)
 ap.add_argument("--prompt", action="append")
 ap.add_argument("--no_baseline", action="store_true")
+ap.add_argument("--control", action="store_true", help="patch the affine-SiLU control instead of the APQB filter")
 a = ap.parse_args()
 
 prompts = a.prompt or ["量子ビットとは何ですか？簡潔に説明してください。",
@@ -61,20 +62,23 @@ def run(tag):
 
 base = None if a.no_baseline else run("baseline")
 
-n = patch_model(model, lam_init=a.lam_init)
+n = patch_model_control(model) if a.control else patch_model(model, lam_init=a.lam_init)
+tag = "control" if a.control else "APQB-filtered"
 for m in model.modules():
-    if isinstance(m, APQBGatedMLP):
+    if isinstance(m, (APQBGatedMLP, AffineSiLUMLP)):
         m.to(model.device)
         for p in m.filt.parameters(): p.data = p.data.float()
+    if isinstance(m, APQBGatedMLP):
         m.lam_raw.data, m.out_scale.data = m.lam_raw.data.float(), m.out_scale.data.float()
 if a.weights:
     state = torch.load(a.weights, map_location="cpu")
     missing = model.load_state_dict(state, strict=False)
     print(f"loaded {len(state)} filter tensors; unexpected={len(missing.unexpected_keys)}")
-lam = torch.cat([torch.sigmoid(m.lam_raw).flatten() for m in model.modules() if isinstance(m, APQBGatedMLP)])
-print(f"patched MLPs: {n}, mean lambda = {lam.mean().item():.4f}\n")
+lams = [torch.sigmoid(m.lam_raw).flatten() for m in model.modules() if isinstance(m, APQBGatedMLP)]
+lam = torch.cat(lams).mean().item() if lams else float("nan")
+print(f"patched MLPs: {n} ({tag}), mean lambda = {lam:.4f}\n")
 
-filt = run("APQB-filtered")
+filt = run(tag)
 
 if base:
     for p, lb, lf, gb, gf in zip(prompts, base[0], filt[0], base[1], filt[1]):
